@@ -3,6 +3,9 @@ name: Build unsigned XForge IPA
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: ipa
   cancel-in-progress: true
