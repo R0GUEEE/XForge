@@ -1,0 +1,59 @@
+name: XForge
+options:
+  bundleIdPrefix: org.xforge
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  xtool:
+    url: https://github.com/xtool-org/xtool
+    from: 1.17.0
+
+targets:
+  XForge:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Support
+    dependencies:
+      - package: xtool
+        product: XKit
+      - sdk: WebKit.framework
+      - sdk: SystemConfiguration.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.xforge.XForge
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        CODE_SIGNING_ALLOWED: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_FILE: Support/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_PREVIEWS: YES
+        OTHER_SWIFT_FLAGS: "-Xcc -fmacro-backtrace-limit=0"
+        ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
+    info:
+      path: Support/Info.plist
+    entitlements:
+      path: Support/XForge.entitlements
+
+  XForgeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: AppTests
+    dependencies:
+      - target: XForge
+      - package: xtool
+        product: XKit
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        SWIFT_STRICT_CONCURRENCY: complete
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/XForge.app/XForge"
+        BUNDLE_LOADER: "$(TEST_HOST)"

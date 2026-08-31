@@ -1,0 +1,65 @@
+name: Build unsigned XForge IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ipa
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Resolve SPM dependencies
+        run: |
+          set -o pipefail
+          xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -resolvePackageDependencies \
+            -destination 'generic/platform=iOS' 2>&1 | tee /tmp/resolve.log
+
+      - name: Archive (unsigned)
+        run: |
+          set -o pipefail
+          rm -rf build
+          xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            archive -archivePath build/XForge.xcarchive 2>&1 | tee /tmp/build.log
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          APP="build/XForge.xcarchive/Products/Applications/XForge.app"
+          mkdir -p dist/Payload
+          ditto "$APP" dist/Payload/XForge.app
+          cd dist && zip -qry "XForge-0.1.0-unsigned.ipa" Payload
+          echo "artifact=$(pwd)/XForge-0.1.0-unsigned.ipa" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XForge-unsigned-ipa
+          path: dist/XForge-0.1.0-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload to release (manual trigger only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: xforge-${{ github.run_number }}
+          name: XForge unsigned ${{ github.run_number }}
+          files: dist/XForge-0.1.0-unsigned.ipa
+          generate_release_notes: true

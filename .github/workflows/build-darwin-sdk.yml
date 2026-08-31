@@ -1,0 +1,64 @@
+name: Build darwin Swift SDK
+
+# Produces the `darwin` Swift SDK bundle (arm64-apple-ios) that the embedded
+# Linux needs to cross-compile iOS apps. It is extracted from Xcode on a macOS
+# runner using xtool's own `sdk build` command, then published as a release asset
+# that the XForge app fetches on first use.
+#
+# NOTE: the resulting bundle is large (multi-GB). GitHub release assets support
+# files up to 2 GB each.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-darwin-sdk:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download xtool (macOS)
+        run: |
+          curl -fL "https://github.com/xtool-org/xtool/releases/download/1.17.0/xtool.app.zip" -o /tmp/xtool.zip
+          unzip -qo /tmp/xtool.zip -d /tmp/xtool
+          echo "/tmp/xtool" >> "$GITHUB_PATH"
+
+      - name: Locate Xcode
+        id: xcode
+        run: |
+          XCODE_APP="$(dirname "$(dirname "$(xcrun -f swiftc)")")"
+          echo "Xcode at: $XCODE_APP"
+          echo "path=$XCODE_APP" >> "$GITHUB_OUTPUT"
+
+      - name: Build darwin SDK from Xcode
+        run: |
+          set -o pipefail
+          rm -rf darwin-sdk-out
+          xtool sdk build "${{ steps.xcode.outputs.path }}" darwin-sdk-out \
+            2>&1 | tee /tmp/darwin-sdk.log
+
+      - name: Show size
+        run: |
+          du -sh darwin-sdk-out/darwin.xtoolsdk
+
+      - name: Package
+        run: |
+          set -e
+          cd darwin-sdk-out
+          tar -cf - darwin.xtoolsdk | xz -9e > ../darwin.xtoolsdk.tar.xz
+          ls -lh ../darwin.xtoolsdk.tar.xz
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin-xtoolsdk
+          path: darwin.xtoolsdk.tar.xz
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: darwin-sdk-${{ github.run_number }}
+          name: darwin Swift SDK ${{ github.run_number }}
+          files: darwin.xtoolsdk.tar.xz
+          generate_release_notes: false
