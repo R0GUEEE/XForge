@@ -25,7 +25,8 @@ final class ProjectBuildModel: ObservableObject {
         let executor = XForgeEnvironment.makeExecutor(for: project)
         self.executor = executor
         do {
-            for try await event in executor.bootstrap() {
+            let stream = try await executor.bootstrap()
+            for try await event in stream {
                 handle(event)
             }
             ready = true
@@ -39,7 +40,8 @@ final class ProjectBuildModel: ObservableObject {
         isBuilding = true
         defer { isBuilding = false }
         do {
-            for try await event in executor.build(project, configuration: configuration) {
+            let stream = try await executor.build(project, configuration: configuration)
+            for try await event in stream {
                 handle(event)
             }
         } catch {
