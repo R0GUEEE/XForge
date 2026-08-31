@@ -20,13 +20,14 @@ jobs:
       - name: Download xtool (macOS)
         run: |
           curl -fL "https://github.com/xtool-org/xtool/releases/download/1.17.0/xtool.app.zip" -o /tmp/xtool.zip
-          unzip -qo /tmp/xtool.zip -d /tmp/xtool
-          echo "/tmp/xtool" >> "$GITHUB_PATH"
+          unzip -qo /tmp/xtool.zip -d /tmp
+          ls -la /tmp/xtool.app/Contents/MacOS/
+          echo "XTOOL_BIN=/tmp/xtool.app/Contents/MacOS/xtool" >> "$GITHUB_ENV"
 
       - name: Locate Xcode
         id: xcode
         run: |
-          XCODE_APP="$(dirname "$(dirname "$(xcrun -f swiftc)")")"
+          XCODE_APP="$(dirname "$(xcode-select -p)")"
           echo "Xcode at: $XCODE_APP"
           echo "path=$XCODE_APP" >> "$GITHUB_OUTPUT"
 
@@ -34,7 +35,7 @@ jobs:
         run: |
           set -o pipefail
           rm -rf darwin-sdk-out
-          xtool sdk build "${{ steps.xcode.outputs.path }}" darwin-sdk-out \
+          "$XTOOL_BIN" sdk build "${{ steps.xcode.outputs.path }}" darwin-sdk-out \
             2>&1 | tee /tmp/darwin-sdk.log
 
       - name: Show size
