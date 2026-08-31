@@ -5,8 +5,7 @@ import Combine
 final class ProjectStore: ObservableObject {
     @Published var projects: [Project] = []
 
-    private static let storageURL = URL
-        .fileURL(withPath: "~/Documents/xforge-projects.json".nsExpandingTildeInPath)
+    private static let storageURL = URL(fileURLWithPath: "~/Documents/xforge-projects.json".nsExpandingTildeInPath)
 
     init() {
         load()

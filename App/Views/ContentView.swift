@@ -11,13 +11,23 @@ struct ContentView: View {
             if let selection {
                 ProjectDetailView(project: selection)
             } else {
-                ContentUnavailableView(
-                    "Select a project",
-                    systemImage: "hammer",
-                    description: Text("Pick a package to build, or create a new one.")
-                )
+                placeholder
             }
         }
+    }
+
+    private var placeholder: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "hammer")
+                .font(.system(size: 42))
+                .foregroundStyle(.secondary)
+            Text("Select a project").font(.headline)
+            Text("Pick a package to build, or create a new one.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .padding()
     }
 }
 

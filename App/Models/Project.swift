@@ -29,7 +29,8 @@ enum BuildEvent: Sendable {
 }
 
 /// Pluggable build backend. `Local` = embedded Linux VM, `Remote` = future build server.
-protocol BuildExecutor: Sendable {
+@MainActor
+protocol BuildExecutor {
     /// Fetch/install the base toolchain + xtool (no-op if already installed).
     func bootstrap() async throws -> AsyncThrowingStream<BuildEvent, Error>
     /// Install the `darwin` Swift SDK bundle (fetched on demand).
@@ -38,8 +39,6 @@ protocol BuildExecutor: Sendable {
     func createProject(named name: String, organizationIdentifier: String) async throws -> Project
     /// Build the package and produce a signed `.ipa`.
     func build(_ project: Project, configuration: BuildConfiguration) async throws -> AsyncThrowingStream<BuildEvent, Error>
-    /// The `.app` / `.ipa` produced by the most recent build, staged for the native side.
-    var stagedOutputs: [URL] { get }
 }
 
 enum SDKSource {

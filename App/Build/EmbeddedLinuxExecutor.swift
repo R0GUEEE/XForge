@@ -4,7 +4,8 @@ import Foundation
 ///
 /// Only the genuinely heavy operations cross into the VM (toolchain bootstrap,
 /// SDK install, and `swift build`/`xtool dev build`). Everything else is native.
-final class EmbeddedLinuxExecutor: BuildExecutor, @unchecked Sendable {
+@MainActor
+final class EmbeddedLinuxExecutor: BuildExecutor {
     private let vm: LinuxVM
     private let stagingDir: URL
     private(set) var stagedOutputs: [URL] = []
