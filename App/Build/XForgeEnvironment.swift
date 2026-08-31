@@ -2,6 +2,7 @@ import Foundation
 
 /// Application-level wiring: where the embedded Linux lives, how a build executor is
 /// constructed for a project, and where staged artifacts land.
+@MainActor
 enum XForgeEnvironment {
     /// App sandbox subdirectory holding the embedded Linux userspace.
     static var embeddedRoot: URL {
