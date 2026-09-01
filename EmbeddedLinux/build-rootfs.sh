@@ -48,7 +48,7 @@ if [[ -z "$APK_STATIC" ]]; then
     APK_STATIC="$(pwd)/sbin/apk.static"
 fi
 
-"$APK_STATIC" --root "$OUT" --arch "$ARCH" --initdb --update-cache add \
+"$APK_STATIC" --root "$OUT" --arch "$ARCH" --initdb --update-cache --no-scripts add \
     bash curl wget tar xz zip unzip git ca-certificates \
     gcompat libc6-compat zlib-static openssl \
     >/dev/null
