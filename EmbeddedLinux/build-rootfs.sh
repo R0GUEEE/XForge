@@ -55,13 +55,17 @@ fi
 
 echo "==> Installing Swift toolchain ($SWIFT_VER) [glibc; via gcompat]"
 SWIFT_URL="https://download.swift.org/${SWIFT_REL}/ubuntu2404/${ARCH}/${SWIFT_VER}/${SWIFT_VER}-ubuntu24.04-${ARCH}.tar.gz"
-curl -fL "$SWIFT_URL" -o /tmp/swift.tar.gz
-tar -xzf /tmp/swift.tar.gz -C "$OUT/opt" --strip-components=1
+if curl -fL "$SWIFT_URL" -o /tmp/swift.tar.gz; then
+    tar -xzf /tmp/swift.tar.gz -C "$OUT/opt" --strip-components=1
+    rm -f /tmp/swift.tar.gz
+else
+    echo "    WARNING: swift.org direct download unavailable; extract Swift from the official"
+    echo "    multi-arch Docker image instead (see validate-emulator.yml)."
+fi
 ln -sf /opt/usr/bin/swift "$OUT/usr/bin/swift"
 ln -sf /opt/usr/bin/swiftc "$OUT/usr/bin/swiftc"
 ln -sf /opt/usr/bin/clang "$OUT/usr/bin/clang"
 ln -sf /opt/usr/bin/ld.lld "$OUT/usr/bin/ld.lld"
-rm -f /tmp/swift.tar.gz
 
 echo "==> Installing xtool ($XTOOL_VER)"
 curl -fL "https://github.com/xtool-org/xtool/releases/download/${XTOOL_VER}/xtool-${ARCH}.AppImage" \
