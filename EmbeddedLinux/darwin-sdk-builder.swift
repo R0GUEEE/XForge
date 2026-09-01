@@ -18,7 +18,9 @@ guard args.count >= 3 else {
     exit(1)
 }
 let xcodeApp = URL(fileURLWithPath: args[1])
-let out = URL(fileURLWithPath: args[2])
+// The bundle is created as a `darwin.artifactbundle` subdir of the output dir, so
+// the archive contains the expected top-level artifact bundle directory.
+let out = URL(fileURLWithPath: args[2]).appendingPathComponent("darwin.artifactbundle")
 let arch = args.count > 3 ? args[3] : "aarch64"
 
 let fm = FileManager.default
