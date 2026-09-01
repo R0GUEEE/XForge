@@ -36,8 +36,11 @@ APK_STATIC="$(command -v apk.static || true)"
 if [[ -z "$APK_STATIC" ]]; then
     echo "==> Downloading apk.static"
     # Resolve the current apk-tools-static version from the repo index.
-    APK_VER="$(curl -fsSL "$MIRROR/v$ALPINE_VERSION/main/$ARCH/APKINDEX.tar.gz" | tar xzO 2>/dev/null \
+    set +e
+    curl -fsSL "$MIRROR/v$ALPINE_VERSION/main/$ARCH/APKINDEX.tar.gz" -o /tmp/APKINDEX.tar.gz 2>/dev/null
+    APK_VER="$(tar xzf /tmp/APKINDEX.tar.gz -O 2>/dev/null \
         | awk '/^P:apk-tools-static$/{f=1;next} f&&/^V:/{print substr($0,3); exit}')"
+    set -e
     APK_VER="${APK_VER:-2.14.6-r3}"
     echo "    using apk-tools-static-$APK_VER"
     curl -fL "$MIRROR/v$ALPINE_VERSION/main/$ARCH/apk-tools-static-$APK_VER.apk" -o /tmp/apk-static.apk
