@@ -6,6 +6,7 @@ import Foundation
 /// the app (QEMU- or iSH-based), exposing a guest shell over a byte pipe. Conformers
 /// boot a Linux userspace and give us stdin/stdout access. This is the seam between
 /// XForge and any embedded emulator; it is the same shape as tctiSH's libqemu embed.
+@MainActor
 protocol LinuxEmulator: AnyObject {
     var name: String { get }
     var isRunning: Bool { get }
@@ -20,6 +21,7 @@ protocol LinuxEmulator: AnyObject {
 
 /// The default emulator when none is bundled yet. It boots with a clear, actionable
 /// error pointing at the artifact that must be produced (see build-emulator.yml).
+@MainActor
 final class PendingLinuxEmulator: LinuxEmulator {
     let name = "none"
     var isRunning = false
@@ -38,6 +40,7 @@ final class PendingLinuxEmulator: LinuxEmulator {
 /// The concrete emulator that will wrap an embedded QEMU-style library.
 /// `boot()` looks for a prebuilt emulator artifact (downloaded or bundled); once the
 /// library is linked this type drives it via a small C shim (mirroring tctiSH).
+@MainActor
 final class EmbeddedQemuLinux: LinuxEmulator {
     let name = "QEMU (embedded)"
     private(set) var isRunning = false
