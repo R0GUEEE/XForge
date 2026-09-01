@@ -1,0 +1,47 @@
+name: Validate embedded Linux emulator stack
+
+# Empirically validates the on-device software stack BEFORE the iOS cross-build:
+# Alpine aarch64 rootfs + gcompat + Swift toolchain + xtool running under QEMU
+# user-mode (qemu-aarch64). This proves the guest stack actually runs, which is the
+# part most likely to break silently. If this passes, the only remaining step is
+# building the SAME qemu-aarch64 as an iOS dylib (build-emulator.yml).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU user-mode
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+
+      - name: Assemble Alpine aarch64 rootfs (Swift + xtool)
+        run: |
+          bash EmbeddedLinux/build-rootfs.sh ./rootfs
+
+      - name: Sanity — qemu-aarch64 runs a static binary
+        run: |
+          set -e
+          qemu-aarch64 /bin/true && echo "QEMU_OK: static binary runs"
+
+      - name: Run Swift under qemu-aarch64 (Alpine musl + gcompat)
+        run: |
+          set +e
+          echo "== Swift ELF =="
+          file rootfs/opt/usr/bin/swift 2>/dev/null || ls -la rootfs/opt/usr/bin/swift
+          echo "== dynamic deps =="
+          (qemu-aarch64 -L rootfs rootfs/opt/usr/bin/swift --version 2>&1 || echo "SWIFT_EXIT=$?") | head -30
+
+      - name: Run xtool under qemu-aarch64
+        run: |
+          set +e
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          (qemu-aarch64 -L rootfs rootfs/usr/local/bin/xtool --version 2>&1 || echo "XTOOL_EXIT=$?") | head -20
+
+      - name: Run Alpine native busybox under qemu (control)
+        run: |
+          set +e
+          (qemu-aarch64 -L rootfs rootfs/bin/busybox --version 2>&1 || echo "BB_EXIT=$?") | head
