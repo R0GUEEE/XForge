@@ -1,0 +1,32 @@
+name: Run unit tests
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate --spec project.yml
+
+      - name: Resolve SPM deps
+        run: |
+          set -o pipefail
+          xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -resolvePackageDependencies \
+            -destination 'platform=iOS Simulator,name=iPhone 16' 2>&1 | tail -5
+
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            test 2>&1 | tee /tmp/test.log | tail -40
+          echo "---"
+          grep -E "Test Suite 'XForgeTests'|Executed [0-9]+ tests|TEST SUCCEEDED|TEST FAILED|error:" /tmp/test.log | tail -20
