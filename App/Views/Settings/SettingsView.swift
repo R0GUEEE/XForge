@@ -16,6 +16,9 @@ struct SettingsView: View {
                 } label: {
                     Label("Files (app sandbox)", systemImage: "folder")
                 }
+                NavigationLink { HistoryView() } label: {
+                    Label("Build History", systemImage: "clock.arrow.circlepath")
+                }
             } header: {
                 Text("Files & Downloads")
             } footer: {

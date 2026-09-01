@@ -15,6 +15,7 @@ final class BuildManager: ObservableObject {
     private var executor: BuildExecutor?
     private var compiledURL: URL?
     private var buildNumber: Int
+    private let history = BuildHistoryStore()
 
     init(project: Project) {
         self.project = project
@@ -46,6 +47,14 @@ final class BuildManager: ObservableObject {
         if snapshot.error == nil { await stageArtifact() }
 
         snapshot.isRunning = false
+        history.record(
+            projectName: project.name,
+            configuration: configuration.rawValue,
+            buildNumber: buildNumber,
+            result: snapshot.error == nil ? "success" : "failed",
+            artifactName: snapshot.lastIpa?.lastPathComponent,
+            error: snapshot.error
+        )
     }
 
     // MARK: - Stages
