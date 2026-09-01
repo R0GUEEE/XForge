@@ -3,6 +3,7 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
     @ObservedObject var preferences: AppPreferences
+    @StateObject private var toolchain = ToolchainManager()
 
     var body: some View {
         List {
@@ -11,6 +12,7 @@ struct SettingsView: View {
             diagnosticsSection
             aboutSection
         }
+        .task { toolchain.refresh() }
     }
 
     private var preferencesSection: some View {
@@ -29,12 +31,37 @@ struct SettingsView: View {
     }
 
     private var storageSection: some View {
-        Section("Storage") {
-            StorageRow(title: "Embedded Linux (Alpine aarch64)", detail: onDiskSize("embedded-linux"))
-            StorageRow(title: "Swift toolchain", detail: onDiskSize("embedded-linux/opt/swift"))
-            StorageRow(title: "Darwin SDK", detail: onDiskSize("embedded-linux/opt/darwin.artifactbundle"))
-            StorageRow(title: "Build artifacts", detail: onDiskSize("staging"))
+        Section {
+            ForEach(ToolchainManager.Component.allCases) { component in
+                StorageRow(
+                    title: component.rawValue,
+                    detail: storageDetail(for: component),
+                    installed: toolchain.isInstalled(component),
+                    installing: toolchain.isInstalling == component
+                ) {
+                    Task { await toolchain.install(component) }
+                }
+            }
+            StorageRow(title: "Build artifacts", detail: onDiskSize("staging"), installed: true) {}
+        } header: {
+            Text("Storage & Toolchain")
+        } footer: {
+            Text("Install any missing piece here. The Darwin SDK downloads on-device; the embedded Linux and Swift install once the VM is connected.")
         }
+    }
+
+    private func storageDetail(for component: ToolchainManager.Component) -> String {
+        let subpath: String
+        switch component {
+        case .linux: subpath = "embedded-linux"
+        case .swift: subpath = "embedded-linux/opt/usr"
+        case .xtool: subpath = "embedded-linux/usr/local/bin"
+        case .sdk: subpath = "embedded-linux/opt/darwin.artifactbundle"
+        }
+        let size = directorySize(at: XForgeEnvironment.documentDirectory.appendingPathComponent(subpath))
+        return toolchain.isInstalled(component)
+            ? "Installed · \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))"
+            : "Not installed"
     }
 
     private var diagnosticsSection: some View {
@@ -88,11 +115,32 @@ struct SettingsView: View {
 struct StorageRow: View {
     let title: String
     let detail: String
+    var installed = true
+    var installing = false
+    let onInstall: () -> Void
+
     var body: some View {
         HStack {
-            Text(title)
+            Image(systemName: installed ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(installed ? .green : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
             Spacer()
-            Text(detail).foregroundStyle(.secondary)
+            if !installed {
+                Button {
+                    onInstall()
+                } label: {
+                    if installing {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Install", systemImage: "arrow.down.circle")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(installing)
+            }
         }
     }
 }

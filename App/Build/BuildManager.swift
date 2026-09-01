@@ -18,7 +18,8 @@ final class BuildManager: ObservableObject {
 
     init(project: Project) {
         self.project = project
-        self.appInfo = .default(for: project)
+        self.appInfo = project.appInfo ?? .default(for: project)
+        self.configuration = AppPreferences().defaultConfiguration
         self.buildNumber = Self.nextBuildNumber()
         resetStages()
     }

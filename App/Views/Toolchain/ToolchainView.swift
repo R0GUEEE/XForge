@@ -1,12 +1,10 @@
 import SwiftUI
 
-/// Manage the on-device build infrastructure: embedded Linux, Swift toolchain,
-/// xtool, and the `darwin` Swift SDK.
+/// Manage the on-device build infrastructure. Each component shows its status and an
+/// install action when missing. The Darwin SDK installs on-device; the embedded Linux
+/// and Swift install once the VM bridge is connected.
 struct ToolchainView: View {
-    @State private var status = ToolchainStatus()
-    @State private var isRefreshing = false
-    @State private var isInstallingSDK = false
-    @State private var message: String?
+    @StateObject private var toolchain = ToolchainManager()
 
     var body: some View {
         Form {
@@ -23,84 +21,62 @@ struct ToolchainView: View {
                 Text("A shell into the embedded Alpine aarch64 Linux. Appears once the VM bridge is connected.")
             }
 
-            Section("Embedded Linux") {
-                statusRow(title: "Linux userspace",
-                          detail: status.embeddedLinuxInstalled ? "Installed" : "Not installed",
-                          ok: status.embeddedLinuxInstalled)
-            }
-
-            Section("Swift Toolchain") {
-                statusRow(title: "Swift",
-                          detail: status.swiftVersion ?? "Not detected",
-                          ok: status.swiftVersion != nil)
-                statusRow(title: "xtool",
-                          detail: status.xtoolVersion ?? "Not detected",
-                          ok: status.xtoolVersion != nil)
-            }
-
-            Section("Darwin Swift SDK") {
-                statusRow(title: "SDK",
-                          detail: status.sdkInstalled ? (status.sdkVersion ?? "Installed") : "Not installed",
-                          ok: status.sdkInstalled)
-
-                if !status.sdkInstalled {
-                    Button {
-                        Task { await installSDK() }
-                    } label: {
-                        Label(isInstallingSDK ? "Installing…" : "Download & Install SDK",
-                              systemImage: "arrow.down.circle")
+            Section("Components") {
+                ForEach(ToolchainManager.Component.allCases) { component in
+                    HStack {
+                        Image(systemName: component.icon)
+                            .foregroundStyle(toolchain.isInstalled(component) ? .green : .secondary)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(component.rawValue).font(.headline)
+                            Text(detail(for: component))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if !toolchain.isInstalled(component) {
+                            Button {
+                                Task { await toolchain.install(component) }
+                            } label: {
+                                if toolchain.isInstalling == component {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Label("Install", systemImage: "arrow.down.circle")
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(toolchain.isInstalling != nil)
+                        } else {
+                            Label("Installed", systemImage: "checkmark")
+                                .font(.caption).foregroundStyle(.green)
+                        }
                     }
-                    .disabled(isInstallingSDK)
                 }
             }
 
-            Section {
-                Button {
-                    Task { await refresh() }
-                } label: {
-                    Label(isRefreshing ? "Checking…" : "Check Toolchain", systemImage: "arrow.clockwise")
-                }
-                .disabled(isRefreshing)
-
-                if let message {
+            if let message = toolchain.message {
+                Section {
                     Label(message, systemImage: "info.circle")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
 
-            Section(footer: Text("The embedded Linux, Swift toolchain and darwin SDK are fetched on first use. This can take several minutes and requires several gigabytes of storage.")) {
+            Section(footer: Text("The embedded Linux, Swift toolchain and Darwin SDK are fetched on first use. This can take several minutes and requires several gigabytes of storage.")) {
                 Button(role: .destructive) {
-                    message = "Reset removes the downloaded toolchain. (Not yet implemented.)"
+                    toolchain.message = "Reset removes the downloaded toolchain. (Not yet implemented.)"
                 } label: {
                     Label("Reset Toolchain", systemImage: "trash")
                 }
             }
         }
         .navigationTitle("Toolchain")
-        .task { await refresh() }
+        .task { toolchain.refresh() }
     }
 
-    private func statusRow(title: String, detail: String, ok: Bool) -> some View {
-        HStack {
-            Image(systemName: ok ? "checkmark.circle.fill" : "circle.dashed")
-                .foregroundStyle(ok ? .green : .secondary)
-            Text(title)
-            Spacer()
-            Text(detail).foregroundStyle(.secondary)
+    private func detail(for component: ToolchainManager.Component) -> String {
+        switch component {
+        case .linux: return "Alpine aarch64 userspace"
+        case .swift: return "Swift Linux toolchain (via gcompat)"
+        case .xtool: return "xtool aarch64 binary"
+        case .sdk: return "arm64-apple-ios · fetched on demand"
         }
-    }
-
-    private func refresh() async {
-        isRefreshing = true
-        defer { isRefreshing = false }
-        // TODO: probe the embedded VM for swift/xtool/SDK versions.
-        message = "Toolchain check will query the embedded Linux once the VM bridge is wired."
-    }
-
-    private func installSDK() async {
-        isInstallingSDK = true
-        defer { isInstallingSDK = false }
-        message = "SDK install streams from the hosted darwin-SDK release into the embedded Linux."
-        // TODO: kick off SDK download + `swift sdk install` in the VM.
     }
 }

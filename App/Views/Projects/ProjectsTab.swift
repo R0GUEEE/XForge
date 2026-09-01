@@ -3,6 +3,7 @@ import SwiftUI
 /// Tab 1 — author and manage SwiftPM projects.
 struct ProjectsTab: View {
     @EnvironmentObject private var store: ProjectStore
+    @EnvironmentObject private var preferences: AppPreferences
     @State private var selection: Project?
     @State private var showingNewProject = false
     @State private var importURL = ""

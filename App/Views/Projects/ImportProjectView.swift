@@ -2,10 +2,11 @@ import SwiftUI
 
 /// Sheet for importing an existing SwiftPM package from a git URL.
 struct ImportProjectView: View {
+    @EnvironmentObject private var preferences: AppPreferences
     @Environment(\.dismiss) private var dismiss
     @State private var gitURL = ""
     @State private var name = ""
-    @State private var orgId = "com.example"
+    @State private var orgId = ""
     @State private var isImporting = false
 
     let onImported: (Project) -> Void
@@ -33,6 +34,9 @@ struct ImportProjectView: View {
                 }
             }
             .navigationTitle("Import from Git")
+            .onAppear {
+                if orgId.isEmpty { orgId = preferences.defaultOrgId }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

@@ -34,7 +34,8 @@ struct ProjectDetailView: View {
 // MARK: - Overview
 
 private struct OverviewSection: View {
-    @StateObject private var model: ProjectBuildModel
+    @StateObject private var manager: BuildManager
+    @EnvironmentObject private var store: ProjectStore
     let project: Project
     @State private var showingFiles = false
     @State private var showingInfo = false
@@ -43,8 +44,9 @@ private struct OverviewSection: View {
 
     init(project: Project) {
         self.project = project
-        _model = StateObject(wrappedValue: ProjectBuildModel(project: project))
-        _appInfo = State(initialValue: .default(for: project))
+        let info = project.appInfo ?? .default(for: project)
+        _appInfo = State(initialValue: info)
+        _manager = StateObject(wrappedValue: BuildManager(project: project))
     }
 
     var body: some View {
@@ -52,15 +54,22 @@ private struct OverviewSection: View {
             infoCard
             toolsRow
             Divider()
+            stageRow
             console
             toolbar
         }
-        .task { if !model.didBootstrap { await model.bootstrap() } }
+        .task { await manager.bootstrap() }
         .sheet(isPresented: $showingFiles) {
             NavigationStack { FileBrowserView(project: project) }
         }
         .sheet(isPresented: $showingInfo) {
-            InfoEditorView(initial: appInfo) { appInfo = $0 }
+            InfoEditorView(initial: appInfo) { updated in
+                appInfo = updated
+                manager.appInfo = updated
+                var p = project
+                p.appInfo = updated
+                store.update(p)
+            }
         }
         .sheet(isPresented: $showingDeps) {
             NavigationStack { DependenciesView() }
@@ -95,7 +104,7 @@ private struct OverviewSection: View {
         VStack(alignment: .leading, spacing: 6) {
             Label(project.name, systemImage: "app.fill").font(.title2.bold())
             HStack(spacing: 16) {
-                Label(project.organizationIdentifier, systemImage: "building.2")
+                Label(appInfo.bundleIdentifier, systemImage: "building.2")
                 Label("arm64-apple-ios", systemImage: "cpu")
             }
             .font(.subheadline).foregroundStyle(.secondary)
@@ -104,10 +113,26 @@ private struct OverviewSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private var stageRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                ForEach(BuildStage.allCases) { stage in
+                    VStack(spacing: 4) {
+                        Image(systemName: symbol(for: stage))
+                            .foregroundStyle(color(for: stage))
+                        Text(stage.rawValue.capitalized)
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal).padding(.bottom, 10)
+        }
+    }
+
     private var console: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                Text(model.consoleText)
+                Text(manager.snapshot.consoleText.isEmpty ? "Ready.\n" : manager.snapshot.consoleText)
                     .font(.system(.footnote, design: .monospaced))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
@@ -116,8 +141,8 @@ private struct OverviewSection: View {
             .background(Color.black.opacity(0.05))
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .padding(.horizontal).padding(.bottom, 8)
-            .onChange(of: model.consoleText) { _ in
-                withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: manager.snapshot.consoleText) { _ in
+                withAnimation(.none) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -125,36 +150,48 @@ private struct OverviewSection: View {
 
     private var toolbar: some View {
         HStack {
-            Picker("Configuration", selection: $model.configuration) {
+            Picker("Configuration", selection: $manager.configuration) {
                 ForEach(BuildConfiguration.allCases) { cfg in
                     Text(cfg.rawValue).tag(cfg)
                 }
             }
-            .pickerStyle(.segmented).frame(maxWidth: 220)
+            .pickerStyle(.segmented).frame(maxWidth: 200)
 
             Spacer()
 
-            if model.isBuilding {
-                ProgressView().controlSize(.small)
-                Button("Cancel") { model.cancel() }
-            } else {
-                Button {
-                    Task { await model.build() }
-                } label: {
-                    Label("Build", systemImage: "hammer")
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.ready)
-            }
-
             Button {
-                model.export()
+                Task { await manager.run() }
             } label: {
-                Label("Export", systemImage: "square.and.arrow.up")
+                Label(manager.snapshot.isRunning ? "Building…" : "Build", systemImage: "hammer")
             }
-            .disabled(model.lastIpa == nil)
+            .buttonStyle(.borderedProminent)
+            .disabled(manager.snapshot.isRunning)
+
+            if let ipa = manager.snapshot.lastIpa {
+                ShareLink(item: ipa) {
+                    Label("Export", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .padding(.horizontal).padding(.bottom)
+    }
+
+    private func symbol(for stage: BuildStage) -> String {
+        switch manager.snapshot[stage] {
+        case .pending: return "circle.dashed"
+        case .running: return "arrow.triangle.2.circlepath"
+        case .succeeded: return "checkmark.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        }
+    }
+    private func color(for stage: BuildStage) -> Color {
+        switch manager.snapshot[stage] {
+        case .pending: return .secondary
+        case .running: return .blue
+        case .succeeded: return .green
+        case .failed: return .red
+        }
     }
 }
 

@@ -44,14 +44,18 @@ jobs:
           # strip macOS AppleDouble metadata files copied alongside the SDK
           find darwin-sdk-out -name '._*' -delete
           cd darwin-sdk-out
+          # tar.xz for the embedded Linux (curl | tar); zip for host-side install (iOS)
           tar -cf - darwin.artifactbundle | xz -9e > ../darwin.artifactbundle.tar.xz
-          ls -lh ../darwin.artifactbundle.tar.xz
+          ditto -c -k --sequesterRsrc --keepParent darwin.artifactbundle ../darwin.artifactbundle.zip
+          ls -lh ../darwin.artifactbundle.tar.xz ../darwin.artifactbundle.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: darwin-xtoolsdk
-          path: darwin.artifactbundle.tar.xz
+          path: |
+            darwin.artifactbundle.tar.xz
+            darwin.artifactbundle.zip
           if-no-files-found: error
 
       - name: Publish release
@@ -59,5 +63,7 @@ jobs:
         with:
           tag_name: darwin-sdk-${{ github.run_number }}
           name: darwin Swift SDK ${{ github.run_number }}
-          files: darwin.artifactbundle.tar.xz
+          files: |
+            darwin.artifactbundle.tar.xz
+            darwin.artifactbundle.zip
           generate_release_notes: false

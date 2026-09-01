@@ -16,6 +16,12 @@ final class ProjectStore: ObservableObject {
         save()
     }
 
+    func update(_ project: Project) {
+        guard let idx = projects.firstIndex(where: { $0.id == project.id }) else { return }
+        projects[idx] = project
+        save()
+    }
+
     func remove(_ project: Project) {
         projects.removeAll { $0.id == project.id }
         save()

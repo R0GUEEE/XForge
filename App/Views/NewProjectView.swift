@@ -7,9 +7,10 @@ struct NewProjectView: View {
         var id: String { rawValue }
     }
 
+    @EnvironmentObject private var preferences: AppPreferences
     @Environment(\.dismiss) private var dismiss
     @State private var name = "HelloWorld"
-    @State private var orgId = "com.example"
+    @State private var orgId = ""
     @State private var template: Template = .swiftUI
 
     let onCreated: (Project) -> Void
@@ -28,6 +29,9 @@ struct NewProjectView: View {
                 }
             }
             .navigationTitle("New Project")
+            .onAppear {
+                if orgId.isEmpty { orgId = preferences.defaultOrgId }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }

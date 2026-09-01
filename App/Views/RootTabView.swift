@@ -19,6 +19,7 @@ struct RootTabView: View {
         TabView(selection: $selection) {
             ProjectsTab()
                 .environmentObject(store)
+                .environmentObject(preferences)
                 .tabItem { Label("Projects", systemImage: "folder") }
                 .tag(AppTab.projects)
 

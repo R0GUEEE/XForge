@@ -8,6 +8,8 @@ struct Project: Identifiable, Hashable, Codable {
     /// Path of the package root inside the embedded Linux filesystem.
     var rootPath: String
     var createdAt: Date = Date()
+    /// Configured Info.plist settings for the produced app (editable in the GUI).
+    var appInfo: AppInfo?
 
     var packageManifestPath: String { "\(rootPath)/Package.swift" }
     var ipaOutputPath: String { "\(rootPath)/.build/xforge-\(name).ipa" }
