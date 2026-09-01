@@ -21,7 +21,7 @@ jobs:
       - name: Locate Xcode
         id: xcode
         run: |
-          XCODE_APP="$(dirname "$(xcode-select -p)")"
+          XCODE_APP="$(dirname "$(dirname "$(xcode-select -p)")")"
           echo "Xcode at: $XCODE_APP"
           echo "path=$XCODE_APP" >> "$GITHUB_OUTPUT"
 
