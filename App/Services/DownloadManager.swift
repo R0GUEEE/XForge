@@ -72,7 +72,8 @@ final class DownloadManager: ObservableObject {
     /// can reach it at /root/downloads/<name> (and the build executor's copyIn can push
     /// it into the running guest).
     func stageToGuest(_ item: DownloadItem) throws -> URL {
-        guard let source = item.destination ?? folder.appendingPathComponent(item.name) else {
+        let source = item.destination ?? folder.appendingPathComponent(item.name)
+        guard FileManager.default.fileExists(atPath: source.path) else {
             throw DownloadError.notDownloaded
         }
         let guestDir = XForgeEnvironment.embeddedRoot

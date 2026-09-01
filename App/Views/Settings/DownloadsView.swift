@@ -101,12 +101,12 @@ struct DownloadsView: View {
         Task { await manager.start(id) }
     }
 
-    private func stateIcon(_ item: DownloadItem) -> some View {
+    private func stateIcon(_ item: DownloadItem) -> Image {
         switch item.state {
-        case .idle: return Image(systemName: "circle.dashed").foregroundStyle(.secondary)
-        case .downloading: return Image(systemName: "arrow.down.circle").foregroundStyle(.blue)
-        case .done: return Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
-        case .failed: return Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+        case .idle: return Image(systemName: "circle.dashed")
+        case .downloading: return Image(systemName: "arrow.down.circle")
+        case .done: return Image(systemName: "checkmark.circle.fill")
+        case .failed: return Image(systemName: "xmark.circle.fill")
         }
     }
 }
