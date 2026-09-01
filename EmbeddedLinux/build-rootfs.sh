@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-OUT="${1:-./alpine-rootfs}"
+OUT="$(cd "${1:-./alpine-rootfs}" && pwd)"
 ARCH="aarch64"
 ALPINE_VERSION="3.21"
 ALPINE_RELEASE="3.21.7"
@@ -47,7 +47,7 @@ if [[ -z "$APK_STATIC" ]]; then
     APK_STATIC="$(pwd)/sbin/apk.static"
 fi
 
-"$APK_STATIC" --root "$OUT" --arch "$ARCH" --update-cache add \
+"$APK_STATIC" --root "$OUT" --arch "$ARCH" --initdb --update-cache add \
     bash curl wget tar xz zip unzip git ca-certificates \
     gcompat libc6-compat zlib-static openssl \
     >/dev/null
