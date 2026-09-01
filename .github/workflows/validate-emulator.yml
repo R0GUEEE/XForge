@@ -23,10 +23,12 @@ jobs:
 
       - name: Extract aarch64 Swift toolchain from official image
         run: |
-          docker run --rm --platform linux/arm64 \
-            -v "$PWD/rootfs:/rootfs" \
-            swift:6.1.2-noble \
-            sh -c 'cp -a /usr/local/. /rootfs/usr/local/'
+          # docker create + cp copies files out WITHOUT executing the arm64 image
+          # (avoids binfmt/--platform runtime issues on the x86_64 runner).
+          set -e
+          docker create --platform linux/arm64 --name xfsw swift:6.1.2-noble
+          docker cp xfsw:/usr/local/. rootfs/usr/local/
+          docker rm xfsw >/dev/null
           ls -la rootfs/usr/local/bin/swift
 
       - name: Sanity — qemu-aarch64 runs a static binary
