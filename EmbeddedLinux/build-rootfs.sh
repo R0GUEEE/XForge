@@ -35,7 +35,12 @@ printf '%s/v%s/main\n%s/v%s/community\n' "$MIRROR" "$ALPINE_VERSION" "$MIRROR" "
 APK_STATIC="$(command -v apk.static || true)"
 if [[ -z "$APK_STATIC" ]]; then
     echo "==> Downloading apk.static"
-    curl -fL "$MIRROR/v$ALPINE_VERSION/main/$ARCH/apk-tools-static-2.14.4-r1.apk" -o /tmp/apk-static.apk
+    # Resolve the current apk-tools-static version from the repo index.
+    APK_VER="$(curl -fsSL "$MIRROR/v$ALPINE_VERSION/main/$ARCH/APKINDEX.tar.gz" | tar xzO 2>/dev/null \
+        | awk '/^P:apk-tools-static$/{f=1;next} f&&/^V:/{print substr($0,3); exit}')"
+    APK_VER="${APK_VER:-2.14.6-r3}"
+    echo "    using apk-tools-static-$APK_VER"
+    curl -fL "$MIRROR/v$ALPINE_VERSION/main/$ARCH/apk-tools-static-$APK_VER.apk" -o /tmp/apk-static.apk
     mkdir -p /tmp/apkstatic && cd /tmp/apkstatic && tar -xzf /tmp/apk-static.apk
     chmod +x sbin/apk.static
     APK_STATIC="$(pwd)/sbin/apk.static"
