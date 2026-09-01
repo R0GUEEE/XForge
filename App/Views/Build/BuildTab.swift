@@ -21,6 +21,14 @@ struct BuildTab: View {
             .navigationTitle("Build")
         }
         .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                NavigationLink {
+                    ArtifactsView()
+                } label: {
+                    Label("Artifacts", systemImage: "shippingbox")
+                }
+            }
+        }
             ToolbarItem(placement: .principal) {
                 if store.projects.count > 1 {
                     Picker("Project", selection: $selection) {

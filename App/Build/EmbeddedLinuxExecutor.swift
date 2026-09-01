@@ -6,7 +6,7 @@ import Foundation
 /// SDK install, and `swift build`/`xtool dev build`). Everything else is native.
 @MainActor
 final class EmbeddedLinuxExecutor: BuildExecutor {
-    private let vm: LinuxVM
+    let vm: LinuxVM
     private let stagingDir: URL
     private(set) var stagedOutputs: [URL] = []
 

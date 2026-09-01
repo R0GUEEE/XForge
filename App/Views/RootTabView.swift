@@ -4,6 +4,7 @@ struct RootTabView: View {
     @StateObject private var store = ProjectStore()
     @StateObject private var signing = XKitSigningService()
     @StateObject private var device = XKitDeviceService()
+    @StateObject private var preferences = AppPreferences()
     @State private var selection: AppTab = .projects
 
     enum AppTab: Hashable {
@@ -11,6 +12,7 @@ struct RootTabView: View {
         case build
         case signInstall
         case toolchain
+        case settings
     }
 
     var body: some View {
@@ -32,6 +34,10 @@ struct RootTabView: View {
             ToolchainTab()
                 .tabItem { Label("Toolchain", systemImage: "wrench.and.screwdriver") }
                 .tag(AppTab.toolchain)
+
+            SettingsTab(preferences: preferences)
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(AppTab.settings)
         }
     }
 }

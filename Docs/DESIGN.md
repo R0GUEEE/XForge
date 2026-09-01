@@ -27,6 +27,20 @@ self-contained, all fetchable):
   .tbd stubs, module maps) + the iOS Swift stdlib. This is the big one (multi-GB).
 - **`xtool` aarch64 binary** (the prebuilt `xtool-aarch64.AppImage`, 51 MB).
 
+## 1b. The userspace is **Alpine aarch64**
+
+The embedded Linux is **Alpine Linux arm64** (musl, ~8 MB base) — tiny enough to bundle
+in the app, and the same distro family as iSH-AOK. Because Swift + xtool are glibc
+binaries, the rootfs installs Alpine's `gcompat` + `libc6-compat` so they run on the
+musl base.
+
+- `EmbeddedLinux/build-rootfs.sh` assembles the rootfs (on a Linux host/CI): Alpine base
+  + gcompat + Swift toolchain + xtool, ready to tar/xz and bundle.
+- `EmbeddedLinux/install-toolchain.sh` runs *in the guest* for first-boot provisioning;
+  it is idempotent and also fetches the darwin SDK if not already staged.
+- The multi-GB `darwin` SDK is *not* baked into the rootfs — it's fetched on first use
+  from the CI-hosted release and staged into `/opt/darwin.artifactbundle`.
+
 ## 2. Where the `darwin` SDK comes from
 
 `xtool sdk build <Xcode.xip>` produces the `darwin` SDK from a real Xcode — impossible

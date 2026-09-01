@@ -36,20 +36,59 @@ struct ProjectDetailView: View {
 private struct OverviewSection: View {
     @StateObject private var model: ProjectBuildModel
     let project: Project
+    @State private var showingFiles = false
+    @State private var showingInfo = false
+    @State private var showingDeps = false
+    @State private var appInfo: AppInfo
 
     init(project: Project) {
         self.project = project
         _model = StateObject(wrappedValue: ProjectBuildModel(project: project))
+        _appInfo = State(initialValue: .default(for: project))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             infoCard
+            toolsRow
             Divider()
             console
             toolbar
         }
         .task { if !model.didBootstrap { await model.bootstrap() } }
+        .sheet(isPresented: $showingFiles) {
+            NavigationStack { FileBrowserView(project: project) }
+        }
+        .sheet(isPresented: $showingInfo) {
+            InfoEditorView(initial: appInfo) { appInfo = $0 }
+        }
+        .sheet(isPresented: $showingDeps) {
+            NavigationStack { DependenciesView() }
+        }
+    }
+
+    private var toolsRow: some View {
+        HStack(spacing: 12) {
+            toolButton("Files", icon: "folder", action: { showingFiles = true })
+            toolButton("App Info", icon: "doc.badge.gearshape", action: { showingInfo = true })
+            toolButton("Dependencies", icon: "shippingbox", action: { showingDeps = true })
+            Spacer()
+        }
+        .padding(.horizontal).padding(.bottom, 10)
+    }
+
+    private func toolButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.title3)
+                Text(title).font(.caption)
+            }
+            .frame(minWidth: 64)
+            .padding(.vertical, 8)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
     }
 
     private var infoCard: some View {

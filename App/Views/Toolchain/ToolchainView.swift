@@ -10,6 +10,19 @@ struct ToolchainView: View {
 
     var body: some View {
         Form {
+            Section {
+                NavigationLink {
+                    TerminalView()
+                } label: {
+                    Label("Terminal", systemImage: "terminal")
+                        .font(.headline)
+                }
+            } header: {
+                Text("Interactive Shell")
+            } footer: {
+                Text("A shell into the embedded Alpine aarch64 Linux. Appears once the VM bridge is connected.")
+            }
+
             Section("Embedded Linux") {
                 statusRow(title: "Linux userspace",
                           detail: status.embeddedLinuxInstalled ? "Installed" : "Not installed",
