@@ -15,18 +15,21 @@ jobs:
       - name: Generate project
         run: xcodegen generate --spec project.yml
 
-      - name: Resolve SPM deps
+      - name: Build app for simulator (emits SPM package products)
         run: |
           set -o pipefail
           xcodebuild -project XForge.xcodeproj -scheme XForge \
-            -resolvePackageDependencies \
-            -destination 'platform=iOS Simulator,name=iPhone 16' 2>&1 | tail -5
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -derivedDataPath build \
+            build 2>&1 | tee /tmp/build.log | tail -8
 
       - name: Run unit tests
         run: |
           set -o pipefail
           xcodebuild -project XForge.xcodeproj -scheme XForge \
             -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -derivedDataPath build \
             test 2>&1 | tee /tmp/test.log | tail -40
-          echo "---"
-          grep -E "Test Suite 'XForgeTests'|Executed [0-9]+ tests|TEST SUCCEEDED|TEST FAILED|error:" /tmp/test.log | tail -20
+          echo "--- summary ---"
+          grep -E "Test Suite 'XForgeTests'|Test Case '-\[XForgeTests|Executed [0-9]+ tests|TEST SUCCEEDED|TEST FAILED|error:" /tmp/test.log | tail -25
