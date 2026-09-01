@@ -77,8 +77,9 @@ final class EmbeddedLinuxVM: LinuxVM {
     func copyIn(hostURL: URL, to guestPath: String) async throws {
         let data = try Data(contentsOf: hostURL)
         let b64 = data.base64EncodedString()
+        let dir = (guestPath as NSString).deletingLastPathComponent
         _ = try await run(
-            "mkdir -p '\(guestPath.deletingLastPathComponent())' && base64 -d > '\(guestPath)' <<'__XF_B64__'\n\(b64)\n__XF_B64__\n",
+            "mkdir -p '\(dir)' && base64 -d > '\(guestPath)' <<'__XF_B64__'\n\(b64)\n__XF_B64__\n",
             environment: nil
         ) { _ in }
     }
