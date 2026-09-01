@@ -1,7 +1,7 @@
 import Foundation
 
 /// The produced app's `Info.plist` settings, editable before packaging.
-struct AppInfo: Codable, Equatable {
+struct AppInfo: Codable, Equatable, Hashable {
     var bundleIdentifier: String
     var displayName: String
     var version: String
