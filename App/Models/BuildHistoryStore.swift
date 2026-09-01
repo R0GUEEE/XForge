@@ -18,7 +18,10 @@ struct BuildRecord: Identifiable, Codable, Equatable {
 final class BuildHistoryStore: ObservableObject {
     @Published private(set) var records: [BuildRecord] = []
 
-    private static let fileURL = URL(fileURLWithPath: "~/Documents/build-history.json".nsExpandingTildeInPath)
+    private static let fileURL: URL = {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return docs.appendingPathComponent("build-history.json")
+    }()
 
     init() {
         load()
