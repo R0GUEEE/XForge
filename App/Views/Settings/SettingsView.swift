@@ -7,6 +7,21 @@ struct SettingsView: View {
 
     var body: some View {
         List {
+            Section {
+                NavigationLink { DownloadsView() } label: {
+                    Label("Downloads", systemImage: "arrow.down.circle")
+                }
+                NavigationLink {
+                    SandboxBrowserView(root: XForgeEnvironment.documentDirectory)
+                } label: {
+                    Label("Files (app sandbox)", systemImage: "folder")
+                }
+            } header: {
+                Text("Files & Downloads")
+            } footer: {
+                Text("Downloads land here and forward to the embedded Linux shell at /root/downloads.")
+            }
+
             preferencesSection
             storageSection
             diagnosticsSection
