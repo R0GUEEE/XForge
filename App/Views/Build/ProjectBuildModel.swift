@@ -10,6 +10,7 @@ final class ProjectBuildModel: ObservableObject {
     @Published var configuration: BuildConfiguration = .debug
     @Published private(set) var isBuilding = false
     @Published private(set) var ready = false
+    @Published private(set) var didBootstrap = false
     @Published private(set) var consoleText = ""
     @Published private(set) var lastIpa: URL?
     @Published var showingExporter = false
@@ -22,6 +23,7 @@ final class ProjectBuildModel: ObservableObject {
     }
 
     func bootstrap() async {
+        guard !didBootstrap else { return }
         let executor = XForgeEnvironment.makeExecutor(for: project)
         self.executor = executor
         do {
@@ -33,6 +35,7 @@ final class ProjectBuildModel: ObservableObject {
         } catch {
             append("[error] \(error.localizedDescription)")
         }
+        didBootstrap = true
     }
 
     func build() async {
@@ -50,7 +53,7 @@ final class ProjectBuildModel: ObservableObject {
     }
 
     func cancel() {
-        // Stub: future iteration will send SIGINT into the VM.
+        // Future: send SIGINT into the embedded VM build process.
     }
 
     func export() {
