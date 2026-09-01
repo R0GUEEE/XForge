@@ -18,10 +18,8 @@ struct IPABuilder {
         }
     }
 
-    static let fileManager = FileManager.default
 
     /// Build a `.ipa` from a compiled `.app` bundle.
-    /// - Parameters:
     ///   - appBundle: the compiled `Foo.app`
     ///   - appInfo: Info.plist settings to apply
     ///   - outputDir: where to write the `.ipa` (defaults to the staging directory)
@@ -29,15 +27,15 @@ struct IPABuilder {
     @discardableResult
     static func buildIPA(appBundle: URL, appInfo: AppInfo, outputDir: URL) throws -> URL {
         let staging = outputDir
-        try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
 
         // 1. Build the Payload/<Name>.app from the compiled bundle.
         let appName = "\(appInfo.displayName).app"
         let payload = staging.appendingPathComponent("Payload", isDirectory: true)
         let destApp = payload.appendingPathComponent(appName, isDirectory: true)
-        try? fileManager.removeItem(at: payload)
-        try fileManager.createDirectory(at: payload, withIntermediateDirectories: true)
-        try fileManager.copyItem(at: appBundle, to: destApp)
+        try? FileManager.default.removeItem(at: payload)
+        try FileManager.default.createDirectory(at: payload, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: appBundle, to: destApp)
 
         // 2. Write the Info.plist from AppInfo.
         try writeInfoPlist(to: destApp, appInfo: appInfo)
@@ -47,9 +45,9 @@ struct IPABuilder {
 
         // 4. Zip Payload/ → <Name>.ipa
         let ipaURL = staging.appendingPathComponent("\(appName.replacingOccurrences(of: ".app", with: "")).ipa")
-        try? fileManager.removeItem(at: ipaURL)
+        try? FileManager.default.removeItem(at: ipaURL)
         do {
-            try fileManager.zipItem(at: payload, to: ipaURL, shouldKeepParent: true)
+            try FileManager.default.zipItem(at: payload, to: ipaURL, shouldKeepParent: true)
         } catch {
             throw BuilderError.archiveFailed(error.localizedDescription)
         }
