@@ -54,8 +54,6 @@ targets:
       - path: AppTests
     dependencies:
       - target: XForge
-      - package: xtool
-        product: XKit
       - package: zipfoundation
         product: ZIPFoundation
     settings:
