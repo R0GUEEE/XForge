@@ -41,6 +41,8 @@ jobs:
       - name: Package
         run: |
           set -e
+          # strip macOS AppleDouble metadata files copied alongside the SDK
+          find darwin-sdk-out -name '._*' -delete
           cd darwin-sdk-out
           tar -cf - darwin.artifactbundle | xz -9e > ../darwin.artifactbundle.tar.xz
           ls -lh ../darwin.artifactbundle.tar.xz
