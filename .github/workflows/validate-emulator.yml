@@ -26,6 +26,7 @@ jobs:
           # docker create + cp copies files out WITHOUT executing the arm64 image
           # (avoids binfmt/--platform runtime issues on the x86_64 runner).
           set -e
+          docker pull --platform linux/arm64 swift:6.1.2-noble
           docker create --platform linux/arm64 --name xfsw swift:6.1.2-noble
           docker cp xfsw:/usr/local/. rootfs/usr/local/
           docker rm xfsw >/dev/null
