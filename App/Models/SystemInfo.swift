@@ -2,6 +2,7 @@ import Foundation
 import UIKit
 
 /// Lightweight system/device diagnostics for the Settings screen.
+@MainActor
 enum SystemInfo {
     static var deviceModel: String { UIDevice.current.model }
     static var deviceName: String { UIDevice.current.name }

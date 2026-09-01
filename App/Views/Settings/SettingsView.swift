@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct SettingsView: View {
     @ObservedObject var preferences: AppPreferences
 
@@ -64,8 +65,23 @@ struct SettingsView: View {
     private func onDiskSize(_ subdir: String) -> String {
         let root = XForgeEnvironment.documentDirectory
         let url = root.appendingPathComponent(subdir)
-        let size = (try? FileManager.default.allocatedSizeOfDirectory(at: url)) ?? 0
+        let size = directorySize(at: url)
         return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+    }
+
+    /// Recursive on-disk size of a directory.
+    private func directorySize(at url: URL) -> Int64 {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+                  values.isRegularFile == true,
+                  let size = values.fileSize else { continue }
+            total += Int64(size)
+        }
+        return total
     }
 }
 
@@ -78,22 +94,5 @@ struct StorageRow: View {
             Spacer()
             Text(detail).foregroundStyle(.secondary)
         }
-    }
-}
-
-extension FileManager {
-    /// Recursive on-disk size of a directory.
-    func allocatedSizeOfDirectory(at url: URL) throws -> Int64 {
-        guard let enumerator = enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]) else {
-            return 0
-        }
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            let values = try fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            if values.isRegularFile == true, let size = values.fileSize {
-                total += Int64(size)
-            }
-        }
-        return total
     }
 }

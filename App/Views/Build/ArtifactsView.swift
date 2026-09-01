@@ -1,6 +1,7 @@
 import SwiftUI
 
 /// Built `.ipa` artifacts: export or delete from the staging area.
+@MainActor
 struct ArtifactsView: View {
     @State private var artifacts: [BuildArtifact] = []
     @State private var errorText: String?
