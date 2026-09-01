@@ -11,7 +11,10 @@
 
 set -euo pipefail
 
-OUT="$(cd "${1:-./alpine-rootfs}" && pwd)"
+OUT="${1:-./alpine-rootfs}"
+rm -rf "$OUT"
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
 ARCH="aarch64"
 ALPINE_VERSION="3.21"
 ALPINE_RELEASE="3.21.7"
@@ -22,8 +25,6 @@ XTOOL_VER="1.17.0"
 MIRROR="https://dl-cdn.alpinelinux.org/alpine"
 
 echo "==> Fetching Alpine $ALPINE_VERSION aarch64 minirootfs"
-rm -rf "$OUT"
-mkdir -p "$OUT"
 MINIROOT="alpine-minirootfs-$ALPINE_RELEASE-$ARCH.tar.gz"
 curl -fL "$MIRROR/v$ALPINE_VERSION/releases/$ARCH/$MINIROOT" -o /tmp/$MINIROOT
 tar -xzf /tmp/$MINIROOT -C "$OUT"
