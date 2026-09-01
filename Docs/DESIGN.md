@@ -83,9 +83,36 @@ protocol BuildExecutor {
     func fetchToolchain() async throws
 }
 ```
-- `EmbeddedLinuxExecutor`: drives the embedded VM via a process bridge (stdin/stdout
-  streaming), writes the produced `.ipa` back to the native side.
+- `EmbeddedLinuxExecutor`: drives the embedded VM via the `LinuxVM` bridge (below).
 - `RemoteExecutor` (future): same interface over SSH/WebSocket to a build server.
+
+## 4b. The `LinuxVM` bridge — in-process emulator (critical constraint)
+
+**iOS cannot spawn subprocesses** (no `fork`/`exec`/`posix_spawn` in the app sandbox),
+so the embedded Linux cannot run as a child process. It must run **in-process** as a
+library — the same way tctiSH embeds `libqemu` and iSH runs its emulator as the app's
+own code.
+
+The bridge is split into two clean layers:
+
+```
+BuildExecutor (EmbeddedLinuxExecutor)
+      │  drives
+      ▼
+LinuxVM  (EmbeddedLinuxVM)   ← command/file bridge, runs on MainActor
+      │  talks to guest shell over a byte pipe
+      ▼
+LinuxEmulator  (protocol)    ← in-process execution engine
+   ├─ EmbeddedQemuLinux     ← wraps libqemu (built by build-emulator.yml)
+   └─ PendingLinuxEmulator  ← clear "not bundled yet" error
+```
+
+- `EmbeddedLinuxVM` sends commands + a `printf '…__XF_EXIT__%d' $?` sentinel to parse
+  the guest exit code; `copyIn`/`copyOut` move files via base64 over the shell.
+- `LinuxEmulator` is the seam any real emulator must satisfy (boot, byte-pipe I/O).
+- The missing artifact is the emulator library itself, produced by
+  `build-emulator.yml` (QEMU user-mode aarch64, tctiSH-style) and downloaded like the
+  darwin SDK.
 
 ## 5. Delivery / sideload pipeline
 

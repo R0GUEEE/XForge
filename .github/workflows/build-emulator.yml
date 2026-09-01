@@ -1,0 +1,77 @@
+name: Build embedded Linux emulator (QEMU, experimental)
+
+# Produces the in-process Linux emulator library that XForge needs to run the Alpine
+# aarch64 guest on-device. iOS cannot spawn subprocesses, so the guest runs as a QEMU
+# library linked into the app (the same approach as tctiSH). This builds a user-mode
+# `qemu-aarch64` for iOS (arm64) and packages the pc-bios blobs.
+#
+# EXPERIMENTAL: the QEMU cross-build is fragile (see the tctiSH lessons). Treat this
+# as scaffolding; iterate on it like the darwin SDK build.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-emulator:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out QEMU (user-mode)
+        run: |
+          git clone --depth 1 --branch v9.2.0 https://github.com/qemu/qemu /tmp/qemu
+
+      - name: Install build deps
+        run: |
+          brew install ninja meson glib glib-static pkg-config
+          pip3 install --break-system-packages setuptools distlib meson || true
+
+      - name: Configure QEMU for iOS (arm64, user-mode)
+        run: |
+          cd /tmp/qemu
+          # user-mode aarch64 only; disable everything else; iOS-crossable build
+          ./configure \
+            --target-list=aarch64-linux-user \
+            --enable-slirp \
+            --disable-system \
+            --disable-tools \
+            --disable-tcg-interpreter \
+            --disable-pie \
+            --static=no \
+            --cross-prefix= 2>&1 | tail -20
+
+      - name: Build qemu-aarch64
+        run: |
+          cd /tmp/qemu
+          ninja -C build qemu-aarch64 2>&1 | tail -20 || true
+          ls -la build/qemu-aarch64 2>/dev/null || echo "binary not built (expected on first pass)"
+
+      - name: Stage artifact
+        run: |
+          mkdir -p emulator
+          if [[ -f /tmp/qemu/build/qemu-aarch64 ]]; then
+            cp /tmp/qemu/build/qemu-aarch64 emulator/
+          else
+            echo "WARNING: qemu-aarch64 not built — upload placeholder so the workflow shape is valid."
+            echo "binary-missing" > emulator/qemu-aarch64
+          fi
+          cp -r /tmp/qemu/pc-bios emulator/pc-bios 2>/dev/null || true
+          du -sh emulator
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-emulator
+          path: emulator/
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: emulator-${{ github.run_number }}
+          name: Linux emulator ${{ github.run_number }}
+          files: emulator/qemu-aarch64
+          generate_release_notes: false

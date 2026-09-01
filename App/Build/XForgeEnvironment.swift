@@ -41,7 +41,13 @@ enum XForgeEnvironment {
 
     /// Construct the build executor. `Local` uses the embedded Linux VM.
     static func makeExecutor(for project: Project? = nil) -> BuildExecutor {
-        let vm: LinuxVM = EmbeddedLinuxVM(root: embeddedRoot)
+        let vm: LinuxVM = EmbeddedLinuxVM(root: embeddedRoot, emulator: makeEmulator())
         return EmbeddedLinuxExecutor(vm: vm, stagingDir: stagingDirectory)
+    }
+
+    /// The in-process Linux emulator that runs the embedded Alpine guest.
+    /// iOS cannot spawn subprocesses, so the guest runs as a library in-process.
+    static func makeEmulator() -> LinuxEmulator {
+        EmbeddedQemuLinux(rootfs: embeddedRoot)
     }
 }
