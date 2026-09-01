@@ -46,14 +46,14 @@ jobs:
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
           mkdir -p dist/Payload
           ditto "$APP" dist/Payload/XForge.app
-          cd dist && zip -qry "XForge-0.1.0-unsigned.ipa" Payload
-          echo "artifact=$(pwd)/XForge-0.1.0-unsigned.ipa" >> "$GITHUB_ENV"
+          cd dist && zip -qry "XForge-0.2.0-unsigned.ipa" Payload
+          echo "artifact=$(pwd)/XForge-0.2.0-unsigned.ipa" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: XForge-unsigned-ipa
-          path: dist/XForge-0.1.0-unsigned.ipa
+          path: dist/XForge-0.2.0-unsigned.ipa
           if-no-files-found: error
 
       - name: Upload to release (manual trigger only)
@@ -61,6 +61,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: xforge-${{ github.run_number }}
-          name: XForge unsigned ${{ github.run_number }}
-          files: dist/XForge-0.1.0-unsigned.ipa
-          generate_release_notes: true
+          name: XForge 0.2.0 — feature release
+          files: dist/XForge-0.2.0-unsigned.ipa
+          body_path: CHANGELOG.md
+          generate_release_notes: false
