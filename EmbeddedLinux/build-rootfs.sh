@@ -73,9 +73,14 @@ curl -fL "https://github.com/xtool-org/xtool/releases/download/${XTOOL_VER}/xtoo
 chmod +x "$OUT/usr/local/bin/xtool"
 
 echo "==> Writing install-toolchain.sh (first-boot provisioning)"
-mkdir -p "$OUT/root"
-cp "$(dirname "$0")/install-toolchain.sh" "$OUT/root/install-toolchain.sh"
-chmod +x "$OUT/root/install-toolchain.sh"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd 2>/dev/null || echo EmbeddedLinux)"
+if [[ -f "$SCRIPT_DIR/install-toolchain.sh" ]]; then
+    mkdir -p "$OUT/root"
+    cp "$SCRIPT_DIR/install-toolchain.sh" "$OUT/root/install-toolchain.sh"
+    chmod +x "$OUT/root/install-toolchain.sh"
+else
+    echo "    (install-toolchain.sh not found; skipping)"
+fi
 
 echo "==> Done. Rootfs at $OUT"
 du -sh "$OUT"
