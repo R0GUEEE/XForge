@@ -1,28 +1,22 @@
 name: Build darwin Swift SDK
 
-# Produces the `darwin` Swift SDK bundle (arm64-apple-ios) that the embedded
-# Linux needs to cross-compile iOS apps. It is extracted from Xcode on a macOS
-# runner using xtool's own `sdk build` command, then published as a release asset
-# that the XForge app fetches on first use.
-#
-# NOTE: the resulting bundle is large (multi-GB). GitHub release assets support
-# files up to 2 GB each.
+# Produces a lean iPhoneOS-only `darwin` Swift SDK bundle (arm64-apple-ios) that the
+# embedded Linux needs to cross-compile iOS apps. Uses `darwin-sdk-builder.swift`
+# (replicates xtool's SDKBuilder but only for the iPhoneOS platform), so it is much
+# faster than `xtool sdk build` (which extracts simulator + macOS SDKs too).
+# The result is published as a release asset the app fetches on first use.
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-darwin-sdk:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
-
-      - name: Download xtool (macOS)
-        run: |
-          curl -fL "https://github.com/xtool-org/xtool/releases/download/1.17.0/xtool.app.zip" -o /tmp/xtool.zip
-          unzip -qo /tmp/xtool.zip -d /tmp
-          ls -la /tmp/xtool.app/Contents/MacOS/
-          echo "XTOOL_BIN=/tmp/xtool.app/Contents/MacOS/xtool" >> "$GITHUB_ENV"
 
       - name: Locate Xcode
         id: xcode
@@ -31,29 +25,31 @@ jobs:
           echo "Xcode at: $XCODE_APP"
           echo "path=$XCODE_APP" >> "$GITHUB_OUTPUT"
 
-      - name: Build darwin SDK from Xcode
+      - name: Build iPhoneOS-only darwin SDK
         run: |
           set -o pipefail
           rm -rf darwin-sdk-out
-          "$XTOOL_BIN" sdk build "${{ steps.xcode.outputs.path }}" darwin-sdk-out \
+          swift EmbeddedLinux/darwin-sdk-builder.swift \
+            "${{ steps.xcode.outputs.path }}" darwin-sdk-out aarch64 \
             2>&1 | tee /tmp/darwin-sdk.log
 
       - name: Show size
         run: |
-          du -sh darwin-sdk-out/darwin.xtoolsdk
+          du -sh darwin-sdk-out
+          find darwin-sdk-out -type d -maxdepth 4 | head -30
 
       - name: Package
         run: |
           set -e
           cd darwin-sdk-out
-          tar -cf - darwin.xtoolsdk | xz -9e > ../darwin.xtoolsdk.tar.xz
-          ls -lh ../darwin.xtoolsdk.tar.xz
+          tar -cf - darwin.artifactbundle | xz -9e > ../darwin.artifactbundle.tar.xz
+          ls -lh ../darwin.artifactbundle.tar.xz
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: darwin-xtoolsdk
-          path: darwin.xtoolsdk.tar.xz
+          path: darwin.artifactbundle.tar.xz
           if-no-files-found: error
 
       - name: Publish release
@@ -61,5 +57,5 @@ jobs:
         with:
           tag_name: darwin-sdk-${{ github.run_number }}
           name: darwin Swift SDK ${{ github.run_number }}
-          files: darwin.xtoolsdk.tar.xz
+          files: darwin.artifactbundle.tar.xz
           generate_release_notes: false
