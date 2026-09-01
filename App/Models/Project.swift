@@ -37,6 +37,8 @@ protocol BuildExecutor {
     func installSDK(from source: SDKSource) async throws
     /// Create a new project from a template.
     func createProject(named name: String, organizationIdentifier: String) async throws -> Project
+    /// Resolve package dependencies.
+    func resolve(_ project: Project) async throws -> AsyncThrowingStream<BuildEvent, Error>
     /// Build the package and produce a signed `.ipa`.
     func build(_ project: Project, configuration: BuildConfiguration) async throws -> AsyncThrowingStream<BuildEvent, Error>
 }

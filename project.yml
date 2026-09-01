@@ -10,6 +10,9 @@ packages:
   xtool:
     url: https://github.com/xtool-org/xtool
     from: 1.17.0
+  zipfoundation:
+    url: https://github.com/weichsel/ZIPFoundation
+    from: 0.9.19
 
 targets:
   XForge:
@@ -21,6 +24,8 @@ targets:
     dependencies:
       - package: xtool
         product: XKit
+      - package: zipfoundation
+        product: ZIPFoundation
       - sdk: WebKit.framework
       - sdk: SystemConfiguration.framework
     settings:
@@ -51,6 +56,8 @@ targets:
       - target: XForge
       - package: xtool
         product: XKit
+      - package: zipfoundation
+        product: ZIPFoundation
     settings:
       base:
         SWIFT_VERSION: "6.0"

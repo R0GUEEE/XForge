@@ -1,21 +1,15 @@
 import SwiftUI
 
-/// Full build pipeline for one project: toolchain checks, then build, then
-/// packaging — presented as step-by-step progress plus a live console.
+/// Full build pipeline for one project, driven by `BuildManager`. Shows the real
+/// pipeline stages (provision → sdk → configure → resolve → compile → package →
+/// artifact) with live state and a streaming console.
 struct BuildPipelineView: View {
     let project: Project
-    @StateObject private var model: ProjectBuildModel
-    @State private var steps: [BuildStep] = [
-        BuildStep(id: "toolchain", title: "Check toolchain"),
-        BuildStep(id: "sdk", title: "Install Darwin SDK"),
-        BuildStep(id: "build", title: "Compile (SwiftPM → arm64-apple-ios)"),
-        BuildStep(id: "package", title: "Package & sign .ipa"),
-        BuildStep(id: "done", title: "Done"),
-    ]
+    @StateObject private var manager: BuildManager
 
     init(project: Project) {
         self.project = project
-        _model = StateObject(wrappedValue: ProjectBuildModel(project: project))
+        _manager = StateObject(wrappedValue: BuildManager(project: project))
     }
 
     var body: some View {
@@ -27,7 +21,7 @@ struct BuildPipelineView: View {
             }
             .padding()
         }
-        .task { await model.bootstrap() }
+        .task { await manager.bootstrap() }
     }
 
     private var header: some View {
@@ -46,17 +40,20 @@ struct BuildPipelineView: View {
             HStack {
                 Text("Pipeline").font(.headline)
                 Spacer()
-                if model.isBuilding { ProgressView().controlSize(.small) }
+                if manager.snapshot.isRunning { ProgressView().controlSize(.small) }
+                if let stage = manager.snapshot.activeStage {
+                    Text(stage.title).font(.caption).foregroundStyle(.secondary)
+                }
             }
             .padding(.bottom, 6)
 
-            ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+            ForEach(BuildStage.allCases) { stage in
                 HStack(spacing: 10) {
-                    Image(systemName: step.state.symbol)
-                        .foregroundStyle(color(for: step.state))
+                    Image(systemName: symbol(for: stage))
+                        .foregroundStyle(color(for: stage))
                         .frame(width: 20)
-                    Text(step.title).font(.subheadline)
-                    if step.state == .running { ProgressView().controlSize(.mini) }
+                    Text(stage.title).font(.subheadline)
+                    if manager.snapshot[stage] == .running { ProgressView().controlSize(.mini) }
                     Spacer()
                 }
                 .padding(.vertical, 4)
@@ -72,27 +69,34 @@ struct BuildPipelineView: View {
             HStack {
                 Text("Console").font(.headline)
                 Spacer()
+                Picker("Configuration", selection: $manager.configuration) {
+                    ForEach(BuildConfiguration.allCases) { cfg in
+                        Text(cfg.rawValue).tag(cfg)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 200)
                 Button {
-                    Task { await model.build() }
+                    Task { await manager.run() }
                 } label: {
-                    Label(model.isBuilding ? "Building…" : "Build", systemImage: "hammer")
+                    Label(manager.snapshot.isRunning ? "Building…" : "Build", systemImage: "hammer")
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!model.ready || model.isBuilding)
+                .disabled(manager.snapshot.isRunning)
             }
 
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(model.consoleText.isEmpty ? "Ready.\n" : model.consoleText)
+                    Text(manager.snapshot.consoleText.isEmpty ? "Ready.\n" : manager.snapshot.consoleText)
                         .font(.system(.footnote, design: .monospaced))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .id("bottom")
                 }
-                .frame(maxHeight: 300)
+                .frame(maxHeight: 320)
                 .background(Color.black.opacity(0.06))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                .onChange(of: model.consoleText) { _ in
-                    withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                .onChange(of: manager.snapshot.consoleText) { _ in
+                    withAnimation(.none) { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
             }
         }
@@ -101,8 +105,17 @@ struct BuildPipelineView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
-    private func color(for state: BuildStepState) -> Color {
-        switch state {
+    private func symbol(for stage: BuildStage) -> String {
+        switch manager.snapshot[stage] {
+        case .pending: return "circle.dashed"
+        case .running: return "arrow.triangle.2.circlepath"
+        case .succeeded: return "checkmark.circle.fill"
+        case .failed: return "xmark.circle.fill"
+        }
+    }
+
+    private func color(for stage: BuildStage) -> Color {
+        switch manager.snapshot[stage] {
         case .pending: return .secondary
         case .running: return .blue
         case .succeeded: return .green

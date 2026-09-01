@@ -64,6 +64,27 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
         return Project(name: name, organizationIdentifier: organizationIdentifier, rootPath: path)
     }
 
+    func resolve(_ project: Project) -> AsyncThrowingStream<BuildEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    if !vm.isBooted { try await vm.boot() }
+                    continuation.yield(.plan("Resolving dependencies for \(project.name)…"))
+                    _ = try await vm.run(
+                        "cd '\(project.rootPath)' && swift package resolve",
+                        environment: nil
+                    ) { line in
+                        continuation.yield(.output(line))
+                    }
+                    continuation.yield(.finished)
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     func build(_ project: Project, configuration: BuildConfiguration) -> AsyncThrowingStream<BuildEvent, Error> {
         AsyncThrowingStream { continuation in
             Task {
