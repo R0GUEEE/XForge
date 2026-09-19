@@ -77,12 +77,15 @@ final class ToolchainManager: ObservableObject {
             activity = vm.isBooted ? "Checking the embedded Linux…" : "Starting the embedded Linux…"
             defer { activity = nil }
             do {
+                XForgeLog.prepare()
+                XForgeLog.note("refresh: probing the guest")
                 try await vm.boot()
                 for component in [Component.swift, .xtool, .sdk] {
                     if await guestHas(component) { found.insert(component) }
                 }
                 guestChecked = true
             } catch {
+                XForgeLog.note("refresh: guest probe failed: \(error.localizedDescription)")
                 message = "Could not check the embedded Linux: \(error.localizedDescription)"
                 // Keep whatever we already knew rather than reporting everything missing.
                 found.formUnion(guestKnown)
@@ -124,25 +127,36 @@ final class ToolchainManager: ObservableObject {
     func install(_ component: Component) async {
         isInstalling = component
         defer { isInstalling = nil }
+        XForgeLog.prepare()
+        XForgeLog.note("install: \(component.rawValue) requested")
         do {
             switch component {
             case .rootfs:
                 activity = "Installing the bundled Alpine rootfs…"
-                _ = try RootfsInstaller.installIfNeeded(into: XForgeEnvironment.rootsDirectory)
+                // Booting *is* the install: the import of the bundled archive
+                // happens on the emulator's own thread, inside the bridge. It
+                // used to be called from here, on the main actor, which meant
+                // the UI froze for the whole import (tens of thousands of files
+                // written into fakefs) and the engine's global init ran on a
+                // different thread from the guest it belongs to.
+                try await vm.boot()
                 message = "Alpine rootfs installed from the copy bundled in the app."
 
             case .swift, .xtool:
                 activity = "Provisioning \(component.rawValue) inside the embedded Linux…"
+                XForgeLog.note("install: guest-side provisioning for \(component.rawValue)")
                 try await provisionGuest()
 
             case .sdk:
                 activity = "Downloading the Darwin SDK…"
+                XForgeLog.note("install: darwin SDK")
                 try await installSDK()
             }
             activity = nil
             await refresh(probeGuest: true)
         } catch {
             activity = nil
+            XForgeLog.note("install: \(component.rawValue) FAILED: \(error.localizedDescription)")
             message = error.localizedDescription
         }
     }
@@ -199,6 +213,7 @@ enum ToolchainError: LocalizedError {
     case provisioningFailed(Int32)
     case sdkLayoutUnexpected
     case sdkInstallFailed(Int32)
+    case notEnoughSpace(needed: Int64, free: Int64)
 
     var errorDescription: String? {
         switch self {
@@ -212,6 +227,11 @@ enum ToolchainError: LocalizedError {
             return "The downloaded Darwin SDK archive did not contain darwin.artifactbundle/info.json."
         case .sdkInstallFailed(let status):
             return "`swift sdk install` failed inside the guest (exit \(status))."
+        case .notEnoughSpace(let needed, let free):
+            let formatter = ByteCountFormatter()
+            return "Not enough free space: unpacking the Darwin SDK needs about "
+                + "\(formatter.string(fromByteCount: needed)) and "
+                + "\(formatter.string(fromByteCount: free)) is free."
         }
     }
 }

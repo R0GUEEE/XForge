@@ -30,9 +30,17 @@ final class ISHAOKEmulator: LinuxEmulator {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             guestQueue.async {
                 do {
+                    // Capture the engine's own log before it can write anything:
+                    // its kernel messages (including the one `die()` prints on
+                    // its way to `abort()`) go to fd 555 and are otherwise
+                    // discarded by an iOS app.
+                    XForgeLog.prepare()
+                    XForgeLog.note("emulator: boot requested (rootfs \(roots.lastPathComponent))")
+
                     // Import the bundled Alpine rootfs into fakefs the first
                     // time; subsequent launches reuse it.
                     let root = try RootfsInstaller.installIfNeeded(into: roots)
+                    XForgeLog.note("emulator: rootfs ready at \(root.lastPathComponent)")
                     let rc = root.path.withCString { rootPath in
                         host.path.withCString { hostPath in
                             xf_ish_boot(rootPath, hostPath)
@@ -41,8 +49,10 @@ final class ISHAOKEmulator: LinuxEmulator {
                     guard rc == 0 else {
                         throw LinuxVMError.notImplemented(ishLastError(fallback: "Could not boot the guest (errno \(rc))."))
                     }
+                    XForgeLog.note("emulator: boot complete")
                     continuation.resume()
                 } catch {
+                    XForgeLog.note("emulator: boot failed: \(error.localizedDescription)")
                     continuation.resume(throwing: error)
                 }
             }

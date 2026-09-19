@@ -60,6 +60,16 @@ struct ToolchainView: View {
                 }
                 .disabled(toolchain.isInstalling != nil)
             }
+
+            Section(footer: Text("If something dies without an explanation, share the log: "
+                                 + "the engine's own messages and XForge's install "
+                                 + "breadcrumbs are both in it.")) {
+                NavigationLink {
+                    EngineLogView()
+                } label: {
+                    Label("Engine log", systemImage: "doc.text.magnifyingglass")
+                }
+            }
         }
         .navigationTitle("Toolchain")
         .task { await toolchain.refresh() }

@@ -141,6 +141,15 @@ struct SettingsView: View {
             LabeledContent("CPU", value: "\(SystemInfo.processorCount) cores")
             LabeledContent("Storage free", value: SystemInfo.storage.free + " of " + SystemInfo.storage.total)
             LabeledContent("Low Power Mode", value: SystemInfo.isLowPowerMode ? "On" : "Off")
+            NavigationLink {
+                EngineLogView()
+            } label: {
+                Label("Engine log", systemImage: "doc.text.magnifyingglass")
+            }
+        } footer: {
+            Text("The engine log holds the embedded Linux's own messages and "
+                 + "XForge's install breadcrumbs — share it when something dies "
+                 + "without an explanation.")
         }
     }
 

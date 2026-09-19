@@ -37,9 +37,18 @@ enum XForgeEnvironment {
         documentDirectory.appendingPathComponent("downloads", isDirectory: true)
     }
 
+    /// Diagnostics (`XForgeLog` writes the engine log here).
+    static var logsDirectory: URL { XForgeLog.directory }
+
     /// Where build artifacts are staged before export.
     static var stagingDirectory: URL {
         documentDirectory.appendingPathComponent("staging", isDirectory: true)
+    }
+
+    /// Free space in the app's container, in bytes (0 when it cannot be read).
+    static var availableBytes: Int64 {
+        let values = try? documentDirectory.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return Int64(values?.volumeAvailableCapacityForImportantUsage ?? 0)
     }
 
     /// List built `.ipa` artifacts currently staged for export/install.

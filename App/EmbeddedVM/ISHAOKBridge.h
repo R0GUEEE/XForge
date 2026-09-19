@@ -33,6 +33,23 @@ typedef struct xf_guest_result {
     size_t output_len;
 } xf_guest_result;
 
+/// Point the engine's own log at `path` (append mode) and remember it for
+/// `xf_ish_log`. Pass NULL to stop logging.
+///
+/// This is not a nicety. The engine's `printk` — which is where every kernel
+/// message goes, including the one `die()` prints immediately before it calls
+/// `abort()` — is written to file descriptor **555** (kernel/log.c's dprintf
+/// handler; the iSH-AOK app builds the engine with `log_handler=nslog` instead,
+/// XForge's core build does not). Nothing else opens that descriptor, so
+/// without this call a `die()` kills the app with no trace of why, anywhere.
+///
+/// Returns 0 on success or a negative errno.
+int xf_ish_set_log_file(const char *path);
+
+/// Append one timestamped line to the log set by `xf_ish_set_log_file`.
+/// No-op (returning -ENODEV) when no log file is set.
+int xf_ish_log(const char *text);
+
 /// Import a rootfs archive (`.tar.xz`, `.tar.gz`, ...) into a brand-new fakefs
 /// root directory (`data/` + `meta.db`). `dest_dir` must not exist yet.
 /// Returns 0 on success or a negative errno. See `xf_ish_last_error`.
