@@ -50,8 +50,13 @@ enum XForgeReleases {
         request.setValue("XForge", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw DownloadError.http(response)
+        guard let http = response as? HTTPURLResponse else {
+            throw DownloadError.invalidResponse(request.url!)
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            // Unauthenticated api.github.com is rate-limited, so a 403 here is a
+            // real possibility the user should be able to see.
+            throw DownloadError.http(status: http.statusCode, url: request.url!)
         }
         let releases = try JSONDecoder().decode([Release].self, from: data)
         guard let url = findAsset(in: releases, tagPrefix: tagPrefix, assetName: assetName) else {
