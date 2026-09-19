@@ -1,19 +1,20 @@
 import SwiftUI
 
-/// A full-screen terminal into the embedded Linux. Until the VM bridge is
-/// implemented, it echoes commands and shows the backend status; the input
-/// line is wired to `runInGuest` (forwarded to the VM) as soon as the bridge lands.
+/// A real shell into the embedded Alpine aarch64 Linux.
+///
+/// Commands run in the iSH-AOK guest over the VM bridge and their merged
+/// stdout/stderr is shown here.
+@MainActor
 struct TerminalView: View {
     @State private var output = ""
     @State private var input = ""
+    @State private var running = false
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
-                    Text(output.isEmpty
-                        ? "xforge@alpine:~$  (embedded Linux not connected yet)\n"
-                        : output)
+                    Text(output.isEmpty ? Self.banner : output)
                         .font(.system(.footnote, design: .monospaced))
                         .foregroundStyle(.green)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -39,8 +40,13 @@ struct TerminalView: View {
                     .font(.system(.body, design: .monospaced))
                     .submitLabel(.go)
                     .onSubmit { run() }
-                Button { run() } label: {
-                    Label("Run", systemImage: "return")
+                    .disabled(running)
+                if running {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button { run() } label: {
+                        Label("Run", systemImage: "return")
+                    }
                 }
             }
             .padding(8)
@@ -48,14 +54,68 @@ struct TerminalView: View {
         }
         .navigationTitle("Terminal")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { output = "" } label: {
+                    Label("Clear", systemImage: "eraser")
+                }
+                .disabled(output.isEmpty)
+            }
+        }
     }
 
+    private static let banner = """
+    XForge terminal — commands run in the embedded Alpine aarch64 Linux.
+    The first command boots the guest (it imports the bundled rootfs).
+
+    Try: uname -a · cat /etc/alpine-release · swift --version
+
+    """
+
     private func run() {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let command = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty, !running else { return }
         input = ""
-        output += "xforge@alpine:~$ \(trimmed)\n"
-        output += "The embedded Linux terminal is not connected yet.\n"
-        output += "It will be available once the Alpine aarch64 VM bridge is wired.\n"
+        running = true
+        output += "xforge@alpine:~$ \(command)\n"
+
+        Task {
+            let buffer = OutputBuffer()
+            do {
+                let vm = XForgeEnvironment.makeVM()
+                if !vm.isBooted {
+                    output += "[booting the embedded Linux — the first boot imports the rootfs…]\n"
+                }
+                let status = try await vm.run(command, environment: nil) { chunk in
+                    buffer.append(chunk)
+                }
+                let text = buffer.value
+                if !text.isEmpty {
+                    output += text.hasSuffix("\n") ? text : text + "\n"
+                }
+                output += "[exit \(status)]\n"
+            } catch {
+                output += "[error] \(error.localizedDescription)\n"
+            }
+            running = false
+        }
+    }
+}
+
+/// Thread-safe accumulator for output delivered from the VM's `@Sendable` callback.
+private final class OutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+
+    func append(_ chunk: String) {
+        lock.lock()
+        text += chunk
+        lock.unlock()
+    }
+
+    var value: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return text
     }
 }

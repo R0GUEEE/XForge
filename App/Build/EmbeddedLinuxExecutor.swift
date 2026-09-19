@@ -44,13 +44,12 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
     func installSDK(from source: SDKSource) async throws {
         switch source {
         case .bundled(let path):
+            // Already inside the guest filesystem.
             _ = try await vm.run("swift sdk install '\(path)'", environment: nil) { _ in }
-        case .hostedRemote(let url):
-            // Download into the guest via the VM's network, then install.
-            _ = try await vm.run(
-                "curl -fL '\(url.absoluteString)' -o /tmp/darwin.artifactbundle.zip && unzip -qo /tmp/darwin.artifactbundle.zip -d /tmp/darwin-sdk && swift sdk install /tmp/darwin-sdk/darwin.artifactbundle",
-                environment: nil
-            ) { _ in }
+        case .hostedRemote:
+            // Resolve the published asset, stage it on the host and install it in
+            // the guest (see SDKInstaller).
+            try await SDKInstaller.install(vm: vm)
         }
     }
 

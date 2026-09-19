@@ -39,8 +39,12 @@ typedef struct xf_guest_result {
 int xf_ish_import_rootfs(const char *archive_path, const char *dest_dir);
 
 /// Boot the guest from an already-imported fakefs root directory.
-/// Idempotent. Returns 0 on success or a negative errno.
-int xf_ish_boot(const char *root_dir);
+///
+/// `host_dir` (may be NULL) is mounted read-write into the guest at `/host` with
+/// realfs, so the app's own container is reachable from inside Linux. That is how
+/// the darwin Swift SDK and other large artifacts get in without pushing gigabytes
+/// through the shell pipe. Returns 0 on success or a negative errno.
+int xf_ish_boot(const char *root_dir, const char *host_dir);
 
 /// 1 once the guest is booted and commands can be run.
 int xf_ish_is_booted(void);

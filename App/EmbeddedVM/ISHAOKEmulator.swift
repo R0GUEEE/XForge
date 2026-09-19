@@ -15,22 +15,29 @@ final class ISHAOKEmulator: LinuxEmulator {
     private(set) var isRunning = false
 
     private let rootsDirectory: URL
+    private let hostDirectory: URL
     private let guestQueue = DispatchQueue(label: "org.xforge.ish.guest", qos: .userInitiated)
 
-    init(rootsDirectory: URL) {
+    init(rootsDirectory: URL, hostDirectory: URL) {
         self.rootsDirectory = rootsDirectory
+        self.hostDirectory = hostDirectory
     }
 
     func boot() async throws {
         guard !isRunning else { return }
         let roots = rootsDirectory
+        let host = hostDirectory
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             guestQueue.async {
                 do {
                     // Import the bundled Alpine rootfs into fakefs the first
                     // time; subsequent launches reuse it.
                     let root = try RootfsInstaller.installIfNeeded(into: roots)
-                    let rc = root.path.withCString { xf_ish_boot($0) }
+                    let rc = root.path.withCString { rootPath in
+                        host.path.withCString { hostPath in
+                            xf_ish_boot(rootPath, hostPath)
+                        }
+                    }
                     guard rc == 0 else {
                         throw LinuxVMError.notImplemented(ishLastError(fallback: "Could not boot the guest (errno \(rc))."))
                     }

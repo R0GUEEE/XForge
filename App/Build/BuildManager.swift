@@ -73,8 +73,11 @@ final class BuildManager: ObservableObject {
         let executor = makeExecutor()
         markRunning(.sdk)
         do {
-            let source = SDKSource.hostedRemote(sdkReleaseURL)
-            try await executor.installSDK(from: source)
+            // Resolve the published asset first: the darwin SDK lives under its own
+            // `darwin-sdk-*` release series, so `releases/latest/download/…` 404s.
+            let url = try await XForgeReleases.darwinSDKURL()
+            appendConsole("▸ darwin SDK: \(url.lastPathComponent)")
+            try await executor.installSDK(from: .hostedRemote(url))
             markSucceeded(.sdk)
         } catch { markFailed(.sdk, error) }
     }
@@ -166,11 +169,6 @@ final class BuildManager: ObservableObject {
         let created = XForgeEnvironment.makeExecutor(for: project)
         executor = created
         return created
-    }
-
-    /// URL of the CI-hosted darwin SDK release asset (fetched on first use).
-    private var sdkReleaseURL: URL {
-        URL(string: "https://github.com/R0GUEEE/XForge/releases/latest/download/darwin.artifactbundle.tar.xz")!
     }
 
     // MARK: - Snapshot helpers

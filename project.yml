@@ -45,6 +45,9 @@ targets:
       - path: Support/Resources
         buildPhase: resources
         optional: true
+      # In-guest provisioning script, run by ToolchainManager.
+      - path: EmbeddedLinux/install-toolchain.sh
+        buildPhase: resources
     dependencies:
       - package: xtool
         product: XKit

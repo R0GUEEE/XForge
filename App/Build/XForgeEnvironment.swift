@@ -25,6 +25,18 @@ enum XForgeEnvironment {
         RootfsInstaller.isInstalled(in: rootsDirectory)
     }
 
+    /// Directory shared into the guest at `/host` (read-write, realfs). Large
+    /// artifacts are staged here by the host instead of being pushed through the
+    /// guest command pipe.
+    static var hostShareDirectory: URL {
+        embeddedRoot.appendingPathComponent("host", isDirectory: true)
+    }
+
+    /// Host-side downloads (SDK archives, toolchain bundles).
+    static var downloadsDirectory: URL {
+        documentDirectory.appendingPathComponent("downloads", isDirectory: true)
+    }
+
     /// Where build artifacts are staged before export.
     static var stagingDirectory: URL {
         documentDirectory.appendingPathComponent("staging", isDirectory: true)
@@ -50,16 +62,31 @@ enum XForgeEnvironment {
             .sorted { $0.date > $1.date }
     }
 
+    /// The single embedded Linux VM for the whole app.
+    ///
+    /// iSH-AOK can only boot one guest per process, so every screen (Terminal,
+    /// Toolchain, Build) must share this instance rather than creating its own.
+    private static var sharedVM: LinuxVM?
+
+    static func makeVM() -> LinuxVM {
+        if let sharedVM { return sharedVM }
+        for dir in [embeddedRoot, rootsDirectory, hostShareDirectory, downloadsDirectory] {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        let vm = EmbeddedLinuxVM(root: embeddedRoot, emulator: makeEmulator())
+        sharedVM = vm
+        return vm
+    }
+
     /// Construct the build executor. `Local` uses the embedded Linux VM.
     static func makeExecutor(for project: Project? = nil) -> BuildExecutor {
-        let vm: LinuxVM = EmbeddedLinuxVM(root: embeddedRoot, emulator: makeEmulator())
-        return EmbeddedLinuxExecutor(vm: vm, stagingDir: stagingDirectory)
+        EmbeddedLinuxExecutor(vm: makeVM(), stagingDir: stagingDirectory)
     }
 
     /// The in-process Linux emulator that runs the embedded Alpine guest.
     /// iSH-AOK runs a real aarch64 Linux guest in-process; its "gadget JIT"
     /// needs no JIT entitlement, so it works in a sideloaded app.
     static func makeEmulator() -> LinuxEmulator {
-        ISHAOKEmulator(rootsDirectory: rootsDirectory)
+        ISHAOKEmulator(rootsDirectory: rootsDirectory, hostDirectory: hostShareDirectory)
     }
 }

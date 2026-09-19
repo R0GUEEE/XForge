@@ -22,7 +22,8 @@ struct SettingsView: View {
             } header: {
                 Text("Files & Downloads")
             } footer: {
-                Text("Downloads land here and forward to the embedded Linux shell at /root/downloads.")
+                Text("Downloads land in the app's Documents/downloads folder, which the "
+                     + "embedded Linux sees at /host/downloads.")
             }
 
             preferencesSection
@@ -30,7 +31,7 @@ struct SettingsView: View {
             diagnosticsSection
             aboutSection
         }
-        .task { toolchain.refresh() }
+        .task { await toolchain.refresh() }
     }
 
     private var preferencesSection: some View {
@@ -64,22 +65,43 @@ struct SettingsView: View {
         } header: {
             Text("Storage & Toolchain")
         } footer: {
-            Text("Install any missing piece here. The Darwin SDK downloads on-device; the embedded Linux and Swift install once the VM is connected.")
+            Text("The Alpine rootfs is bundled and installs offline. The Swift toolchain, "
+                 + "xtool and the darwin SDK are provisioned inside the embedded Linux — "
+                 + "tap Install on the Toolchain screen to see progress.")
         }
     }
 
     private func storageDetail(for component: ToolchainManager.Component) -> String {
-        let subpath: String
-        switch component {
-        case .linux: subpath = "embedded-linux"
-        case .swift: subpath = "embedded-linux/opt/usr"
-        case .xtool: subpath = "embedded-linux/usr/local/bin"
-        case .sdk: subpath = "embedded-linux/opt/darwin.artifactbundle"
+        let size = ByteCountFormatter.string(fromByteCount: storageBytes(for: component), countStyle: .file)
+        switch (component, toolchain.isInstalled(component)) {
+        case (.rootfs, true):
+            return "Installed · \(size)"
+        case (.rootfs, false):
+            return "Bundled in the app · installs offline"
+        case (.sdk, true):
+            return "Installed in the guest · \(size) staged"
+        case (.sdk, false):
+            return "Downloads on demand (214 MB)"
+        case (_, true):
+            return "Installed in the embedded Linux"
+        case (_, false):
+            return component.livesInGuest && !toolchain.guestChecked
+                ? "Not checked — tap Check on the Toolchain screen"
+                : "Not installed"
         }
-        let size = directorySize(at: XForgeEnvironment.documentDirectory.appendingPathComponent(subpath))
-        return toolchain.isInstalled(component)
-            ? "Installed · \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))"
-            : "Not installed"
+    }
+
+    /// On-disk size of wherever this component's bytes actually live.
+    private func storageBytes(for component: ToolchainManager.Component) -> Int64 {
+        switch component {
+        case .rootfs:
+            return directorySize(at: XForgeEnvironment.rootsDirectory)
+        case .sdk:
+            return directorySize(at: XForgeEnvironment.hostShareDirectory
+                .appendingPathComponent("darwin.artifactbundle"))
+        case .swift, .xtool:
+            return directorySize(at: XForgeEnvironment.embeddedRoot)
+        }
     }
 
     private var diagnosticsSection: some View {

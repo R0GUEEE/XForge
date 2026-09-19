@@ -1,23 +1,54 @@
 import SwiftUI
 
-/// Download hub: fetch the build artifacts (darwin SDK, embedded Linux rootfs, xtool),
-/// watch progress, reveal the file in the sandbox, and stage it where the shell can use it.
+/// Download hub for the build artifacts that are *not* bundled with the app.
+///
+/// The Alpine rootfs ships inside the app, so it never appears here as a download.
+/// The darwin Swift SDK is published under its own release series (`darwin-sdk-*`),
+/// so its URL is resolved through the GitHub API rather than
+/// `releases/latest/download/…` (which 404s — that was the old bug).
+@MainActor
 struct DownloadsView: View {
     @StateObject private var manager = DownloadManager()
+    @State private var rootfsInstalled = false
+    @State private var resolving = false
+    @State private var error: String?
 
     var body: some View {
         List {
-            if manager.items.isEmpty {
-                ContentUnavailableViewCompat(
-                    title: "No Downloads",
-                    systemImage: "arrow.down.circle",
-                    message: "Add the build artifacts below and they'll download here with progress."
-                )
+            bundledSection
+
+            Section {
+                Button { addSDK() } label: {
+                    Label("Darwin Swift SDK", systemImage: "externaldrive")
+                }
+                .disabled(resolving)
+                Button { addXtool() } label: {
+                    Label("xtool binary", systemImage: "hammer")
+                }
+            } header: {
+                Text("Build Artifacts")
+            } footer: {
+                Text("Downloaded into the app's Documents/downloads folder, which the "
+                     + "embedded Linux sees at /host/downloads.")
             }
-            ForEach(manager.items) { item in
-                row(item)
+
+            if !manager.items.isEmpty {
+                Section("Downloads") {
+                    ForEach(manager.items) { item in
+                        row(item)
+                    }
+                }
             }
-            quickAddSection
+
+            if resolving {
+                Section { HStack { ProgressView().controlSize(.small); Text("Resolving the latest release…").font(.footnote) } }
+            }
+            if let error {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote).foregroundStyle(.red)
+                }
+            }
         }
         .navigationTitle("Downloads")
         .toolbar {
@@ -28,6 +59,25 @@ struct DownloadsView: View {
                     Label("Folder", systemImage: "folder")
                 }
             }
+        }
+        .task { rootfsInstalled = RootfsInstaller.isInstalled(in: XForgeEnvironment.rootsDirectory) }
+    }
+
+    private var bundledSection: some View {
+        Section {
+            HStack {
+                Image(systemName: "shippingbox")
+                    .foregroundStyle(rootfsInstalled ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Alpine aarch64 rootfs").font(.headline)
+                    Text(rootfsInstalled
+                         ? "Installed — imported from the copy bundled in the app"
+                         : "Bundled in the app · installed on first boot, no download")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        } header: {
+            Text("Bundled")
         }
     }
 
@@ -46,15 +96,12 @@ struct DownloadsView: View {
                 case .downloading:
                     ProgressView().controlSize(.small)
                 case .done:
+                    Label("Done", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green).font(.caption)
                     if let dest = item.destination {
-                        Label("Done", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.caption)
                         NavigationLink { SandboxBrowserView(root: dest.deletingLastPathComponent()) } label: {
-                            Label("Reveal in Files", systemImage: "folder")
+                            Label("Reveal", systemImage: "folder")
                         }
-                        Button("Stage to shell") {
-                            Task { _ = try? manager.stageToGuest(item) }
-                        }
-                        .buttonStyle(.bordered)
                     }
                 case .failed:
                     Button { Task { await manager.retry(item.id) } } label: {
@@ -64,40 +111,33 @@ struct DownloadsView: View {
                 }
             }
             if let error = item.error {
-                Label(error, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.red)
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.red)
             }
         }
         .padding(.vertical, 2)
     }
 
-    private var quickAddSection: some View {
-        Section("Build Artifacts") {
-            Button { addSDK() } label: { Label("Darwin Swift SDK (214 MB)", systemImage: "externaldrive") }
-            Button { addLinux() } label: { Label("Embedded Linux rootfs", systemImage: "apple.terminal") }
-            Button { addXtool() } label: { Label("xtool binary", systemImage: "hammer") }
+    // MARK: - Actions
+
+    private func addSDK() {
+        resolving = true
+        error = nil
+        Task {
+            defer { resolving = false }
+            do {
+                let url = try await XForgeReleases.darwinSDKURL()
+                let id = manager.enqueue(name: XForgeReleases.darwinSDKAssetName, url: url)
+                await manager.start(id)
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
 
-    private func addSDK() {
-        let id = manager.enqueue(
-            name: "darwin.artifactbundle.zip",
-            url: URL(string: "https://github.com/R0GUEEE/XForge/releases/latest/download/darwin.artifactbundle.zip")!
-        )
-        Task { await manager.start(id) }
-    }
-    private func addLinux() {
-        // The rootfs is assembled in CI; this mirrors its published location when available.
-        let id = manager.enqueue(
-            name: "alpine-rootfs.tar.xz",
-            url: URL(string: "https://github.com/R0GUEEE/XForge/releases/latest/download/alpine-rootfs.tar.xz")!
-        )
-        Task { await manager.start(id) }
-    }
     private func addXtool() {
-        let id = manager.enqueue(
-            name: "xtool-aarch64.AppImage",
-            url: URL(string: "https://github.com/xtool-org/xtool/releases/download/1.17.0/xtool-aarch64.AppImage")!
-        )
+        guard let url = URL(string: ToolchainManager.xtoolDownloadURL) else { return }
+        let id = manager.enqueue(name: "xtool-aarch64.AppImage", url: url)
         Task { await manager.start(id) }
     }
 

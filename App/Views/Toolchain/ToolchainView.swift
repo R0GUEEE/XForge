@@ -1,8 +1,10 @@
 import SwiftUI
 
-/// Manage the on-device build infrastructure. Each component shows its status and an
-/// install action when missing. The Darwin SDK installs on-device; the embedded Linux
-/// and Swift install once the VM bridge is connected.
+/// Manage the on-device build infrastructure.
+///
+/// The Alpine rootfs is bundled in the app (installing it is a local import, no
+/// network); the Swift toolchain, xtool and the darwin SDK live inside the guest
+/// Linux and are provisioned over the VM bridge.
 struct ToolchainView: View {
     @StateObject private var toolchain = ToolchainManager()
 
@@ -18,38 +20,27 @@ struct ToolchainView: View {
             } header: {
                 Text("Interactive Shell")
             } footer: {
-                Text("A shell into the embedded Alpine aarch64 Linux. Appears once the VM bridge is connected.")
+                Text("A real shell into the embedded Alpine aarch64 Linux.")
             }
 
-            Section("Components") {
+            Section {
                 ForEach(ToolchainManager.Component.allCases) { component in
-                    HStack {
-                        Image(systemName: component.icon)
-                            .foregroundStyle(toolchain.isInstalled(component) ? .green : .secondary)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(component.rawValue).font(.headline)
-                            Text(detail(for: component))
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if !toolchain.isInstalled(component) {
-                            Button {
-                                Task { await toolchain.install(component) }
-                            } label: {
-                                if toolchain.isInstalling == component {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Label("Install", systemImage: "arrow.down.circle")
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(toolchain.isInstalling != nil)
-                        } else {
-                            Label("Installed", systemImage: "checkmark")
-                                .font(.caption).foregroundStyle(.green)
-                        }
-                    }
+                    row(component)
                 }
+            } header: {
+                Text("Components")
+            } footer: {
+                Text("Green = present. Guest components (Swift, xtool, the SDK) are "
+                     + "verified inside the embedded Linux — tap Check to probe it.")
+            }
+
+            Section {
+                Button {
+                    Task { await toolchain.refresh(probeGuest: true) }
+                } label: {
+                    Label("Check the embedded Linux", systemImage: "arrow.clockwise")
+                }
+                .disabled(toolchain.isInstalling != nil || toolchain.activity != nil)
             }
 
             if let message = toolchain.message {
@@ -59,24 +50,52 @@ struct ToolchainView: View {
                 }
             }
 
-            Section(footer: Text("The embedded Linux, Swift toolchain and Darwin SDK are fetched on first use. This can take several minutes and requires several gigabytes of storage.")) {
+            Section(footer: Text("Reset removes the imported rootfs, the staged darwin SDK "
+                                 + "and any downloads. The app re-imports the bundled rootfs "
+                                 + "on the next boot.")) {
                 Button(role: .destructive) {
-                    toolchain.message = "Reset removes the downloaded toolchain. (Not yet implemented.)"
+                    Task { await toolchain.reset() }
                 } label: {
                     Label("Reset Toolchain", systemImage: "trash")
                 }
+                .disabled(toolchain.isInstalling != nil)
             }
         }
         .navigationTitle("Toolchain")
-        .task { toolchain.refresh() }
+        .task { await toolchain.refresh() }
     }
 
-    private func detail(for component: ToolchainManager.Component) -> String {
-        switch component {
-        case .linux: return "Alpine aarch64 userspace"
-        case .swift: return "Swift Linux toolchain (via gcompat)"
-        case .xtool: return "xtool aarch64 binary"
-        case .sdk: return "arm64-apple-ios · fetched on demand"
+    private func row(_ component: ToolchainManager.Component) -> some View {
+        HStack(alignment: .top) {
+            Image(systemName: component.icon)
+                .foregroundStyle(toolchain.isInstalled(component) ? .green : .secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(component.rawValue).font(.headline)
+                Text(component.blurb).font(.caption).foregroundStyle(.secondary)
+                if toolchain.isInstalled(component) {
+                    Label("Installed", systemImage: "checkmark")
+                        .font(.caption).foregroundStyle(.green)
+                } else if component.livesInGuest && !toolchain.guestChecked {
+                    Text("Not checked").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Text("Not installed").font(.caption).foregroundStyle(.orange)
+                }
+            }
+            Spacer()
+            if !toolchain.isInstalled(component) {
+                Button {
+                    Task { await toolchain.install(component) }
+                } label: {
+                    if toolchain.isInstalling == component {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Install", systemImage: "arrow.down.circle")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .disabled(toolchain.isInstalling != nil)
+            }
         }
     }
 }

@@ -41,7 +41,10 @@ int xf_ish_import_rootfs(const char *archive_path, const char *dest_dir) {
     return xf_sim_unsupported();
 }
 
-int xf_ish_boot(const char *root_dir) { (void) root_dir; return xf_sim_unsupported(); }
+int xf_ish_boot(const char *root_dir, const char *host_dir) {
+    (void) root_dir; (void) host_dir;
+    return xf_sim_unsupported();
+}
 int xf_ish_is_booted(void) { return 0; }
 
 int xf_ish_run(const char *command, const char *shell, int timeout_ms,
@@ -194,7 +197,7 @@ int xf_ish_is_booted(void) {
     return s_booted ? 1 : 0;
 }
 
-int xf_ish_boot(const char *root_dir) {
+int xf_ish_boot(const char *root_dir, const char *host_dir) {
     if (root_dir == NULL) return -EINVAL;
     if (s_booted) return 0;
 
@@ -232,6 +235,19 @@ int xf_ish_boot(const char *root_dir) {
     do_mount(&procfs, "proc", "/proc", "", 0);
     do_mount(&sysfs, "sysfs", "/sys", "", 0);
     do_mount(&devptsfs, "devpts", "/dev/pts", "", 0);
+
+    // Share the app's own container into the guest at /host (realfs, world-
+    // writable via MOUNT_ISH_SHARED_) so large artifacts — the darwin Swift SDK
+    // is hundreds of megabytes — can be staged by the host instead of being
+    // pushed through the command pipe. Not fatal if it fails.
+    if (host_dir != NULL && host_dir[0] != '\0') {
+        generic_mkdirat(AT_PWD, "/host", 0777);
+        int merr = do_mount(&realfs, host_dir, "/host", "", MOUNT_ISH_SHARED_);
+        if (merr < 0) {
+            fprintf(stderr, "xforge: could not share the app container at /host: %s\n",
+                    strerror(-merr));
+        }
+    }
 
     s_booted = true;
     return 0;
