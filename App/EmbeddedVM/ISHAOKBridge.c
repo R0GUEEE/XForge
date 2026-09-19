@@ -217,17 +217,28 @@ static void xf_global_init(void) {
     ish_accel_pix_init();
 }
 
-// Make the guest filesystems reachable by name for the guest's own mount(2),
-// and for our do_mount() calls below.
-static void xf_register_filesystems(void) {
-    fs_register(&fakefs);
-    fs_register(&realfs);
-    fs_register(&procfs);
-    fs_register(&sysfs);
-    fs_register(&devptsfs);
-    fs_register(&tmpfs);
-    fs_register(&devtmpfs);
-    fs_register(&cgroupfs);
+// NOTE: do NOT call fs_register() here.
+//
+// fs/mount.c already ships a static table containing every filesystem this
+// bridge uses -- realfs, procfs, devptsfs, tmpfs, devtmpfs, sysfs, cgroupfs,
+// cgroup2fs, aokfs, fakefs, fusefs -- and MAX_FILESYSTEMS allows only three
+// more (that headroom is for the iOS app's own two: iosfs and iosfs_unsafe).
+//
+// The first version of this bridge registered eight of them again, which
+// overflows the table, and fs_register() handles an overflow with
+// `assert(!"reached filesystem limit")` -- an abort() in the middle of boot.
+// On a device that is a silent SIGABRT: stderr goes nowhere in an iOS app, so
+// "installing the Linux/SDK" simply killed the app with no message at all.
+//
+// Registration is for adding filesystems that are not already in that table,
+// so this bridge has nothing to register. If a future one does, it must fit in
+// what is left.
+static void xf_check_filesystems(void) {
+    static const char *const needed[] = {"fakefs", "realfs", "procfs", "sysfs", "devptsfs"};
+    for (size_t i = 0; i < sizeof(needed) / sizeof(needed[0]); i++) {
+        if (fs_lookup(needed[i]) == NULL)
+            xf_logf("boot: WARNING filesystem '%s' is not registered", needed[i]);
+    }
 }
 
 // The bundled minirootfs ships an empty /dev, and the guest userland needs the
@@ -325,7 +336,7 @@ int xf_ish_boot(const char *root_dir, const char *host_dir) {
     }
     xf_logf("boot: root mounted");
 
-    xf_register_filesystems();
+    xf_check_filesystems();
 
     // Creates pid 1. After this the guest has an init task, which is all the
     // headless command runner needs -- XForge does not run /sbin/init, it runs
