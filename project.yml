@@ -81,6 +81,7 @@ targets:
           - -llzma
           - -lbz2
           - -lz
+          - -liconv
           - -lsqlite3
     info:
       path: Support/Info.plist
