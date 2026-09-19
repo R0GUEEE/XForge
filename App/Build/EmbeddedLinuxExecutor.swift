@@ -1,9 +1,19 @@
 import Foundation
 
+/// Thread-safe accumulator for output delivered from the VM's `@Sendable` callback.
+private final class ExecOutputBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+    func append(_ chunk: String) { lock.lock(); text += chunk; lock.unlock() }
+    var value: String { lock.lock(); defer { lock.unlock() }; return text }
+}
+
 /// BuildExecutor backed by the embedded Linux VM.
 ///
 /// Only the genuinely heavy operations cross into the VM (toolchain bootstrap,
-/// SDK install, and `swift build`/`xtool dev build`). Everything else is native.
+/// SDK install, and `swift package resolve` / `xtool dev build`). Everything else
+/// is native. Every guest command's exit status is checked — a build that did not
+/// run must never report success.
 @MainActor
 final class EmbeddedLinuxExecutor: BuildExecutor {
     let vm: LinuxVM
@@ -23,15 +33,27 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                         continuation.yield(.plan("Booting embedded Linux…"))
                         try await vm.boot()
                     }
+                    // Probe with commands whose exit status is meaningful. A
+                    // trailing `|| echo …` would make any probe "succeed".
                     continuation.yield(.plan("Verifying Swift toolchain…"))
-                    let code = try await vm.run("swift --version 2>/dev/null || echo NO_TOOLCHAIN", environment: nil) { _ in }
-                    if code != 0 {
-                        continuation.yield(.failed("Swift toolchain missing. Run `EmbeddedLinux/install-toolchain.sh` inside the VM."))
+                    let swift = try await vm.run("command -v swift", environment: nil) { _ in }
+                    guard swift == 0 else {
+                        continuation.yield(.failed(
+                            "The Swift toolchain is not provisioned. Install it on the "
+                            + "Toolchain screen (or run `sh /root/install-toolchain.sh` in the Terminal)."))
                         continuation.finish()
                         return
                     }
+
                     continuation.yield(.plan("Verifying xtool…"))
-                    _ = try await vm.run("xtool --version 2>/dev/null || echo NO_XTOOL", environment: nil) { _ in }
+                    let xtool = try await vm.run("command -v xtool", environment: nil) { _ in }
+                    guard xtool == 0 else {
+                        continuation.yield(.failed(
+                            "xtool is not provisioned. Install it on the Toolchain screen."))
+                        continuation.finish()
+                        return
+                    }
+
                     continuation.yield(.finished)
                     continuation.finish()
                 } catch {
@@ -45,7 +67,8 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
         switch source {
         case .bundled(let path):
             // Already inside the guest filesystem.
-            _ = try await vm.run("swift sdk install '\(path)'", environment: nil) { _ in }
+            let status = try await vm.run("swift sdk install '\(path)'", environment: nil) { _ in }
+            guard status == 0 else { throw BuildError.stepFailed("swift sdk install", status) }
         case .hostedRemote:
             // Resolve the published asset, stage it on the host and install it in
             // the guest (see SDKInstaller).
@@ -56,10 +79,11 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
     func createProject(named name: String, organizationIdentifier: String) async throws -> Project {
         if !vm.isBooted { try await vm.boot() }
         let path = "/root/projects/\(name)"
-        _ = try await vm.run(
+        let status = try await vm.run(
             "mkdir -p '\(path)' && cd '\(path)' && XTOOL_ORG='\(organizationIdentifier)' xtool new --name '\(name)'",
             environment: nil
         ) { _ in }
+        guard status == 0 else { throw BuildError.stepFailed("xtool new", status) }
         return Project(name: name, organizationIdentifier: organizationIdentifier, rootPath: path)
     }
 
@@ -69,11 +93,16 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                 do {
                     if !vm.isBooted { try await vm.boot() }
                     continuation.yield(.plan("Resolving dependencies for \(project.name)…"))
-                    _ = try await vm.run(
+                    let status = try await vm.run(
                         "cd '\(project.rootPath)' && swift package resolve",
                         environment: nil
                     ) { line in
                         continuation.yield(.output(line))
+                    }
+                    if status != 0 {
+                        continuation.yield(.failed("Dependency resolution failed (exit \(status))."))
+                        continuation.finish()
+                        return
                     }
                     continuation.yield(.finished)
                     continuation.finish()
@@ -101,15 +130,22 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                         continuation.yield(.output(line))
                     }
 
-                    let ipa = "\(project.rootPath)/.build/\(project.name).ipa"
-                    let hostURL = stagingDir.appendingPathComponent("\(project.name).ipa")
-                    try await vm.copyOut(guestPath: ipa, to: hostURL)
-
-                    if code != 0 {
+                    // Report the build's own failure before trying to collect an
+                    // artifact, otherwise the user sees a misleading copy error.
+                    guard code == 0 else {
                         continuation.yield(.failed("Build failed (exit \(code))."))
                         continuation.finish()
                         return
                     }
+
+                    guard let guestIPA = try await newestIPA(in: project) else {
+                        continuation.yield(.failed("The build finished but produced no .ipa in .build."))
+                        continuation.finish()
+                        return
+                    }
+
+                    let hostURL = stagingDir.appendingPathComponent((guestIPA as NSString).lastPathComponent)
+                    try await vm.copyOut(guestPath: guestIPA, to: hostURL)
 
                     stagedOutputs = [hostURL]
                     continuation.yield(.artifact(hostURL))
@@ -120,5 +156,18 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                 }
             }
         }
+    }
+
+    /// Newest `*.ipa` under the project's `.build`, rather than assuming a name
+    /// (xtool's output filename is not guaranteed).
+    private func newestIPA(in project: Project) async throws -> String? {
+        let box = ExecOutputBox()
+        let status = try await vm.run(
+            "ls -t '\(project.rootPath)/.build'/*.ipa 2>/dev/null | head -1",
+            environment: nil
+        ) { box.append($0) }
+        guard status == 0 else { return nil }
+        let path = box.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.isEmpty ? nil : path
     }
 }

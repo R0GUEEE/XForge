@@ -18,45 +18,54 @@ struct IPABuilder {
         }
     }
 
-
     /// Build a `.ipa` from a compiled `.app` bundle.
     ///   - appBundle: the compiled `Foo.app`
-    ///   - appInfo: Info.plist settings to apply
-    ///   - outputDir: where to write the `.ipa` (defaults to the staging directory)
+    ///   - appInfo: identity to apply to the app's Info.plist
+    ///   - outputDir: where to write the `.ipa`
     /// - Returns: the URL of the produced `.ipa`
+    ///
+    /// Only the identity keys are overridden — the compiled bundle's other keys are
+    /// preserved. Replacing the whole Info.plist with a minimal dictionary would drop
+    /// `CFBundleExecutable` and produce an app that cannot launch.
     @discardableResult
     static func buildIPA(appBundle: URL, appInfo: AppInfo, outputDir: URL) throws -> URL {
-        let staging = outputDir
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: appBundle.path) else { throw BuilderError.appNotFound }
 
-        // 1. Build the Payload/<Name>.app from the compiled bundle.
+        let staging = outputDir
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+
+        // 1. Payload/<Name>.app from the compiled bundle.
         let appName = "\(appInfo.displayName).app"
         let payload = staging.appendingPathComponent("Payload", isDirectory: true)
         let destApp = payload.appendingPathComponent(appName, isDirectory: true)
-        try? FileManager.default.removeItem(at: payload)
-        try FileManager.default.createDirectory(at: payload, withIntermediateDirectories: true)
-        try FileManager.default.copyItem(at: appBundle, to: destApp)
+        try? fm.removeItem(at: payload)
+        try fm.createDirectory(at: payload, withIntermediateDirectories: true)
+        try fm.copyItem(at: appBundle, to: destApp)
 
-        // 2. Write the Info.plist from AppInfo.
-        try writeInfoPlist(to: destApp, appInfo: appInfo)
+        // 2. Merge the identity into the compiled bundle's Info.plist.
+        try applyInfoPlist(to: destApp, appInfo: appInfo)
 
-        // 3. Write minimal entitlements (sideload-oriented; real team entitlements later).
-        try writeEntitlements(to: destApp, appInfo: appInfo)
+        // Entitlements are NOT written into the bundle: they belong to the code
+        // signature, and a stray Entitlements.plist inside the .app is inert at
+        // best and confusing at worst.
 
-        // 4. Zip Payload/ → <Name>.ipa
-        let ipaURL = staging.appendingPathComponent("\(appName.replacingOccurrences(of: ".app", with: "")).ipa")
-        try? FileManager.default.removeItem(at: ipaURL)
+        // 3. Zip Payload/ → <Name>.ipa
+        let ipaURL = staging.appendingPathComponent(
+            "\(appName.replacingOccurrences(of: ".app", with: "")).ipa")
+        try? fm.removeItem(at: ipaURL)
         do {
-            try FileManager.default.zipItem(at: payload, to: ipaURL, shouldKeepParent: true)
+            try fm.zipItem(at: payload, to: ipaURL, shouldKeepParent: true)
         } catch {
             throw BuilderError.archiveFailed(error.localizedDescription)
         }
-
         return ipaURL
     }
 
     // MARK: - Info.plist
 
+    /// The identity keys XForge sets. Everything else in the compiled bundle's
+    /// Info.plist is preserved.
     static func infoPlistDictionary(_ appInfo: AppInfo) -> [String: Any] {
         [
             "CFBundleIdentifier": appInfo.bundleIdentifier,
@@ -67,38 +76,52 @@ struct IPABuilder {
             "CFBundlePackageType": "APPL",
             "MinimumOSVersion": appInfo.minimumOSVersion,
             "LSRequiresIPhoneOS": true,
-            "UILaunchScreen": [String: Any](),
         ]
     }
 
-    private static func writeInfoPlist(to app: URL, appInfo: AppInfo) throws {
-        let plist = infoPlistDictionary(appInfo)
-        let data = try PropertyListSerialization.data(
-            fromPropertyList: plist,
-            format: .xml,
-            options: 0
-        )
+    private static func applyInfoPlist(to app: URL, appInfo: AppInfo) throws {
         let infoURL = app.appendingPathComponent("Info.plist")
-        guard (try? data.write(to: infoURL)) != nil else {
+
+        var merged: [String: Any] = [:]
+        if let data = try? Data(contentsOf: infoURL),
+           let existing = try? PropertyListSerialization.propertyList(from: data, format: nil),
+           let dict = existing as? [String: Any] {
+            merged = dict
+        }
+        for (key, value) in infoPlistDictionary(appInfo) {
+            merged[key] = value
+        }
+        if merged["CFBundleExecutable"] == nil {
+            // Keep the executable name in step with the binary that is actually there.
+            merged["CFBundleExecutable"] = executableName(in: app)
+        }
+
+        let data = try PropertyListSerialization.data(
+            fromPropertyList: merged, format: .xml, options: 0)
+        do {
+            try data.write(to: infoURL)
+        } catch {
             throw BuilderError.infoPlistFailed
         }
     }
 
-    // MARK: - Entitlements
-
-    static func entitlementsDictionary(_ appInfo: AppInfo) -> [String: Any] {
-        [
-            "get-task-allow": true,
-            "application-identifier": appInfo.bundleIdentifier,
-        ]
-    }
-
-    private static func writeEntitlements(to app: URL, appInfo: AppInfo) throws {
-        let data = try PropertyListSerialization.data(
-            fromPropertyList: entitlementsDictionary(appInfo),
-            format: .xml,
-            options: 0
-        )
-        try data.write(to: app.appendingPathComponent("Entitlements.plist"))
+    /// The bundle's Mach-O executable: the existing `Info.plist` value if it names a
+    /// real file, otherwise the first executable regular file at the bundle root.
+    private static func executableName(in app: URL) -> String {
+        let fm = FileManager.default
+        let declared = (try? Data(contentsOf: app.appendingPathComponent("Info.plist")))
+            .flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) }
+            .flatMap { ($0 as? [String: Any])?["CFBundleExecutable"] as? String }
+        if let declared, fm.fileExists(atPath: app.appendingPathComponent(declared).path) {
+            return declared
+        }
+        let contents = (try? fm.contentsOfDirectory(at: app, includingPropertiesForKeys: [.isExecutableKey])) ?? []
+        for url in contents {
+            let values = try? url.resourceValues(forKeys: [.isExecutableKey, .isRegularFileKey])
+            if values?.isRegularFile == true, values?.isExecutable == true {
+                return url.lastPathComponent
+            }
+        }
+        return app.deletingPathExtension().lastPathComponent
     }
 }

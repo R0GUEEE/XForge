@@ -37,12 +37,13 @@ final class BuildManager: ObservableObject {
         snapshot.error = nil
         resetStages()
 
+        // Stop at the first failed stage: later stages fail as a consequence and
+        // their messages would bury the real cause.
         await provision()
-        await ensureSDK()
-        await configure()
-        await resolve()
-        await compile()
-
+        if snapshot.error == nil { await ensureSDK() }
+        if snapshot.error == nil { await configure() }
+        if snapshot.error == nil { await resolve() }
+        if snapshot.error == nil { await compile() }
         if snapshot.error == nil { await package() }
         if snapshot.error == nil { await stageArtifact() }
 
@@ -82,12 +83,42 @@ final class BuildManager: ObservableObject {
         } catch { markFailed(.sdk, error) }
     }
 
+    /// Make sure the project exists in the guest and record the app identity the
+    /// build should produce. Previously this stage only printed a line and
+    /// reported success unconditionally, even after provision had failed.
     private func configure() async {
         markRunning(.configure)
-        appendConsole("▸ bundle \(appInfo.bundleIdentifier) · \(configuration.rawValue)")
-        appendConsole("▸ writing project config for \(project.name)")
-        // TODO: write xtool.yml + inject AppInfo into the guest before compile.
-        markSucceeded(.configure)
+        do {
+            let vm = XForgeEnvironment.makeVM()
+            if !vm.isBooted { try await vm.boot() }
+
+            let dir = project.rootPath
+            let mkdir = try await vm.run("mkdir -p '\(dir)'", environment: nil) { _ in }
+            guard mkdir == 0 else { throw BuildError.stepFailed("mkdir \(dir)", mkdir) }
+
+            let json = """
+            {
+              "bundleIdentifier": "\(appInfo.bundleIdentifier)",
+              "displayName": "\(appInfo.displayName)",
+              "version": "\(appInfo.version)",
+              "buildNumber": "\(appInfo.buildNumber)",
+              "minimumOSVersion": "\(appInfo.minimumOSVersion)",
+              "configuration": "\(configuration.rawValue)"
+            }
+
+            """
+            let temp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xforge-app-\(UUID().uuidString).json")
+            try Data(json.utf8).write(to: temp)
+            defer { try? FileManager.default.removeItem(at: temp) }
+            try await vm.copyIn(hostURL: temp, to: "\(dir)/xforge-app.json")
+
+            appendConsole("▸ bundle \(appInfo.bundleIdentifier) · \(configuration.rawValue)")
+            appendConsole("▸ wrote app identity to \(dir)/xforge-app.json")
+            markSucceeded(.configure)
+        } catch {
+            markFailed(.configure, error)
+        }
     }
 
     private func resolve() async {
@@ -183,7 +214,9 @@ final class BuildManager: ObservableObject {
     }
     private func markFailed(_ stage: BuildStage, _ error: Error) {
         snapshot.stages[stage] = .failed
-        snapshot.error = error.localizedDescription
+        // Keep the FIRST failure — it is the root cause; everything after it
+        // fails as a consequence and would only obscure what actually went wrong.
+        if snapshot.error == nil { snapshot.error = error.localizedDescription }
         appendConsole("[failed] \(stage.title): \(error.localizedDescription)")
     }
     private func consume(_ event: BuildEvent) {
@@ -217,10 +250,16 @@ final class BuildManager: ObservableObject {
 enum BuildError: LocalizedError {
     case noArtifact
     case notProvisioned
+    case stepFailed(String, Int32)
+
     var errorDescription: String? {
         switch self {
-        case .noArtifact: return "The build did not produce an artifact."
-        case .notProvisioned: return "The embedded Linux is not provisioned."
+        case .noArtifact:
+            return "The build did not produce an artifact."
+        case .notProvisioned:
+            return "The embedded Linux is not provisioned."
+        case .stepFailed(let step, let status):
+            return "\(step) failed inside the embedded Linux (exit \(status))."
         }
     }
 }

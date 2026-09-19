@@ -18,6 +18,9 @@ struct InstallView: View {
                 if device.devices.isEmpty {
                     if isScanning {
                         HStack { ProgressView(); Text("Scanning for devices…") }
+                    } else if let errorText {
+                        Label(errorText, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote).foregroundStyle(.red)
                     } else {
                         Text("No devices connected.")
                             .foregroundStyle(.secondary)

@@ -73,7 +73,9 @@ enum XForgeEnvironment {
         for dir in [embeddedRoot, rootsDirectory, hostShareDirectory, downloadsDirectory] {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
-        let vm = EmbeddedLinuxVM(root: embeddedRoot, emulator: makeEmulator())
+        let vm = EmbeddedLinuxVM(root: embeddedRoot,
+                                 hostShare: hostShareDirectory,
+                                 emulator: makeEmulator())
         sharedVM = vm
         return vm
     }

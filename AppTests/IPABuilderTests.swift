@@ -27,7 +27,19 @@ final class IPABuilderTests: XCTestCase {
         let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
         try data.write(to: app.appendingPathComponent("Info.plist"))
         try Data("x".utf8).write(to: app.appendingPathComponent(name))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: app.appendingPathComponent(name).path)
         return app
+    }
+
+    private func infoPlist(in ipa: URL, app: String) throws -> [String: Any] {
+        let archive = try Archive(url: ipa, accessMode: .read)
+        guard let entry = archive["Payload/\(app).app/Info.plist"] else {
+            throw XCTSkip("Info.plist missing from archive")
+        }
+        var data = Data()
+        _ = try archive.extract(entry) { data.append($0) }
+        return (try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]) ?? [:]
     }
 
     func testInfoPlistDictionary() {
@@ -52,8 +64,34 @@ final class IPABuilderTests: XCTestCase {
         let archive = try Archive(url: ipa, accessMode: .read)
         let paths = archive.map { $0.path }
         XCTAssertTrue(paths.contains("Payload/Demo.app/Info.plist"), "expected Payload/Demo.app/Info.plist, got \(paths)")
-        XCTAssertTrue(paths.contains("Payload/Demo.app/Entitlements.plist"))
         XCTAssertTrue(paths.contains("Payload/Demo.app/Demo"), "expected the binary inside the app")
+        // Entitlements belong to the code signature, not the bundle.
+        XCTAssertFalse(paths.contains("Payload/Demo.app/Entitlements.plist"))
+
+        // The executable name must survive: without it the app cannot launch.
+        let plist = try infoPlist(in: ipa, app: "Demo")
+        XCTAssertEqual(plist["CFBundleExecutable"] as? String, "Demo")
+    }
+
+    func testMergePreservesCompiledKeysAndSetsIdentity() throws {
+        let app = try makeFixtureApp(name: "Merged")
+        // A key the compiled bundle carries that XForge must not clobber.
+        var info = try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: app.appendingPathComponent("Info.plist")), format: nil) as! [String: Any]
+        info["UISupportedInterfaceOrientations"] = ["UIInterfaceOrientationPortrait"]
+        info["CFBundleExecutable"] = "Merged"
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: app.appendingPathComponent("Info.plist"))
+
+        let appInfo = AppInfo(bundleIdentifier: "com.acme.Merged", displayName: "Merged", version: "4.2", buildNumber: "11", minimumOSVersion: "17.0")
+        let ipa = try IPABuilder.buildIPA(appBundle: app, appInfo: appInfo, outputDir: tempDir)
+        let plist = try infoPlist(in: ipa, app: "Merged")
+
+        XCTAssertEqual(plist["CFBundleIdentifier"] as? String, "com.acme.Merged")
+        XCTAssertEqual(plist["CFBundleShortVersionString"] as? String, "4.2")
+        XCTAssertEqual(plist["CFBundleExecutable"] as? String, "Merged")
+        XCTAssertEqual(plist["UISupportedInterfaceOrientations"] as? [String], ["UIInterfaceOrientationPortrait"],
+                       "keys from the compiled bundle must be preserved")
     }
 
     func testBuildIPAOverwritesInfoPlist() throws {

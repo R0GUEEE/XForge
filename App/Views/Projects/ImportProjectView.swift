@@ -8,6 +8,7 @@ struct ImportProjectView: View {
     @State private var name = ""
     @State private var orgId = ""
     @State private var isImporting = false
+    @State private var error: String?
 
     let onImported: (Project) -> Void
 
@@ -31,6 +32,10 @@ struct ImportProjectView: View {
                     if isImporting {
                         HStack { ProgressView(); Text("Cloning into embedded Linux…") }
                     }
+                    if let error {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote).foregroundStyle(.red)
+                    }
                 }
             }
             .navigationTitle("Import from Git")
@@ -52,10 +57,45 @@ struct ImportProjectView: View {
 
     private func startImport() {
         isImporting = true
-        let project = Project(name: derivedName, organizationIdentifier: orgId, rootPath: "/root/projects/\(derivedName)")
-        // The git clone runs in the embedded Linux via the build executor.
-        onImported(project)
-        isImporting = false
-        dismiss()
+        error = nil
+        let url = gitURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectName = derivedName
+        let org = orgId
+        Task {
+            defer { isImporting = false }
+            do {
+                // Clone into the guest; without this the project path does not
+                // exist and every later build step fails.
+                let vm = XForgeEnvironment.makeVM()
+                if !vm.isBooted { try await vm.boot() }
+                let path = "/root/projects/\(projectName)"
+                let status = try await vm.run(
+                    "mkdir -p /root/projects && rm -rf '\(path)' && "
+                    + "git clone --depth 1 '\(url)' '\(path)'",
+                    environment: nil
+                ) { _ in }
+                guard status == 0 else {
+                    throw ImportError.cloneFailed(status, url)
+                }
+                onImported(Project(name: projectName,
+                                   organizationIdentifier: org,
+                                   rootPath: path))
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+}
+
+enum ImportError: LocalizedError {
+    case cloneFailed(Int32, String)
+
+    var errorDescription: String? {
+        switch self {
+        case .cloneFailed(let status, let url):
+            return "git clone failed (exit \(status)) for \(url). Check the URL, and that the "
+                + "embedded Linux has network access."
+        }
     }
 }

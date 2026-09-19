@@ -4,6 +4,9 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var preferences: AppPreferences
     @StateObject private var toolchain = ToolchainManager()
+    /// On-disk sizes, filled off the main actor — never computed during `body`.
+    @State private var sizes: [ToolchainManager.Component: Int64] = [:]
+    @State private var artifactsSize: Int64 = 0
 
     var body: some View {
         List {
@@ -31,7 +34,42 @@ struct SettingsView: View {
             diagnosticsSection
             aboutSection
         }
-        .task { await toolchain.refresh() }
+        .task {
+            await toolchain.refresh()
+            await loadSizes()
+        }
+    }
+
+    /// Compute the storage sizes once, off the main actor.
+    private func loadSizes() async {
+        let components = ToolchainManager.Component.allCases
+        let paths: [(ToolchainManager.Component, URL)] = components.map {
+            ($0, storageURL(for: $0))
+        }
+        let staging = XForgeEnvironment.stagingDirectory
+        let result = await Task.detached(priority: .utility) { () -> ([ToolchainManager.Component: Int64], Int64) in
+            var map: [ToolchainManager.Component: Int64] = [:]
+            for (component, url) in paths {
+                map[component] = DirectorySize.bytes(at: url)
+            }
+            return (map, DirectorySize.bytes(at: staging))
+        }.value
+        sizes = result.0
+        artifactsSize = result.1
+    }
+
+    /// Where a component's bytes live on the host.
+    private func storageURL(for component: ToolchainManager.Component) -> URL {
+        switch component {
+        case .rootfs:
+            return XForgeEnvironment.rootsDirectory
+        case .sdk:
+            return XForgeEnvironment.hostShareDirectory
+                .appendingPathComponent("darwin.artifactbundle")
+        case .swift, .xtool:
+            // Guest-side; the SDK share and downloads are the host-side footprint.
+            return XForgeEnvironment.embeddedRoot
+        }
     }
 
     private var preferencesSection: some View {
@@ -61,7 +99,9 @@ struct SettingsView: View {
                     Task { await toolchain.install(component) }
                 }
             }
-            StorageRow(title: "Build artifacts", detail: onDiskSize("staging"), installed: true) {}
+            StorageRow(title: "Build artifacts",
+                       detail: ByteCountFormatter.string(fromByteCount: artifactsSize, countStyle: .file),
+                       installed: true) {}
         } header: {
             Text("Storage & Toolchain")
         } footer: {
@@ -72,7 +112,7 @@ struct SettingsView: View {
     }
 
     private func storageDetail(for component: ToolchainManager.Component) -> String {
-        let size = ByteCountFormatter.string(fromByteCount: storageBytes(for: component), countStyle: .file)
+        let size = ByteCountFormatter.string(fromByteCount: sizes[component] ?? 0, countStyle: .file)
         switch (component, toolchain.isInstalled(component)) {
         case (.rootfs, true):
             return "Installed · \(size)"
@@ -88,19 +128,6 @@ struct SettingsView: View {
             return component.livesInGuest && !toolchain.guestChecked
                 ? "Not checked — tap Check on the Toolchain screen"
                 : "Not installed"
-        }
-    }
-
-    /// On-disk size of wherever this component's bytes actually live.
-    private func storageBytes(for component: ToolchainManager.Component) -> Int64 {
-        switch component {
-        case .rootfs:
-            return directorySize(at: XForgeEnvironment.rootsDirectory)
-        case .sdk:
-            return directorySize(at: XForgeEnvironment.hostShareDirectory
-                .appendingPathComponent("darwin.artifactbundle"))
-        case .swift, .xtool:
-            return directorySize(at: XForgeEnvironment.embeddedRoot)
         }
     }
 
@@ -127,28 +154,6 @@ struct SettingsView: View {
         } footer: {
             Text("XForge builds iOS apps on-device with xtool — a cross-platform Xcode replacement.")
         }
-    }
-
-    private func onDiskSize(_ subdir: String) -> String {
-        let root = XForgeEnvironment.documentDirectory
-        let url = root.appendingPathComponent(subdir)
-        let size = directorySize(at: url)
-        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
-    }
-
-    /// Recursive on-disk size of a directory.
-    private func directorySize(at url: URL) -> Int64 {
-        guard let enumerator = FileManager.default.enumerator(
-            at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
-        ) else { return 0 }
-        var total: Int64 = 0
-        for case let fileURL as URL in enumerator {
-            guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
-                  values.isRegularFile == true,
-                  let size = values.fileSize else { continue }
-            total += Int64(size)
-        }
-        return total
     }
 }
 

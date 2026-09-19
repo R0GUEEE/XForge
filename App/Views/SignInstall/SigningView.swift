@@ -75,7 +75,7 @@ struct SigningView: View {
                 }
             }
             Button {
-                Task { _ = try? await signing.refreshIdentities() }
+                Task { await refreshCertificates() }
             } label: {
                 Label("Refresh Certificates", systemImage: "arrow.clockwise")
             }
@@ -100,6 +100,16 @@ struct SigningView: View {
     private func load() async {
         if signing.account.email.isEmpty && signing.identities.isEmpty {
             // nothing persisted; stay on sign-in
+        }
+    }
+
+    private func refreshCertificates() async {
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            try await signing.refreshIdentities()
+        } catch {
+            errorText = error.localizedDescription
         }
     }
 }

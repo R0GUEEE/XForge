@@ -24,6 +24,8 @@ struct NewProjectView: View {
     @State private var name = "HelloWorld"
     @State private var orgId = ""
     @State private var template: Template = .swiftUI
+    @State private var creating = false
+    @State private var error: String?
 
     let onCreated: (Project) -> Void
 
@@ -32,6 +34,8 @@ struct NewProjectView: View {
             Form {
                 Section("Project") {
                     TextField("Name", text: $name)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
                     TextField("Organization Identifier", text: $orgId)
                         .keyboardType(.alphabet)
                         .autocorrectionDisabled()
@@ -40,6 +44,22 @@ struct NewProjectView: View {
                     }
                     Text(template.summary)
                         .font(.caption).foregroundStyle(.secondary)
+                }
+
+                if creating {
+                    Section {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Creating the project in the embedded Linux…")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                if let error {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote).foregroundStyle(.red)
+                    }
                 }
             }
             .navigationTitle("New Project")
@@ -51,17 +71,30 @@ struct NewProjectView: View {
                     Button("Cancel") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Create") {
-                        let project = Project(
-                            name: name,
-                            organizationIdentifier: orgId,
-                            rootPath: "/root/projects/\(name)"
-                        )
-                        onCreated(project)
-                        dismiss()
-                    }
-                    .disabled(name.isEmpty || orgId.isEmpty)
+                    Button("Create") { create() }
+                        .disabled(name.isEmpty || orgId.isEmpty || creating)
                 }
+            }
+        }
+    }
+
+    /// Actually create the project inside the guest (`xtool new`), rather than
+    /// recording a path that never exists — every later build depends on it.
+    private func create() {
+        creating = true
+        error = nil
+        let projectName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let org = orgId.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            defer { creating = false }
+            do {
+                let executor = XForgeEnvironment.makeExecutor()
+                let project = try await executor.createProject(
+                    named: projectName, organizationIdentifier: org)
+                onCreated(project)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
             }
         }
     }

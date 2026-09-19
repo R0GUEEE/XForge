@@ -19,9 +19,12 @@ protocol DeviceService: ObservableObject {
     func installedApps(on device: ConnectedDevice) async throws -> [InstalledApp]
 }
 
-/// Default concrete implementation backed by XKit. Device enumeration/install map
-/// to SwiftyMobileDevice (usbmuxd); on a sideloaded build these may be limited —
-/// the GUI handles that gracefully via the `refreshDevices` error path.
+/// Default concrete implementation backed by XKit.
+///
+/// Device access over usbmuxd requires entitlement-backed services that a
+/// sideloaded app does not have, and the XKit bindings for install/launch are not
+/// wired up here. Every entry point therefore reports that clearly instead of
+/// returning an empty list, which previously looked like "no devices connected".
 @MainActor
 final class XKitDeviceService: DeviceService {
     nonisolated init() {}
@@ -29,25 +32,37 @@ final class XKitDeviceService: DeviceService {
     @Published private(set) var devices: [ConnectedDevice] = []
 
     func refreshDevices() async throws {
-        // TODO: XKit SwiftyMobileDevice device enumeration.
         devices = []
+        throw DeviceError.notAvailable
     }
 
     func install(ipaURL: URL, to device: ConnectedDevice, progress: @escaping (Double) -> Void) async throws {
-        // TODO: XKit install .ipa to device.
-        progress(1.0)
+        throw DeviceError.notAvailable
     }
 
     func launch(_ bundleID: String, on device: ConnectedDevice) async throws {
-        // TODO: XKit launch.
+        throw DeviceError.notAvailable
     }
 
     func uninstall(_ bundleID: String, from device: ConnectedDevice) async throws {
-        // TODO: XKit uninstall.
+        throw DeviceError.notAvailable
     }
 
     func installedApps(on device: ConnectedDevice) async throws -> [InstalledApp] {
-        // TODO: XKit list installed apps.
-        []
+        throw DeviceError.notAvailable
+    }
+}
+
+enum DeviceError: LocalizedError {
+    case notAvailable
+
+    var errorDescription: String? {
+        switch self {
+        case .notAvailable:
+            return "On-device installation is not available in this build: talking to a "
+                + "device over usbmuxd needs entitlement-backed access that a sideloaded "
+                + "app does not have. Export the built .ipa and install it with "
+                + "SideStore/AltStore instead."
+        }
     }
 }
