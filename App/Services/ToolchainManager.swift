@@ -78,8 +78,8 @@ final class ToolchainManager: ObservableObject {
             defer { activity = nil }
             do {
                 try await vm.boot()
-                for component in [Component.swift, .xtool, .sdk] where await guestHas(component) {
-                    found.insert(component)
+                for component in [Component.swift, .xtool, .sdk] {
+                    if await guestHas(component) { found.insert(component) }
                 }
                 guestChecked = true
             } catch {

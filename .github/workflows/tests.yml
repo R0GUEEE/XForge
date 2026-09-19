@@ -18,11 +18,18 @@ jobs:
       - name: Build app for simulator (emits SPM package products)
         run: |
           set -o pipefail
-          xcodebuild -project XForge.xcodeproj -scheme XForge \
-            -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
-            -derivedDataPath build \
-            build 2>&1 | tee /tmp/build.log | tail -8
+          if ! xcodebuild -project XForge.xcodeproj -scheme XForge \
+              -configuration Debug \
+              -destination 'platform=iOS Simulator,name=iPhone 16' \
+              -derivedDataPath build \
+              build > /tmp/build.log 2>&1; then
+            echo "--- build diagnostics ---"
+            grep -E "error:" /tmp/build.log | sort -u | head -40
+            echo "--- last lines ---"
+            tail -20 /tmp/build.log
+            exit 1
+          fi
+          tail -5 /tmp/build.log
 
       - name: Run unit tests
         run: |
