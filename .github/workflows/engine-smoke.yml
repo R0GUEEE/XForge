@@ -78,7 +78,10 @@ jobs:
 
       - name: Build the harness
         run: |
-          set -e
+          echo "--- tail of tools/meson.build ---"
+          tail -20 Vendor/ish-AOK/tools/meson.build
+          echo "--- meson targets matching smoke ---"
+          ninja -C Vendor/ish-AOK/build-host -t targets all 2>/dev/null | grep -i smoke || echo "(none)"
           ninja -C Vendor/ish-AOK/build-host engine_smoke
 
       - name: Run the harness
