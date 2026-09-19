@@ -40,6 +40,11 @@ if [[ ! -f "$ISH/meson.build" ]]; then
     echo "       run: git submodule update --init --depth 1 Vendor/ish-AOK" >&2
     exit 1
 fi
+if [[ ! -d "$ISH/deps/smallclue/src" || ! -d "$ISH/deps/libarchive" ]]; then
+    echo "error: iSH-AOK's required submodules are missing." >&2
+    echo "       run: git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue" >&2
+    exit 1
+fi
 
 for tool in meson ninja xcrun python3; do
     command -v "$tool" >/dev/null 2>&1 || { echo "error: $tool not found in PATH" >&2; exit 1; }

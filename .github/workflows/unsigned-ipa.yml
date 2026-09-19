@@ -20,9 +20,10 @@ jobs:
         run: |
           set -e
           git submodule update --init --depth 1 Vendor/ish-AOK
-          # Only the archive reader is needed at runtime; the heavy native-program
+          # Only what the core actually links: the archive reader (rootfs import)
+          # and smallclue (the built-in toolbox). The heavy native-program
           # submodules (bash, zsh, helix, tokio) stay out of the checkout.
-          git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive
+          git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue
 
       - name: Install build tools
         run: brew install xcodegen meson ninja llvm lld libarchive
