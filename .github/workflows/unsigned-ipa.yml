@@ -62,20 +62,43 @@ jobs:
           test -f "$APP/alpine-minirootfs-3.23.3-aarch64.tar.xz"
           echo "rootfs bundled: $(du -h "$APP/alpine-minirootfs-3.23.3-aarch64.tar.xz" | cut -f1)"
 
+      - name: Verify app information
+        run: |
+          set -e
+          APP="build/XForge.xcarchive/Products/Applications/XForge.app"
+          PLIST="$APP/Info.plist"
+          get() { /usr/libexec/PlistBuddy -c "Print :$1" "$PLIST"; }
+          VER="$(get CFBundleShortVersionString)"
+          BUILD="$(get CFBundleVersion)"
+          NAME="$(get CFBundleDisplayName)"
+          BID="$(get CFBundleIdentifier)"
+          echo "bundle id : $BID"
+          echo "name      : $NAME"
+          echo "version   : $VER ($BUILD)"
+          [ "$VER" = "0.3.1" ]   || { echo "::error::CFBundleShortVersionString is '$VER', expected 0.3.1"; exit 1; }
+          [ "$BID" = "org.xforge.XForge" ] || { echo "::error::unexpected bundle id '$BID'"; exit 1; }
+          [ "$NAME" = "XForge" ] || { echo "::error::unexpected display name '$NAME'"; exit 1; }
+          # The icon must reach the bundle: either as legacy AppIcon*.png files at
+          # the bundle root, or compiled into Assets.car (Xcode 14+ does both).
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon" "$PLIST" >/dev/null \
+            || { echo "::error::no CFBundleIcons in Info.plist — the app icon is not wired up"; exit 1; }
+          test -f "$APP/Assets.car" || { echo "::error::no Assets.car in the bundle"; exit 1; }
+          echo "app icon  : wired (CFBundleIcons + Assets.car)"
+
       - name: Package unsigned IPA
         run: |
           set -e
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
           mkdir -p dist/Payload
           ditto "$APP" dist/Payload/XForge.app
-          cd dist && zip -qry "XForge-0.3.0-unsigned.ipa" Payload
-          echo "artifact=$(pwd)/XForge-0.3.0-unsigned.ipa" >> "$GITHUB_ENV"
+          cd dist && zip -qry "XForge-0.3.1-unsigned.ipa" Payload
+          echo "artifact=$(pwd)/XForge-0.3.1-unsigned.ipa" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: XForge-unsigned-ipa
-          path: dist/XForge-0.3.0-unsigned.ipa
+          path: dist/XForge-0.3.1-unsigned.ipa
           if-no-files-found: error
 
       - name: Upload to release (manual trigger only)
@@ -83,7 +106,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: xforge-${{ github.run_number }}
-          name: XForge 0.3.0 — iSH-AOK native Linux
-          files: dist/XForge-0.3.0-unsigned.ipa
+          name: XForge 0.3.1 — app information
+          files: dist/XForge-0.3.1-unsigned.ipa
           body_path: CHANGELOG.md
           generate_release_notes: false

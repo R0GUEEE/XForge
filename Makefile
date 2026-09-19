@@ -1,4 +1,4 @@
-.PHONY: bootstrap submodule rootfs ish-core gen build test ipa sdk clean
+.PHONY: bootstrap submodule rootfs ish-core icon gen build test ipa sdk clean
 
 XCODE := xcodebuild
 SCHEME := XForge
@@ -17,6 +17,10 @@ rootfs:
 ## Build the embedded iSH-AOK Linux engine into Vendor/ish-AOK-build/lib.
 ish-core:
 	@bash EmbeddedLinux/build-ish-aok-core.sh
+
+## Regenerate the app icon + accent colour asset catalog (needs Pillow)
+icon:
+	python3 Tools/gen-appicon.py
 
 ## Generate the Xcode project from project.yml
 gen:

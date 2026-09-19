@@ -43,6 +43,42 @@ project.yml             XcodeGen definition
 Docs/DESIGN.md          full architecture write-up
 ```
 
+## App information
+
+Everything about the app's identity lives in the project-level `settings` block of
+`project.yml`:
+
+| Field | Value |
+|---|---|
+| Bundle identifier | `org.xforge.XForge` |
+| Display name | `XForge` |
+| Apple team | set in `XFORGE_DEVELOPMENT_TEAM` (a wildcard `TEAMID.*` profile, so any bundle ID works) |
+| Marketing version | `XFORGE_MARKETING_VERSION` |
+| Build number | `XFORGE_BUILD_NUMBER` |
+| App icon | `Support/Assets.xcassets/AppIcon.appiconset` |
+| Accent colour | `Support/Assets.xcassets/AccentColor.colorset` |
+
+The `XFORGE_*` settings feed `Info.plist` (`CFBundleDisplayName`, the version keys)
+and the signing configuration (`DEVELOPMENT_TEAM`), so changing the app's identity
+is a one-line edit. CI asserts bundle ID, display name, version and a wired-up icon
+on every build, so a regression fails the build rather than shipping.
+
+`Support/Info.plist` is **generated** by XcodeGen from the target's
+`info.properties` and is gitignored — edit `project.yml`, not the plist. (XcodeGen
+would otherwise write its own hardcoded `1.0`/`1` version, which is why the version
+is set explicitly in `info.properties`.)
+
+Signing: `CODE_SIGN_STYLE` is `Automatic` with the team above, so opening the
+project in Xcode and building to a device signs normally. The CI workflow passes
+`CODE_SIGNING_ALLOWED=NO` to produce an unsigned IPA for sideloading.
+
+The app icon is generated from `Tools/gen-appicon.py` (a terminal-prompt motif in
+the forge palette) and written into the asset catalog:
+
+```bash
+make icon        # rewrites Support/Assets.xcassets
+```
+
 ## Build the app
 
 Requires macOS + Xcode + [XcodeGen](https://github.com/yonaskolb/XcodeGen), meson and
