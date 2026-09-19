@@ -134,7 +134,14 @@ const char *xf_ish_last_error(void) {
 
 #define XF_LOG_FD 555
 
+// Hard ceiling on what the log may grow to. The engine has its own ring buffer
+// for the guest's dmesg, but this file takes everything, and a provisioning run
+// that compiles or downloads for an hour would happily fill the container.
+#define XF_LOG_MAX_BYTES (4 * 1024 * 1024)
+
 static int s_log_fd = -1;
+static long long s_log_bytes = 0;
+static bool s_log_capped = false;
 
 // printf-style breadcrumb into the log file.
 static void xf_logf(const char *fmt, ...) {
@@ -151,6 +158,8 @@ int xf_ish_log(const char *text) {
         return -EINVAL;
     if (s_log_fd < 0)
         return -ENODEV;
+    if (s_log_capped)
+        return -EFBIG;
 
     struct timeval tv;
     gettimeofday(&tv, NULL);
@@ -171,6 +180,15 @@ int xf_ish_log(const char *text) {
     memcpy(line + head, text, len);
     line[head + (int) len] = '\n';
     ssize_t written = write(s_log_fd, line, (size_t) head + len + 1);
+    if (written > 0) {
+        s_log_bytes += written;
+        if (s_log_bytes > XF_LOG_MAX_BYTES) {
+            s_log_capped = true;
+            static const char full[] =
+                "[xforge] log reached its size limit; further lines are dropped\n";
+            write(s_log_fd, full, sizeof(full) - 1);
+        }
+    }
     return written < 0 ? -errno : 0;
 }
 
@@ -179,12 +197,19 @@ int xf_ish_set_log_file(const char *path) {
         close(s_log_fd);
         s_log_fd = -1;
     }
+    s_log_bytes = 0;
+    s_log_capped = false;
     if (path == NULL || path[0] == '\0')
         return 0;
 
     int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd < 0)
         return -errno;
+    // Continue counting from whatever is already in the file, so the ceiling
+    // holds across the session rather than per call.
+    struct stat st;
+    if (fstat(fd, &st) == 0 && st.st_size > 0)
+        s_log_bytes = st.st_size;
     if (fd != XF_LOG_FD) {
         // The engine writes to the literal descriptor 555, so that is where the
         // file has to live for its output to be captured at all.

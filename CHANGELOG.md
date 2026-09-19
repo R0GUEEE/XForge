@@ -2,6 +2,42 @@
 
 All notable changes to **XForge** are documented here.
 
+## [0.3.2] — 2026-09-19 — The guest boots
+
+### Fixed
+- **Booting the embedded Linux no longer kills the app.** This is the crash behind
+  "it keeps crashing when I try to install the SDKs / Linux": every one of those
+  actions boots the guest, and boot aborted the process. `fs/mount.c` already ships
+  a static table of the engine's filesystems and allows only three more (the
+  headroom exists for the iSH-AOK app's own two); the bridge registered eight of
+  them a second time, so the eighth registration hit `fs_register()`'s
+  `assert(!"reached filesystem limit")` — `abort()`, with the message going to
+  stderr, i.e. nowhere in an iOS app. The bridge no longer registers anything (the
+  engine's table already has everything it mounts) and checks instead.
+  Reproduced and verified off-device with `Tools/engine-smoke`, a macOS harness that
+  drives the same bridge calls as the app.
+
+### Added
+- **Engine log capture.** The engine's `printk` writes to file descriptor 555, which
+  nothing in XForge opened, so *every* kernel message was discarded — including the
+  one `die()` prints immediately before it calls `abort()`. The bridge now points
+  555 at `<Documents>/logs/engine.log` and adds its own breadcrumbs (import, mount,
+  device setup, `/host` share, each command and its exit status, and the guest's
+  output when a command fails). Settings → Diagnostics → **Engine log** shows,
+  copies and shares it.
+- **Engine smoke test** (`Tools/engine-smoke`, `.github/workflows/engine-smoke.yml`)
+  — boots the bundled Alpine rootfs on a macOS host through the app's own bridge and
+  runs commands in it, so bridge and boot regressions fail CI instead of a device.
+
+### Changed
+- Installing the Alpine rootfs now goes through `vm.boot()`, i.e. the emulator's own
+  serial thread: the fakefs import used to run inline on the main actor, freezing
+  the UI and running the engine's one-time global init on a different thread from
+  the guest it belongs to.
+- The Darwin SDK install unpacks off the main thread (456 MB expands to ~1.4 GB),
+  checks free space before starting, deletes the archive afterwards, and streams
+  `swift sdk install`'s output into the engine log.
+
 ## [0.3.1] — 2026-09-19 — App information
 
 ### Added

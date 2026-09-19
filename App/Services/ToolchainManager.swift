@@ -171,10 +171,15 @@ final class ToolchainManager: ObservableObject {
         let guestPath = "/root/install-toolchain.sh"
         try await vm.copyIn(hostURL: script, to: guestPath)
 
+        // Provisioning downloads the Swift toolchain (hundreds of MB) inside the
+        // guest and can take many minutes. Stream its output into the log as it
+        // goes: otherwise the only thing anybody can see is a spinner.
         let status = try await vm.run(
             "chmod +x \(guestPath) && sh \(guestPath)",
             environment: ["PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-        ) { _ in }
+        ) { chunk in
+            XForgeLog.note("guest: " + chunk.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         guard status == 0 else {
             throw ToolchainError.provisioningFailed(status)
         }

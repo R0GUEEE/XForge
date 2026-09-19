@@ -73,7 +73,9 @@ enum SDKInstaller {
         let status = try await vm.run(
             "swift sdk install /host/\(bundledDirectoryName)",
             environment: nil
-        ) { _ in }
+        ) { chunk in
+            XForgeLog.note("guest: " + chunk.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
         guard status == 0 else { throw ToolchainError.sdkInstallFailed(status) }
         XForgeLog.note("sdk: installed in the guest")
         return bundle
