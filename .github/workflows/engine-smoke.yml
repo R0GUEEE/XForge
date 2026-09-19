@@ -39,6 +39,11 @@ jobs:
           brew install meson ninja llvm lld libarchive
           echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
           echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
+          # Brew's libarchive is keg-only, so its .pc file is not on the default
+          # pkg-config path and the engine's `dependency('libarchive')` fails
+          # without this -- which silently skips the fakefs tools (and this
+          # harness) rather than failing the configure.
+          echo "PKG_CONFIG_PATH=$(brew --prefix libarchive)/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Fetch the bundled Alpine rootfs
         run: bash EmbeddedLinux/fetch-rootfs.sh
@@ -80,6 +85,7 @@ jobs:
         run: |
           set -o pipefail
           uname -m
+          tail -5 Vendor/ish-AOK/tools/meson.build
           ./Vendor/ish-AOK/build-host/engine_smoke \
             Support/Resources/alpine-minirootfs-3.23.3-aarch64.tar.xz \
             "$RUNNER_TEMP/xforge-smoke" 2>&1 | tee /tmp/engine-smoke.log
