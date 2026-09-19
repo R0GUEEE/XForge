@@ -16,8 +16,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install XcodeGen
-        run: brew install xcodegen
+      - name: Check out the iSH-AOK engine (submodule)
+        run: |
+          set -e
+          git submodule update --init --depth 1 Vendor/ish-AOK
+          # Only the archive reader is needed at runtime; the heavy native-program
+          # submodules (bash, zsh, helix, tokio) stay out of the checkout.
+          git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive
+
+      - name: Install build tools
+        run: brew install xcodegen meson ninja
+
+      - name: Fetch the bundled Alpine rootfs
+        run: bash EmbeddedLinux/fetch-rootfs.sh
+
+      - name: Build the embedded iSH-AOK core (iOS arm64)
+        run: bash EmbeddedLinux/build-ish-aok-core.sh
 
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml
@@ -40,20 +54,27 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             archive -archivePath build/XForge.xcarchive 2>&1 | tee /tmp/build.log
 
+      - name: Verify the rootfs is bundled
+        run: |
+          set -e
+          APP="build/XForge.xcarchive/Products/Applications/XForge.app"
+          test -f "$APP/alpine-minirootfs-3.23.3-aarch64.tar.xz"
+          echo "rootfs bundled: $(du -h "$APP/alpine-minirootfs-3.23.3-aarch64.tar.xz" | cut -f1)"
+
       - name: Package unsigned IPA
         run: |
           set -e
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
           mkdir -p dist/Payload
           ditto "$APP" dist/Payload/XForge.app
-          cd dist && zip -qry "XForge-0.2.0-unsigned.ipa" Payload
-          echo "artifact=$(pwd)/XForge-0.2.0-unsigned.ipa" >> "$GITHUB_ENV"
+          cd dist && zip -qry "XForge-0.3.0-unsigned.ipa" Payload
+          echo "artifact=$(pwd)/XForge-0.3.0-unsigned.ipa" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: XForge-unsigned-ipa
-          path: dist/XForge-0.2.0-unsigned.ipa
+          path: dist/XForge-0.3.0-unsigned.ipa
           if-no-files-found: error
 
       - name: Upload to release (manual trigger only)
@@ -61,7 +82,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: xforge-${{ github.run_number }}
-          name: XForge 0.2.0 — feature release
-          files: dist/XForge-0.2.0-unsigned.ipa
+          name: XForge 0.3.0 — iSH-AOK native Linux
+          files: dist/XForge-0.3.0-unsigned.ipa
           body_path: CHANGELOG.md
           generate_release_notes: false

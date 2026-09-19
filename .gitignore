@@ -16,3 +16,13 @@ XForge.xcodeproj/
 # Editors
 .vscode/*
 !.vscode/extensions.json
+
+# Embedded iSH-AOK engine
+# (Vendor/ish-AOK is a submodule/gitlink, so it is tracked; only its build
+#  output below is ignored.)
+# Static libraries produced by EmbeddedLinux/build-ish-aok-core.sh.
+Vendor/ish-AOK-build/
+
+# Bundled root filesystem: fetched by EmbeddedLinux/fetch-rootfs.sh, not committed.
+Support/Resources/*.tar.xz
+Support/Resources/*.tar.gz

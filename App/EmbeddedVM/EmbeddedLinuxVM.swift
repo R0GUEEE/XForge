@@ -1,16 +1,39 @@
 import Foundation
 
-/// Concrete `LinuxVM` that drives an in-process `LinuxEmulator` (QEMU/iSH-style
-/// library) over a byte pipe. Since iOS cannot spawn subprocesses, the emulator runs
-/// inside the app and this type provides the command/file bridge to its guest shell.
+/// Thread-safe string accumulator for output captured from a `@Sendable` callback.
+private final class OutputBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+
+    func append(_ chunk: String) {
+        lock.lock()
+        text += chunk
+        lock.unlock()
+    }
+
+    var value: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return text
+    }
+}
+
+/// Concrete `LinuxVM` that drives an in-process `LinuxEmulator` (iSH-AOK).
+///
+/// iOS cannot spawn subprocesses, so the guest runs inside the app and this type
+/// provides the command/file bridge to it. The engine's primitive is one-shot
+/// command capture, so `run` executes a command and forwards its merged output
+/// to `onOutput`.
 @MainActor
 final class EmbeddedLinuxVM: LinuxVM {
     let root: URL
     private let emulator: LinuxEmulator
     private(set) var isBooted = false
 
-    /// Sentinel we echo after each command so the host can capture the guest exit code.
-    private static let exitSentinel = "__XF_EXIT__"
+    /// No timeout: builds run in the foreground and may legitimately take minutes.
+    private static let noTimeout: TimeInterval = 0
+    /// Generous capture cap for build logs (bytes).
+    private static let outputCap = 8 * 1024 * 1024
 
     init(root: URL, emulator: LinuxEmulator) {
         self.root = root
@@ -23,49 +46,39 @@ final class EmbeddedLinuxVM: LinuxVM {
         isBooted = emulator.isRunning
     }
 
-    /// Run a command in the guest, streaming stdout lines, and return its exit code.
+    /// Run a command in the guest, forwarding its output, and return its exit code.
     func run(
         _ command: String,
         environment: [String: String]?,
-        onOutput: @escaping (String) -> Void
+        onOutput: @Sendable @escaping (String) -> Void
     ) async throws -> Int32 {
         try await boot()
 
         let env = environment.map { pairs in
             pairs.map { "\($0.key)=\($0.value)" }.joined(separator: " ") + " "
         } ?? ""
-        // Echo a sentinel carrying $? so we can parse the real exit code.
-        let full = "\(env)\(command)\nprintf '\\n\(Self.exitSentinel)%d\\n' $?\n"
-        try await emulator.write(Data(full.utf8))
 
-        var accumulated = ""
-        var exitCode: Int32 = -1
-        while true {
-            let chunk = try await emulator.read()
-            guard let text = String(data: chunk, encoding: .utf8) else { continue }
-            accumulated += text
-
-            if let range = accumulated.range(of: Self.exitSentinel) {
-                let suffix = accumulated[range.upperBound...]
-                let digits = suffix.prefix { $0.isNumber }
-                exitCode = Int32(digits) ?? -1
-                let beforeSentinel = String(accumulated[..<range.lowerBound])
-                emit(beforeSentinel, to: onOutput)
-                return exitCode
-            }
-            emit(accumulated, to: onOutput)
-            accumulated = lastPartialLine(accumulated)
+        let result = try await emulator.runCommand(
+            env + command,
+            shell: nil,
+            timeout: Self.noTimeout,
+            maxOutput: Self.outputCap
+        )
+        if !result.output.isEmpty {
+            onOutput(result.output)
         }
+        return result.status
     }
 
     /// Copy a file out of the guest into a host URL (base64 over the shell).
     func copyOut(guestPath: String, to hostURL: URL) async throws {
-        var encoded = ""
+        let box = OutputBox()
         let code = try await run(
             "base64 -w0 '\(guestPath)' 2>/dev/null || echo __XF_COPY_ERR__",
             environment: nil
-        ) { encoded += $0 }
-        let trimmed = encoded.trimmingCharacters(in: .whitespacesAndNewlines)
+        ) { box.append($0) }
+
+        let trimmed = box.value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard code == 0, !trimmed.contains("__XF_COPY_ERR__"),
               let data = Data(base64Encoded: trimmed) else {
             throw LinuxVMError.fileCopyFailed
@@ -82,19 +95,6 @@ final class EmbeddedLinuxVM: LinuxVM {
             "mkdir -p '\(dir)' && base64 -d > '\(guestPath)' <<'__XF_B64__'\n\(b64)\n__XF_B64__\n",
             environment: nil
         ) { _ in }
-    }
-
-    // MARK: - helpers
-
-    private func emit(_ text: String, to onOutput: @escaping (String) -> Void) {
-        guard !text.isEmpty else { return }
-        onOutput(text)
-    }
-
-    private func lastPartialLine(_ text: String) -> String {
-        guard let newline = text.lastIndex(of: "\n") else { return text }
-        let after = text.index(after: newline)
-        return String(text[after...])
     }
 }
 

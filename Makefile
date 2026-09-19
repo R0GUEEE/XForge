@@ -1,7 +1,22 @@
-.PHONY: gen build test ipa sdk
+.PHONY: bootstrap submodule rootfs ish-core gen build test ipa sdk clean
 
 XCODE := xcodebuild
 SCHEME := XForge
+
+## Everything needed to build locally, in order.
+bootstrap: submodule rootfs ish-core
+
+## Pull the iSH-AOK engine sources (git submodule).
+submodule:
+	git submodule update --init --depth 1 Vendor/ish-AOK
+
+## Fetch the bundled Alpine aarch64 root filesystem into Support/Resources.
+rootfs:
+	@bash EmbeddedLinux/fetch-rootfs.sh
+
+## Build the embedded iSH-AOK Linux engine into Vendor/ish-AOK-build/lib.
+ish-core:
+	@bash EmbeddedLinux/build-ish-aok-core.sh
 
 ## Generate the Xcode project from project.yml
 gen:
@@ -25,3 +40,6 @@ ipa: gen
 ## (macOS only) Build the darwin Swift SDK from local Xcode
 sdk:
 	xtool sdk build "$$(dirname $$(dirname $$(xcrun -f swiftc)))" darwin-sdk-out
+
+clean:
+	rm -rf build dist XForge.xcodeproj Vendor/ish-AOK-build

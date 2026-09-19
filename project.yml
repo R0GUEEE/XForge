@@ -14,6 +14,14 @@ packages:
     url: https://github.com/weichsel/ZIPFoundation
     from: 0.9.19
 
+# iSH-AOK (Vendor/ish-AOK, a git submodule) provides the embedded Linux engine.
+# Its core static libraries are built by EmbeddedLinux/build-ish-aok-core.sh into
+# Vendor/ish-AOK-build/lib, where the linker finds them below.
+settings:
+  base:
+    ISH_AOK_ROOT: $(SRCROOT)/Vendor/ish-AOK
+    ISH_AOK_LIB_DIR: $(SRCROOT)/Vendor/ish-AOK-build/lib
+
 targets:
   XForge:
     type: application
@@ -21,6 +29,9 @@ targets:
     sources:
       - path: App
       - path: Support
+      - path: Support/Resources
+        buildPhase: resources
+        optional: true
     dependencies:
       - package: xtool
         product: XKit
@@ -31,8 +42,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: org.xforge.XForge
-        MARKETING_VERSION: 0.2.0
-        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.3.0
+        CURRENT_PROJECT_VERSION: 2
         SWIFT_VERSION: "6.0"
         SWIFT_STRICT_CONCURRENCY: complete
         CODE_SIGNING_ALLOWED: NO
@@ -42,6 +53,36 @@ targets:
         ENABLE_PREVIEWS: YES
         OTHER_SWIFT_FLAGS: "-Xcc -fmacro-backtrace-limit=0"
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
+        # --- embedded iSH-AOK engine (device builds only) -----------------
+        # The engine is built for the iOS device (arm64). Simulator builds
+        # compile the bridge's stub instead and link nothing extra.
+        SWIFT_OBJC_BRIDGING_HEADER: Support/XForge-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/App/EmbeddedVM
+        "HEADER_SEARCH_PATHS[sdk=iphoneos*]":
+          - $(SRCROOT)/App/EmbeddedVM
+          - $(ISH_AOK_ROOT)
+          - $(ISH_AOK_ROOT)/deps/libarchive/libarchive
+        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]":
+          - $(ISH_AOK_LIB_DIR)
+        # Must match the guest-arch configuration the core was built with
+        # (-Dguest_archs=arm64); struct layouts differ per enabled arch.
+        "OTHER_CFLAGS[sdk=iphoneos*]":
+          - -DISH_GUEST_ARM64=1
+          - -DISH_GUEST_I386=0
+          - -DISH_GUEST_AMD64=0
+          - -DISH_GUEST_RISCV64=0
+        "OTHER_LDFLAGS[sdk=iphoneos*]":
+          - -lish
+          - -lish_emu
+          - -lfakefs
+          - -lxforge-fakefsimport
+          - -larchive
+          - -llzma
+          - -lzstd
+          - -lbz2
+          - -lz
+          - -lsqlite3
     info:
       path: Support/Info.plist
     entitlements:

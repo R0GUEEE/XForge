@@ -14,6 +14,17 @@ enum XForgeEnvironment {
         documentDirectory.appendingPathComponent("embedded-linux", isDirectory: true)
     }
 
+    /// Installed iSH-AOK `fakefs` root filesystems. The bundled Alpine rootfs is
+    /// imported here on first boot and reused afterwards.
+    static var rootsDirectory: URL {
+        embeddedRoot.appendingPathComponent("roots", isDirectory: true)
+    }
+
+    /// Whether the bundled Alpine rootfs has already been imported.
+    static var isRootfsInstalled: Bool {
+        RootfsInstaller.isInstalled(in: rootsDirectory)
+    }
+
     /// Where build artifacts are staged before export.
     static var stagingDirectory: URL {
         documentDirectory.appendingPathComponent("staging", isDirectory: true)
@@ -46,8 +57,9 @@ enum XForgeEnvironment {
     }
 
     /// The in-process Linux emulator that runs the embedded Alpine guest.
-    /// iOS cannot spawn subprocesses, so the guest runs as a library in-process.
+    /// iSH-AOK runs a real aarch64 Linux guest in-process; its "gadget JIT"
+    /// needs no JIT entitlement, so it works in a sideloaded app.
     static func makeEmulator() -> LinuxEmulator {
-        EmbeddedQemuLinux(rootfs: embeddedRoot)
+        ISHAOKEmulator(rootsDirectory: rootsDirectory)
     }
 }

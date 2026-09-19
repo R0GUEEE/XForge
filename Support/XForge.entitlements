@@ -6,5 +6,13 @@
 	<true/>
 	<key>application-identifier</key>
 	<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<!-- The embedded iSH-AOK guest maps a large guest address space and runs a
+	     whole Linux userland; these two are what iSH-AOK's own iOS build asks
+	     for. Sideloading may strip them, in which case the guest still runs
+	     with a smaller address space / memory budget. -->
+	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
+	<true/>
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
 </dict>
 </plist>

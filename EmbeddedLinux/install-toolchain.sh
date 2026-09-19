@@ -4,9 +4,9 @@
 # The guest is Alpine aarch64 (musl). The Swift toolchain and xtool are glibc
 # binaries, so we install Alpine's `gcompat` to run them.
 #
-# If the rootfs was assembled by build-rootfs.sh, the Swift toolchain + xtool are
-# already present; this script only finishes setup (darwin SDK, symlinks) and can be
-# re-run safely. If run on a bare Alpine, it also installs the toolchain.
+# If the guest was provisioned already (Swift toolchain + xtool present), this
+# script only finishes setup (darwin SDK, symlinks) and can be re-run safely.
+# On a bare Alpine (which is what XForge bundles) it also installs the toolchain.
 
 set -euo pipefail
 

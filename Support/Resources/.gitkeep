@@ -1,0 +1,1 @@
+# Keep the Resources directory in git; the rootfs archive is fetched at build time.

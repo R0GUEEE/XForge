@@ -1,0 +1,5 @@
+[submodule "Vendor/ish-AOK"]
+	path = Vendor/ish-AOK
+	url = https://github.com/emkey1/ish-AOK.git
+	branch = working
+	shallow = true

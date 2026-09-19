@@ -27,15 +27,22 @@ self-contained, all fetchable):
   .tbd stubs, module maps) + the iOS Swift stdlib. This is the big one (multi-GB).
 - **`xtool` aarch64 binary** (the prebuilt `xtool-aarch64.AppImage`, 51 MB).
 
-## 1b. The userspace is **Alpine aarch64**
+## 1b. The userspace is **Alpine aarch64**, bundled in the app
 
-The embedded Linux is **Alpine Linux arm64** (musl, ~8 MB base) — tiny enough to bundle
-in the app, and the same distro family as iSH-AOK. Because Swift + xtool are glibc
-binaries, the rootfs installs Alpine's `gcompat` + `libc6-compat` so they run on the
-musl base.
+The embedded Linux is the **Alpine Linux arm64 minirootfs** that iSH-AOK publishes:
 
-- `EmbeddedLinux/build-rootfs.sh` assembles the rootfs (on a Linux host/CI): Alpine base
-  + gcompat + Swift toolchain + xtool, ready to tar/xz and bundle.
+```
+https://github.com/emkey1/ish-AOK/raw/refs/heads/working/alpine-minirootfs-3.23.3-aarch64.tar.xz
+```
+
+- `EmbeddedLinux/fetch-rootfs.sh` downloads that exact archive into
+  `Support/Resources/`, where XcodeGen bundles it as an app resource. **Nothing is
+  downloaded after install** — the rootfs ships inside `XForge.app`.
+- On first boot the archive is imported into iSH-AOK's `fakefs` format (a `data/` tree
+  plus a `meta.db` SQLite database) inside the app container; every later launch reuses
+  it. See `App/EmbeddedVM/RootfsInstaller.swift`.
+- Because Swift + xtool are glibc binaries, the guest installs Alpine's `gcompat` +
+  `libc6-compat` during toolchain provisioning so they run on the musl base.
 - `EmbeddedLinux/install-toolchain.sh` runs *in the guest* for first-boot provisioning;
   it is idempotent and also fetches the darwin SDK if not already staged.
 - The multi-GB `darwin` SDK is *not* baked into the rootfs — it's fetched on first use
@@ -86,33 +93,44 @@ protocol BuildExecutor {
 - `EmbeddedLinuxExecutor`: drives the embedded VM via the `LinuxVM` bridge (below).
 - `RemoteExecutor` (future): same interface over SSH/WebSocket to a build server.
 
-## 4b. The `LinuxVM` bridge — in-process emulator (critical constraint)
+## 4b. The Linux engine is **iSH-AOK** (in-process, no subprocesses)
 
 **iOS cannot spawn subprocesses** (no `fork`/`exec`/`posix_spawn` in the app sandbox),
-so the embedded Linux cannot run as a child process. It must run **in-process** as a
-library — the same way tctiSH embeds `libqemu` and iSH runs its emulator as the app's
-own code.
-
-The bridge is split into two clean layers:
+so the embedded Linux cannot run as a child process. It runs **in-process** as a
+library. XForge uses [iSH-AOK](https://github.com/emkey1/ish-AOK) for this:
+it is a real Linux kernel + aarch64 emulator whose "gadget JIT" needs **no JIT
+entitlement**, so it works in a sideloaded app. iSH-AOK is vendored as the
+`Vendor/ish-AOK` git submodule and built for iOS by
+`EmbeddedLinux/build-ish-aok-core.sh`.
 
 ```
 BuildExecutor (EmbeddedLinuxExecutor)
       │  drives
       ▼
-LinuxVM  (EmbeddedLinuxVM)   ← command/file bridge, runs on MainActor
-      │  talks to guest shell over a byte pipe
+LinuxVM  (EmbeddedLinuxVM)      ← command/file bridge, runs on MainActor
+      │  run / copyIn / copyOut
       ▼
-LinuxEmulator  (protocol)    ← in-process execution engine
-   ├─ EmbeddedQemuLinux     ← wraps libqemu (built by build-emulator.yml)
-   └─ PendingLinuxEmulator  ← clear "not bundled yet" error
+LinuxEmulator (protocol)        ← in-process execution engine
+   └─ ISHAOKEmulator            ← drives the embedded iSH-AOK core
+      │  one dedicated serial queue (iSH-AOK's `current` is thread-local)
+      ▼
+ISHAOKBridge.c                  ← plain-C shim (bridging header → Swift)
+      │
+      ▼
+libish + libish_emu + libfakefs + fakefs_import   (built from Vendor/ish-AOK)
 ```
 
-- `EmbeddedLinuxVM` sends commands + a `printf '…__XF_EXIT__%d' $?` sentinel to parse
-  the guest exit code; `copyIn`/`copyOut` move files via base64 over the shell.
-- `LinuxEmulator` is the seam any real emulator must satisfy (boot, byte-pipe I/O).
-- The missing artifact is the emulator library itself, produced by
-  `build-emulator.yml` (QEMU user-mode aarch64, tctiSH-style) and downloaded like the
-  darwin SDK.
+- iSH-AOK's primitive is one-shot command capture
+  (`run_guest_command_capture_shell`), so `LinuxVM.run` executes a command and
+  forwards its merged stdout+stderr; `copyIn`/`copyOut` still move files via
+  base64 over the guest shell.
+- **Boot** (`ISHAOKBridge.c`) mirrors iSH-AOK's own app: mount the imported
+  rootfs with `mount_root`, create init with `become_first_process`, then mount
+  `/proc`, `/sys`, `/dev/pts`. It does *not* run `/sbin/init` — XForge runs build
+  commands as fresh children of init, which is all the headless runner needs.
+- The engine is built for the iOS **device** (arm64) only. Simulator builds (used
+  by unit tests) compile a stub in `ISHAOKBridge.c` instead, so `make test` needs
+  neither the submodule nor the core libraries.
 
 ## 5. Delivery / sideload pipeline
 
@@ -132,10 +150,13 @@ path, with a fast remote path available later.
 ## 7. Repo layout
 
 ```
-.github/workflows/unsigned-ipa.yml   # CI: build unsigned XForge.ipa
+.github/workflows/unsigned-ipa.yml   # CI: build the iSH-AOK core + unsigned XForge.ipa
 project.yml                          # XcodeGen definition
 App/                                 # SwiftUI app sources (native shell)
-Support/                             # Info.plist, entitlements
-EmbeddedLinux/                       # rootfs/toolchain/SDK build scripts + bridge docs
+App/EmbeddedVM/                      # LinuxVM bridge, ISHAOKEmulator, C bridge, rootfs import
+Support/                             # Info.plist, entitlements, Resources/ (bundled rootfs)
+Vendor/ish-AOK/                      # git submodule: the embedded Linux engine
+Vendor/ish-AOK-build/                # core static libs (built, gitignored)
+EmbeddedLinux/                       # fetch-rootfs.sh, build-ish-aok-core.sh, install-toolchain.sh
 Docs/                                # this design doc + tutorials
 ```
