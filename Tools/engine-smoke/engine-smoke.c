@@ -66,7 +66,13 @@ static int mkdirs(const char *path) {
 }
 
 // One guest command, with its outcome printed in full.
-static void run_guest(const char *label, const char *command, int timeout_ms) {
+//
+// `expect_exit` is the exit status the guest should end with -- 0 for the
+// normal cases, 127 for the probes of programs a bare rootfs does not have yet,
+// 7 for the deliberate failure below. The struct is read *before* it is freed:
+// xf_guest_result_free() zeroes it, which is a mistake this harness made once
+// and reported as every command failing.
+static void run_guest(const char *label, const char *command, int timeout_ms, int expect_exit) {
     step(label);
     struct xf_guest_result r;
     int rc = xf_ish_run(command, NULL, timeout_ms, 1 << 20, &r);
@@ -84,9 +90,11 @@ static void run_guest(const char *label, const char *command, int timeout_ms) {
             fputc('\n', stdout);
     }
     fflush(stdout);
-    xf_guest_result_free(&r);
 
-    int ok = r.exit_code == 0 && r.exited;
+    int ok = r.launched && r.exited && r.term_signal == 0 && r.exit_code == expect_exit;
+    if (!ok)
+        say("[smoke]      expected exit %d", expect_exit);
+    xf_guest_result_free(&r);
     result(label, ok);
 }
 
@@ -155,13 +163,14 @@ int main(int argc, char **argv) {
     result("boot the guest", 1);
 
     // --- 3. run commands ---------------------------------------------------
-    // The three probes ToolchainManager.guestHas() runs, then the kind of work
-    // the install paths do.
-    run_guest("uname", "uname -a", 120000);
-    run_guest("alpine-release", "cat /etc/alpine-release; command -v sh; echo home=$HOME path=$PATH", 120000);
-    run_guest("probe: swift", "command -v swift >/dev/null 2>&1", 120000);
-    run_guest("probe: xtool", "command -v xtool >/dev/null 2>&1", 120000);
-    run_guest("multi-command shell", "echo one; echo two >&2; exit 7", 120000);
+    // The probes ToolchainManager.guestHas() runs, then the kind of work the
+    // install paths do. `swift`/`xtool` are *meant* to be missing here: this is
+    // a bare Alpine minirootfs, before any provisioning.
+    run_guest("uname", "uname -a", 120000, 0);
+    run_guest("alpine-release", "cat /etc/alpine-release; command -v sh; echo home=$HOME path=$PATH", 120000, 0);
+    run_guest("probe: swift (absent in a bare rootfs)", "command -v swift >/dev/null 2>&1", 120000, 127);
+    run_guest("probe: xtool (absent in a bare rootfs)", "command -v xtool >/dev/null 2>&1", 120000, 127);
+    run_guest("a failing command reports its status", "echo one; echo two >&2; exit 7", 120000, 7);
 
     // --- 4. the /host share ------------------------------------------------
     // The SDK install stages hundreds of MB here and installs from it, so a
@@ -180,8 +189,8 @@ int main(int argc, char **argv) {
         }
     }
     result("write a file into the host share", 1);
-    run_guest("read it from the guest at /host", "cat /host/share-probe.txt", 120000);
-    run_guest("guest can write into /host", "echo from-guest > /host/written-by-guest.txt && cat /host/written-by-guest.txt", 120000);
+    run_guest("read it from the guest at /host", "cat /host/share-probe.txt", 120000, 0);
+    run_guest("guest can write into /host", "echo from-guest > /host/written-by-guest.txt && cat /host/written-by-guest.txt", 120000, 0);
     step("read the guest's file back on the host");
     {
         char path[4096];
@@ -196,7 +205,7 @@ int main(int argc, char **argv) {
     }
 
     // --- 5. a long-running command, as a build would be --------------------
-    run_guest("a slower command (shell loop)", "i=0; while [ $i -lt 200 ]; do i=$((i+1)); done; echo counted=$i", 120000);
+    run_guest("a slower command (shell loop)", "i=0; while [ $i -lt 200 ]; do i=$((i+1)); done; echo counted=$i", 120000, 0);
 
     step("shut down");
     xf_ish_shutdown();

@@ -132,7 +132,7 @@ struct SettingsView: View {
     }
 
     private var diagnosticsSection: some View {
-        Section("Diagnostics") {
+        Section {
             LabeledContent("Device", value: "\(SystemInfo.deviceName) (\(SystemInfo.deviceModel))")
             LabeledContent("System", value: "\(SystemInfo.systemName) \(SystemInfo.systemVersion)")
             LabeledContent("App", value: "\(SystemInfo.appVersion) (\(SystemInfo.appBuild))")
@@ -146,6 +146,8 @@ struct SettingsView: View {
             } label: {
                 Label("Engine log", systemImage: "doc.text.magnifyingglass")
             }
+        } header: {
+            Text("Diagnostics")
         } footer: {
             Text("The engine log holds the embedded Linux's own messages and "
                  + "XForge's install breadcrumbs — share it when something dies "
