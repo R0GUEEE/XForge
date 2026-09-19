@@ -1,0 +1,98 @@
+name: Engine smoke test (host harness)
+
+# Drives App/EmbeddedVM/ISHAOKBridge.c on a real machine, in the same order the
+# app's install paths do: import the bundled Alpine rootfs, boot the guest, run
+# commands, round-trip a file through the /host share.
+#
+# The app can only report "it crashed" from a device; this reports *where*.
+# It also builds the engine natively, so the bridge is compiled with the same
+# guest-arch defines the shipped core uses.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out the iSH-AOK engine (submodule)
+        run: |
+          set -e
+          git submodule update --init --depth 1 Vendor/ish-AOK
+          git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue
+
+      - name: Install build tools
+        run: |
+          set -e
+          brew install meson ninja libarchive
+
+      - name: Fetch the bundled Alpine rootfs
+        run: bash EmbeddedLinux/fetch-rootfs.sh
+
+      - name: Add the harness to the engine's build
+        run: |
+          set -e
+          mkdir -p Vendor/ish-AOK/xforge-ci
+          cp App/EmbeddedVM/ISHAOKBridge.c App/EmbeddedVM/ISHAOKBridge.h \
+             Tools/engine-smoke/engine-smoke.c Vendor/ish-AOK/xforge-ci/
+          cat >> Vendor/ish-AOK/tools/meson.build <<'EOF'
+
+          # --- XForge CI: the app's own bridge, on the host --------------------
+          # Built here rather than in a target of its own so it is compiled with
+          # the engine's exact flags, guest-arch defines and libarchive wiring.
+          if libarchive.found()
+              executable('engine_smoke',
+                  ['../xforge-ci/engine-smoke.c', '../xforge-ci/ISHAOKBridge.c', 'fakefs.c'],
+                  dependencies: [ish, libarchive],
+                  include_directories: [includes],
+              )
+          endif
+          EOF
+
+      - name: Configure the engine (host arm64, JIT, no native shells)
+        run: |
+          set -e
+          cd Vendor/ish-AOK
+          meson setup build-host --buildtype=release -Dengine=jit -Dguest_archs=arm64 \
+            -Dnative_bash=disabled -Dnative_zsh=disabled -Dnative_dash=disabled \
+            -Dnative_rust=disabled -Dnative_helix=disabled
+
+      - name: Build the harness
+        run: |
+          set -e
+          ninja -C Vendor/ish-AOK/build-host engine_smoke
+
+      - name: Run the harness
+        run: |
+          set -o pipefail
+          uname -m
+          ./Vendor/ish-AOK/build-host/engine_smoke \
+            Support/Resources/alpine-minirootfs-3.23.3-aarch64.tar.xz \
+            "$RUNNER_TEMP/xforge-smoke" 2>&1 | tee /tmp/engine-smoke.log
+          echo "--- exit status: $? ---"
+
+      - name: Report
+        if: always()
+        run: |
+          echo "### Engine smoke test" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -n 120 /tmp/engine-smoke.log >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(no log)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-smoke-log
+          path: /tmp/engine-smoke.log
+          if-no-files-found: warn
