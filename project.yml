@@ -79,7 +79,6 @@ targets:
           - -lxforge-fakefsimport
           - -larchive
           - -llzma
-          - -lzstd
           - -lbz2
           - -lz
           - -lsqlite3
