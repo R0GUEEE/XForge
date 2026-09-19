@@ -47,12 +47,17 @@ done
 
 # iSH-AOK's VDSO step compiles i386-linux with `-fuse-ld=lld`, which Apple's
 # clang cannot do. It needs an LLVM clang with lld, so put Homebrew's LLVM first
-# (brew install llvm).
+# and make sure `ld.lld` is reachable (brew install llvm lld).
 if command -v brew >/dev/null 2>&1; then
     LLVM_BIN="$(brew --prefix llvm 2>/dev/null)/bin"
     if [[ -d "$LLVM_BIN" ]]; then
         export PATH="$LLVM_BIN:$PATH"
         log "Using Homebrew LLVM: $LLVM_BIN"
+    fi
+    # Newer `llvm` bottles ship clang but not ld.lld; the `lld` formula does.
+    LLD_BIN="$(brew --prefix lld 2>/dev/null)/bin"
+    if [[ -d "$LLD_BIN" ]]; then
+        export PATH="$LLD_BIN:$PATH"
     fi
 fi
 if ! clang -target i386-linux -fuse-ld=lld -shared -nostdlib -x c /dev/null -o /dev/null 2>/dev/null; then
