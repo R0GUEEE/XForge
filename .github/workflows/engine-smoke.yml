@@ -34,7 +34,11 @@ jobs:
       - name: Install build tools
         run: |
           set -e
-          brew install meson ninja libarchive
+          # llvm + lld: the engine's VDSO is an i386 ELF, which Apple's clang
+          # cannot link without them (same requirement as the app's core build).
+          brew install meson ninja llvm lld libarchive
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix lld)/bin" >> "$GITHUB_PATH"
 
       - name: Fetch the bundled Alpine rootfs
         run: bash EmbeddedLinux/fetch-rootfs.sh
