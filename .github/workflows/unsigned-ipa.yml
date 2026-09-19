@@ -25,7 +25,7 @@ jobs:
           git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive
 
       - name: Install build tools
-        run: brew install xcodegen meson ninja
+        run: brew install xcodegen meson ninja llvm libarchive
 
       - name: Fetch the bundled Alpine rootfs
         run: bash EmbeddedLinux/fetch-rootfs.sh

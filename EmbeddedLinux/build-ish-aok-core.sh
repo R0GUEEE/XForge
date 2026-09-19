@@ -45,6 +45,20 @@ for tool in meson ninja xcrun python3; do
     command -v "$tool" >/dev/null 2>&1 || { echo "error: $tool not found in PATH" >&2; exit 1; }
 done
 
+# iSH-AOK's VDSO step compiles i386-linux with `-fuse-ld=lld`, which Apple's
+# clang cannot do. It needs an LLVM clang with lld, so put Homebrew's LLVM first
+# (brew install llvm).
+if command -v brew >/dev/null 2>&1; then
+    LLVM_BIN="$(brew --prefix llvm 2>/dev/null)/bin"
+    if [[ -d "$LLVM_BIN" ]]; then
+        export PATH="$LLVM_BIN:$PATH"
+        log "Using Homebrew LLVM: $LLVM_BIN"
+    fi
+fi
+if ! clang -target i386-linux -fuse-ld=lld -shared -nostdlib -x c /dev/null -o /dev/null 2>/dev/null; then
+    echo "warning: clang cannot build the VDSO (needs LLVM + lld). Install it with: brew install llvm" >&2
+fi
+
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 TRIPLE="arm64-apple-ios${MIN_SDK}"
 MESON_BUILD="$BUILD/meson"

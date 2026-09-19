@@ -49,7 +49,7 @@ Requires macOS + Xcode + [XcodeGen](https://github.com/yonaskolb/XcodeGen), meso
 ninja (for the iSH-AOK core).
 
 ```bash
-brew install xcodegen meson ninja
+brew install xcodegen meson ninja llvm libarchive
 
 # One-time: engine sources, bundled rootfs, then the iOS engine libraries.
 make bootstrap
