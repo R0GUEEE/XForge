@@ -91,6 +91,15 @@ libnettle8t64
 libhogweed6t64
 libcurl4t64
 libcurl4
+libnghttp2-14
+libpsl5
+libssh-4
+librtmp1
+libssl3t64
+libssl3
+libzstd1
+libgcrypt20
+libgpg-error0
 libedit2
 libpython3.12t64
 libsqlite3-0
@@ -176,6 +185,28 @@ step_glibc() {
         ln -sf "$GLIBC_LD" "$GLIBC_ROOT/usr/lib/ld-linux-$ARCH.so.1"
     fi
 
+    # Wire this glibc in as the system's glibc, not just a directory to point a
+    # wrapper at. Running a tool through the loader only covers the *first*
+    # process: Swift's driver execs swift-frontend and swift-build as children,
+    # and a child starts from its own ELF interpreter. With gcompat's stub
+    # loader at /lib/ld-linux-<arch>.so.1 those children went back to musl and
+    # died on glibc symbols (__isoc23_strtol, mallinfo2, pthread_cond_clockwait)
+    # and on libraries musl does not have (libncurses.so.6, libuuid.so.1).
+    #
+    # Alpine's own programs are unaffected: they use /lib/ld-musl-<arch>.so.1
+    # and libc.musl-<arch>.so.1, never these names.
+    rm -f "/lib/ld-linux-$ARCH.so.1"
+    ln -s "$GLIBC_LD" "/lib/ld-linux-$ARCH.so.1"
+    ln -sfn "$GLIBC_LIB" "/usr/lib/$MULTIARCH"
+    ln -sfn "$GLIBC_LIB" "/lib/$MULTIARCH"
+    for lib in libc.so.6 libm.so.6 libpthread.so.0 librt.so.1 libdl.so.2 \
+               libresolv.so.2 libutil.so.1 libcrypt.so.1; do
+        if [ -e "$GLIBC_LIB/$lib" ]; then
+            rm -f "/lib/$lib"
+            ln -s "$GLIBC_LIB/$lib" "/lib/$lib"
+        fi
+    done
+
     cat > "$SHARE/glibc.env" <<EOF
 # Sourced by the wrappers in /usr/local/bin. Each tool's wrapper appends the
 # libraries it ships with to XFORGE_GLIBC_LIB.
@@ -201,7 +232,10 @@ xtool_wrapper() {
 # xtool is an Ubuntu glibc binary; run it through the glibc loader installed by
 # install-toolchain.sh, with the libraries it ships alongside it.
 . /usr/local/share/xforge/glibc.env
-exec "$XFORGE_GLIBC_LD" --library-path "$XFORGE_GLIBC_LIB:/opt/xtool/usr/lib" \
+# The AppImage's own libraries come first: Ubuntu's libcurl (which Swift needs)
+# is newer than the nghttp2 the AppImage bundles, and mixing them the other way
+# round gives "undefined symbol: nghttp2_option_set_no_rfc9113_...".
+exec "$XFORGE_GLIBC_LD" --library-path "/opt/xtool/usr/lib:$XFORGE_GLIBC_LIB" \
     /opt/xtool/usr/bin/xtool "$@"
 EOF
     chmod +x /usr/local/bin/xtool
@@ -258,14 +292,14 @@ home="\${SWIFTLY_HOME_DIR:-/root/.local/share/swiftly}"
 
 for candidate in "\$home"/toolchains/*/usr/bin/$name "\$home"/bin/$name; do
     [ -x "\$candidate" ] || continue
-    exec "\$XFORGE_GLIBC_LD" --library-path "\$XFORGE_GLIBC_LIB" "\$candidate" "\$@"
+    exec "\$candidate" "\$@"
 done
 
 . "\$home/env.sh" >/dev/null 2>&1 || true
 for dir in \${PATH}; do
     case "\$dir" in /usr/local/bin) continue;; esac
     if [ -x "\$dir/$name" ]; then
-        exec "\$XFORGE_GLIBC_LD" --library-path "\$XFORGE_GLIBC_LIB" "\$dir/$name" "\$@"
+        exec "\$dir/$name" "\$@"
     fi
 done
 
