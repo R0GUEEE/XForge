@@ -34,13 +34,35 @@ All notable changes to **XForge** are documented here.
   between commands, history is recalled with ↑/↓ and persists across launches, and
   the scrollback is only cleared by Clear.
 
-### Known limitation
-- Running Swift-based tools *inside* the guest is not reliable yet, and it is not
-  an XForge bug: iSH-AOK's aarch64 guest emulation intermittently faults on them.
-  Measured on a static Swift binary in the same emulator: 4 clean runs and 2
-  `SIGTRAP` ("Trace/breakpoint trap") out of 6, with no glibc involved.
-  The install steps still do their job and the verify step says exactly which tool
-  runs — see the Engine log. This needs an upstream fix in the engine.
+### Verified end to end, in a guest, before shipping
+The host harness runs the same steps the app runs, in a booted guest on CI, and
+then tries to *run* what they installed:
+
+```
+XFORGE-VERIFY  xtool    ok   xtool 1.19.2
+XFORGE-VERIFY  swift    ok   Swift version 6.4 (swift-6.4-RELEASE)
+                             Target: aarch64-unknown-linux-gnu
+XFORGE-VERIFY  swiftly  ok   1.1.4
+```
+
+`xtool --version` and `swift --version` both exit 0 in the guest. Getting there
+took three fixes the harness caught in a row: swiftly refuses to install without
+gpg; it leaves the toolchain unlinked; and — the big one — running a tool *through*
+the glibc loader only covers the first process, because a child (swift-frontend,
+swift-build) starts from its own ELF interpreter. The glibc layer is now wired in
+as the system's glibc (`/lib/ld-linux-<arch>.so.1`, the loader's multiarch
+directories, and the `/lib/lib*.so.*` names), which Alpine's own musl programs do
+not use.
+
+Timing, from the CI runs: the whole provisioning is about 20 minutes on a fast
+host, most of it Swift 6.4.0 (1058 MiB) downloading and unpacking inside the guest.
+
+### Known gap
+`swift --version` still prints `warning: libc not found for
+'aarch64-unknown-linux-gnu'; C stdlib may be unavailable` — Swift looks for the
+glibc *development* files (headers and crt objects), which the layer does not carry
+yet. Harmless for running the tools; it may matter for a build that compiles C, and
+that is the next thing to check with a real `xtool dev build`.
 
 ## [0.3.4] — 2026-09-20 — Network access for the guest
 
