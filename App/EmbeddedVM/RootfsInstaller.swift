@@ -14,8 +14,27 @@ enum RootfsInstaller {
     /// Directory name of the installed root inside `<Documents>/embedded-linux/roots`.
     static let rootName = "alpine"
 
+    /// The names the bundled archive can have, best first.
+    ///
+    /// `-provisioned` is what `EmbeddedLinux/build-rootfs-payload.sh` produces:
+    /// the same Alpine release with the toolchain *already* installed in it (apk
+    /// build dependencies, the glibc layer, xtool, swiftly + Swift, optionally the
+    /// darwin SDK). Booting it means the user has nothing left to install — which
+    /// is the point of `EmbeddedLinux/fetch-rootfs.sh` preferring that archive.
+    /// The plain minirootfs stays supported: it is what `XFORGE_ROOTFS=plain`
+    /// builds, and its guest-side installer does the provisioning instead.
+    static let bundledArchiveNames = [
+        "\(archiveName)-provisioned",
+        archiveName,
+    ]
+
     static func bundledArchiveURL() -> URL? {
-        Bundle.main.url(forResource: archiveName, withExtension: archiveExtension)
+        for name in bundledArchiveNames {
+            if let url = Bundle.main.url(forResource: name, withExtension: archiveExtension) {
+                return url
+            }
+        }
+        return nil
     }
 
     static func installedRoot(in rootsDirectory: URL) -> URL {
@@ -51,10 +70,12 @@ enum RootfsInstaller {
 
         guard let archive = bundledArchiveURL() else {
             throw RootfsError.archiveMissing(
-                "\(archiveName).\(archiveExtension) is not bundled in the app. "
-                + "Run EmbeddedLinux/fetch-rootfs.sh before building, or rebuild via CI.")
+                "No Alpine rootfs is bundled in the app (looked for "
+                + bundledArchiveNames.map { "\($0).\(archiveExtension)" }.joined(separator: ", ")
+                + "). Run EmbeddedLinux/fetch-rootfs.sh before building, or rebuild via CI.")
         }
 
+        XForgeLog.note("rootfs: importing the bundled \(archive.lastPathComponent)")
         return try install(archive: archive, into: rootsDirectory)
     }
 

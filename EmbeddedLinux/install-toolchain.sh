@@ -43,6 +43,19 @@ UBUNTU_SUITE="${XFORGE_UBUNTU_SUITE:-noble}"
 log() { echo "==> $*"; }
 
 # ---------------------------------------------------------------------------
+# Output sinks
+#
+# Never send a *guest process*'s output to /dev/null here. iSH-AOK's arm64
+# engine has been observed to SIGKILL a forked guest program whose stdout/stderr
+# points at /dev/null — `swift --version >/dev/null 2>&1` died where the same
+# command without the redirect ran fine, and `apk info -e … >/dev/null` died
+# intermittently. Pipes and real files are safe, and a shell *builtin*
+# (`command -v x >/dev/null`) is not affected, so silence goes to a file.
+# ---------------------------------------------------------------------------
+SILENT="${TMPDIR:-/tmp}/xforge-silent.$$"
+: > "$SILENT"
+
+# ---------------------------------------------------------------------------
 # glibc compatibility layer
 # ---------------------------------------------------------------------------
 #
@@ -132,7 +145,7 @@ glibc_fetch_indexes() {
         target="/tmp/xforge-glibc/Packages-$component"
         [ -s "$target" ] && continue
         url="http://ports.ubuntu.com/ubuntu-ports/dists/$UBUNTU_SUITE/$component/binary-$UBUNTU_ARCH/Packages.gz"
-        if curl -fL --retry 3 -o "$target.gz" "$url" 2>/dev/null; then
+        if curl -fL --retry 3 -o "$target.gz" "$url" 2>>"$SILENT"; then
             gzip -dc "$target.gz" > "$target"
         fi
     done
@@ -171,11 +184,11 @@ step_glibc() {
                     cp -a "usr/lib/$MULTIARCH/." "$GLIBC_LIB/"
                 fi
                 if [ -e "usr/lib/ld-linux-$ARCH.so.1" ]; then
-                    cp -a "usr/lib/ld-linux-$ARCH.so.1" "$GLIBC_ROOT/usr/lib/" 2>/dev/null || true
+                    cp -a "usr/lib/ld-linux-$ARCH.so.1" "$GLIBC_ROOT/usr/lib/" 2>>"$SILENT" || true
                 fi
                 if [ -d usr/share/icu ]; then
                     mkdir -p "$GLIBC_ROOT/usr/share"
-                    cp -a usr/share/icu "$GLIBC_ROOT/usr/share/" 2>/dev/null || true
+                    cp -a usr/share/icu "$GLIBC_ROOT/usr/share/" 2>>"$SILENT" || true
                 fi
             )
             echo "    $pkg"
@@ -236,7 +249,7 @@ step_deps() {
 
     missing=""
     for package in $packages; do
-        apk info -e "$package" >/dev/null 2>&1 || missing="$missing $package"
+        apk info -e "$package" >"$SILENT" 2>&1 || missing="$missing $package"
     done
 
     if [ -n "$missing" ]; then
@@ -273,7 +286,7 @@ step_xtool() {
             "https://github.com/xtool-org/xtool/releases/latest/download/xtool-$ARCH.AppImage" \
             -o /tmp/xtool.AppImage
         chmod +x /tmp/xtool.AppImage
-        ( cd /opt && rm -rf squashfs-root && /tmp/xtool.AppImage --appimage-extract >/dev/null )
+        ( cd /opt && rm -rf squashfs-root && /tmp/xtool.AppImage --appimage-extract >"$SILENT" 2>&1 )
         rm -rf /opt/xtool && mv /opt/squashfs-root /opt/xtool
         rm -f /tmp/xtool.AppImage
     fi
@@ -316,7 +329,7 @@ for candidate in "\$home"/toolchains/*/usr/bin/$name "\$home"/bin/$name; do
     exec "\$candidate" "\$@"
 done
 
-. "\$home/env.sh" >/dev/null 2>&1 || true
+. "\$home/env.sh" >/dev/null 2>&1 || true   # sourcing, not a forked program: the only safe /dev/null here
 for dir in \${PATH}; do
     case "\$dir" in /usr/local/bin) continue;; esac
     if [ -x "\$dir/$name" ]; then
@@ -344,7 +357,7 @@ step_swift() {
     . "$SWIFTLY_HOME_DIR/env.sh"
     # `swiftly list` exits 0 and prints a separator even with nothing installed,
     # so ask the directory that actually holds toolchains.
-    if [ -n "$(ls -A "$SWIFTLY_HOME_DIR/toolchains" 2>/dev/null)" ]; then
+    if [ -n "$(ls -A "$SWIFTLY_HOME_DIR/toolchains" 2>>"$SILENT")" ]; then
         log "a toolchain is already installed: $(ls "$SWIFTLY_HOME_DIR/toolchains" | tail -1)"
         return 0
     fi
@@ -361,20 +374,20 @@ step_swift() {
         echo "    gpg is not installed in the guest: skipping signature verification"
         swiftly install latest --use --assume-yes --no-verify || true
     fi
-    if [ -z "$(ls -A "$SWIFTLY_HOME_DIR/toolchains" 2>/dev/null)" ]; then
+    if [ -z "$(ls -A "$SWIFTLY_HOME_DIR/toolchains" 2>>"$SILENT")" ]; then
         echo "    no toolchain after the first attempt; retrying without signature verification"
         swiftly install latest --use --assume-yes --no-verify
     fi
 
     # `swiftly init --skip-install` leaves it unlinked; make it manage the
     # toolchain we just installed.
-    swiftly link >/dev/null 2>&1 || true
+    swiftly link >"$SILENT" 2>&1 || true
 
     # Say what actually resolved. A guest whose swift cannot run is much easier to
     # diagnose from these four lines than from a wrapper's refusal.
     log "swift wrapper installed at /usr/local/bin/swift"
-    echo "    toolchains: $(ls "$SWIFTLY_HOME_DIR/toolchains" 2>/dev/null | tr '\n' ' ')"
-    echo "    swiftly bin: $(ls "$SWIFTLY_HOME_DIR/bin" 2>/dev/null | tr '\n' ' ')"
+    echo "    toolchains: $(ls "$SWIFTLY_HOME_DIR/toolchains" 2>>"$SILENT" | tr '\n' ' ')"
+    echo "    swiftly bin: $(ls "$SWIFTLY_HOME_DIR/bin" 2>>"$SILENT" | tr '\n' ' ')"
     if out="$(swift --version 2>&1)"; then
         echo "    swift --version: $(printf '%s' "$out" | head -1)"
     else

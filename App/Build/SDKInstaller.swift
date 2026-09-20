@@ -25,7 +25,7 @@ enum SDKInstaller {
         try await vm.boot()
 
         let alreadyInstalled = try await vm.run(
-            "swift sdk list 2>/dev/null | grep -qi darwin",
+            "swift sdk list 2>&1 | grep -qi darwin",
             environment: nil
         ) { _ in }
         if alreadyInstalled == 0 {
@@ -98,7 +98,7 @@ enum SDKInstaller {
         }
 
         let verified = try await vm.run(
-            "swift sdk list 2>/dev/null | grep -qi darwin",
+            "swift sdk list 2>&1 | grep -qi darwin",
             environment: nil
         ) { _ in }
         guard verified == 0 else {

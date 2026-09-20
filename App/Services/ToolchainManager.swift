@@ -160,7 +160,11 @@ final class ToolchainManager: ObservableObject {
         case .xtool:
             command = "command -v xtool >/dev/null 2>&1"
         case .sdk:
-            command = "command -v swift >/dev/null 2>&1 && swift sdk list 2>/dev/null | grep -qi darwin"
+            // `swift sdk list` is a glibc binary being asked a question, so its
+            // stderr is piped rather than sent to /dev/null: this engine kills a
+            // forked guest program whose output points at /dev/null, and the
+            // answer here decides whether the SDK row reads "installed".
+            command = "command -v swift >/dev/null 2>&1 && swift sdk list 2>&1 | grep -qi darwin"
         }
         do {
             let status = try await vm.run(command, environment: nil) { _ in }

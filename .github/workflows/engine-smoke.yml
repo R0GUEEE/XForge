@@ -78,6 +78,12 @@ jobs:
             -Dnative_bash=disabled -Dnative_zsh=disabled -Dnative_dash=disabled \
             -Dnative_rust=disabled -Dnative_helix=disabled
 
+      - name: Fetch the Alpine rootfs for the harness
+        # The plain minirootfs: the harness exercises the bridge and, with
+        # XFORGE_SMOKE_TOOLCHAIN, the in-guest provisioning steps themselves — a
+        # provisioned payload would have nothing left for it to do.
+        run: XFORGE_ROOTFS=plain bash EmbeddedLinux/fetch-rootfs.sh
+
       - name: Build the harness
         run: |
           # Meson names a target defined in a subdir by that subdir
@@ -91,9 +97,11 @@ jobs:
           # XFORGE_SMOKE_TOOLCHAIN makes it also run the app's real provisioning
           # steps in the guest (base packages, the glibc layer, xtool) and then
           # try to run what they installed.
+          rootfs="$(ls Support/Resources/*.tar.gz | head -1)"
+          echo "rootfs: $rootfs"
           XFORGE_SMOKE_TOOLCHAIN="$PWD/EmbeddedLinux/install-toolchain.sh" \
           ./Vendor/ish-AOK/build-host/tools/engine_smoke \
-            Support/Resources/alpine-minirootfs-3.23.3-aarch64.tar.xz \
+            "$rootfs" \
             "$RUNNER_TEMP/xforge-smoke" 2>&1 | tee /tmp/engine-smoke.log
           echo "--- exit status: $? ---"
 

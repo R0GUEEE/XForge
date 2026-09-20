@@ -114,11 +114,19 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
 
     /// The readiness stamp changes when XForge's rootfs requirements change. The
     /// executable and apk checks make a stale or partially restored stamp harmless.
+    ///
+    /// Every probe here is a separate guest process, and their output goes to a
+    /// *file*, never `/dev/null`: iSH-AOK's arm64 engine kills a forked guest
+    /// program whose stdout/stderr is `/dev/null` (found with the engine-smoke
+    /// harness — `swift --version >/dev/null 2>&1` died where the unredirected
+    /// form ran fine). A probe killed that way reports "not provisioned" on a
+    /// rootfs that is, which is worse than a noisy log line.
     private func buildEnvironmentIsReady() async throws -> Bool {
+        let silence = ">/tmp/xforge-probe.log 2>&1"
         let status = try await vm.run(
             "test -f /usr/local/share/xforge/build-environment-v2 && "
-            + "apk info -e clang lld cmake ninja git >/dev/null 2>&1 && "
-            + "swift --version >/dev/null 2>&1 && xtool --version >/dev/null 2>&1",
+            + "apk info -e clang lld cmake ninja git \(silence) && "
+            + "swift --version \(silence) && xtool --version \(silence)",
             environment: nil
         ) { _ in }
         return status == 0

@@ -2,6 +2,42 @@
 
 All notable changes to **XForge** are documented here.
 
+## [0.5.0] — 2026-09-20 — Toolchain preinstalled
+
+### Changed
+- **The app now ships a *provisioned* Alpine rootfs, so there is nothing to
+  install on the device.** The IPA bundles
+  `alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz`: the Alpine aarch64
+  release with the whole guest toolchain already in it — apk build dependencies
+  (clang, lld, cmake, ninja, git, …), the glibc compatibility layer under
+  `/opt/glibc`, the swift/swiftc/xtool wrappers, xtool unpacked in `/opt/xtool`,
+  swiftly and the Swift toolchain, and the `darwin` Swift SDK when a
+  `darwin-sdk-*` release has one. Importing it during the first launch is the
+  only setup left, and the app can then build a project without a network.
+- **Provisioning happens at build time**, in
+  `EmbeddedLinux/build-rootfs-payload.sh`, on an arm64 Linux host: it chroots
+  into the unpacked minirootfs and runs the app's *own*
+  `EmbeddedLinux/install-toolchain.sh all` there, so there is no second
+  implementation to drift from what a device installs. Every tool is then
+  executed inside the finished rootfs and the result is written to
+  `/usr/local/share/xforge/payload-manifest.txt` **inside** the archive, which is
+  what the IPA build verifies before shipping it.
+- `.github/workflows/unsigned-ipa.yml` builds that payload first (cached by a
+  content key, so only a change to the provisioning pays for it) and then bundles
+  it; `.github/workflows/build-rootfs-payload.yml` can also build and publish it
+  on its own. `EmbeddedLinux/fetch-rootfs.sh` learned `XFORGE_ROOTFS=auto|payload|plain`.
+- **Bundle identifier is now `com.r0gueee.xforge`** (was `org.xforge.XForge`), and
+  the app version is 0.5.0 (8).
+
+### Fixed
+- **No guest command's output is sent to `/dev/null` any more.** iSH-AOK's arm64
+  engine SIGKILLs a forked guest program whose stdout/stderr points at `/dev/null`,
+  which made `apk info -e …`, `swift --version` and `xtool --version` die — that is
+  what left a fully provisioned rootfs looking "not provisioned", and what a fresh
+  install ran into at its very first step. Pipes and real files are safe, so
+  silence now goes to a file (`/tmp/xforge-probe.log`, `$SILENT` in the guest
+  script); the one remaining `/dev/null` is a shell `source`, which does not fork.
+
 ## [0.4.0] — 2026-09-20 — Toolchain installs, with progress
 
 ### Added

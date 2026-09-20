@@ -1,7 +1,24 @@
 name: Build unsigned XForge IPA
 
+# Produces an IPA that is ready the moment it is installed: the Alpine rootfs
+# bundled inside the app is *provisioned* — apk build environment, the glibc
+# compatibility layer, xtool, swiftly + the Swift toolchain, and the darwin Swift
+# SDK when a release has one — so the app has nothing to install on the device and
+# needs no network to build a project. See EmbeddedLinux/build-rootfs-payload.sh.
+#
+# Two jobs, one dispatch: the payload has to be built on arm64 *Linux* (it chroots
+# into Alpine and runs the guest's own arm64 binaries), while the app needs macOS +
+# Xcode. The payload is cached by content key, so only a change to the provisioning
+# pays for it again.
+
 on:
   workflow_dispatch:
+    inputs:
+      include_darwin_sdk:
+        description: "darwin Swift SDK baked into the bundled rootfs"
+        type: choice
+        default: auto
+        options: [auto, "1", "0"]
 
 permissions:
   contents: write
@@ -11,8 +28,58 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  payload:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      XFORGE_INCLUDE_SDK: ${{ inputs.include_darwin_sdk }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the payload key
+        id: key
+        run: |
+          set -e
+          key="$(bash EmbeddedLinux/payload-key.sh)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "payload key: $key (darwin SDK: $XFORGE_INCLUDE_SDK)"
+
+      - name: Restore a cached payload with this key
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: dist/rootfs
+          key: xforge-payload-${{ steps.key.outputs.key }}
+
+      - name: Build the provisioned rootfs
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          # root does the chroot; the knobs have to survive the sudo boundary, so
+          # they are named explicitly rather than inherited.
+          sudo --preserve-env=XFORGE_INCLUDE_SDK,GH_TOKEN,XFORGE_ROOTFS_URL \
+            bash EmbeddedLinux/build-rootfs-payload.sh dist/rootfs
+
+      - name: Save the payload for the next build
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: dist/rootfs
+          key: xforge-payload-${{ steps.key.outputs.key }}
+
+      - name: Upload the payload for the app job
+        uses: actions/upload-artifact@v4
+        with:
+          name: xforge-rootfs-payload
+          path: dist/rootfs/*.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   build:
+    needs: payload
     runs-on: macos-15
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -28,8 +95,19 @@ jobs:
       - name: Install build tools
         run: brew install xcodegen meson ninja llvm lld libarchive
 
-      - name: Fetch the bundled Alpine rootfs
-        run: bash EmbeddedLinux/fetch-rootfs.sh
+      - name: Download the provisioned rootfs payload
+        uses: actions/download-artifact@v4
+        with:
+          name: xforge-rootfs-payload
+          path: dist/rootfs
+
+      - name: Bundle the provisioned rootfs in the app
+        run: |
+          set -e
+          archive="$(ls dist/rootfs/*-provisioned.tar.gz | head -1)"
+          echo "payload: $archive ($(du -h "$archive" | cut -f1))"
+          XFORGE_ROOTFS=payload XFORGE_ROOTFS_ARCHIVE="$PWD/$archive" \
+            bash EmbeddedLinux/fetch-rootfs.sh
 
       - name: Build the embedded iSH-AOK core (iOS arm64)
         run: bash EmbeddedLinux/build-ish-aok-core.sh
@@ -64,9 +142,44 @@ jobs:
           test -f "$APP/Info.plist"
           test -f "$APP/Assets.car"
           test -f "$APP/install-toolchain.sh"
-          test -f "$APP/alpine-minirootfs-3.23.3-aarch64.tar.gz"
-          tar -tzf "$APP/alpine-minirootfs-3.23.3-aarch64.tar.gz" >/dev/null
-          echo "rootfs bundled: $(du -h "$APP/alpine-minirootfs-3.23.3-aarch64.tar.gz" | cut -f1)"
+
+          ARCHIVE="$APP/alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz"
+          if [ ! -f "$ARCHIVE" ]; then
+            echo "::error::the app does not bundle the provisioned rootfs"
+            ls -la "$APP" | head -40
+            exit 1
+          fi
+          tar -tzf "$ARCHIVE" >/dev/null
+          echo "rootfs bundled: $(du -h "$ARCHIVE" | cut -f1)"
+
+          # The toolchain must be *in* the bundle, not merely promised by it. The
+          # payload builder records what it installed in a manifest inside the
+          # rootfs, so the packed artifact can prove it on its own.
+          member="$(tar -tzf "$ARCHIVE" | grep -E 'usr/local/share/xforge/payload-manifest\.txt$' | head -1)"
+          if [ -z "$member" ]; then
+            echo "::error::the bundled rootfs has no payload manifest — it is not a provisioned payload"
+            exit 1
+          fi
+          tar -xzOf "$ARCHIVE" "$member" | tee /tmp/bundled-manifest.txt
+          grep -qE '^swift:[[:space:]]+Swift version' /tmp/bundled-manifest.txt \
+            || { echo "::error::no Swift toolchain in the bundled rootfs"; exit 1; }
+          grep -qE '^xtool:[[:space:]]+xtool ' /tmp/bundled-manifest.txt \
+            || { echo "::error::no xtool in the bundled rootfs"; exit 1; }
+          for path in usr/local/bin/swift usr/local/bin/xtool usr/local/share/xforge/glibc.env; do
+            tar -tzf "$ARCHIVE" | grep -qE "(^|/)$path$" \
+              || { echo "::error::the bundled rootfs is missing $path"; exit 1; }
+          done
+          tar -tzf "$ARCHIVE" | grep -qE "(^|/)swiftly/toolchains/" \
+            || { echo "::error::the bundled rootfs has no Swift toolchain"; exit 1; }
+          echo "::notice::the bundled rootfs ships a working toolchain"
+
+          {
+            echo "### Bundled rootfs (preinstalled)"
+            echo
+            echo '```'
+            cat /tmp/bundled-manifest.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify app information
         run: |
@@ -81,8 +194,8 @@ jobs:
           echo "bundle id : $BID"
           echo "name      : $NAME"
           echo "version   : $VER ($BUILD)"
-          [ "$VER" = "0.4.0" ]   || { echo "::error::CFBundleShortVersionString is '$VER', expected 0.4.0"; exit 1; }
-          [ "$BID" = "org.xforge.XForge" ] || { echo "::error::unexpected bundle id '$BID'"; exit 1; }
+          [ "$VER" = "0.5.0" ]   || { echo "::error::CFBundleShortVersionString is '$VER', expected 0.5.0"; exit 1; }
+          [ "$BID" = "com.r0gueee.xforge" ] || { echo "::error::unexpected bundle id '$BID'"; exit 1; }
           [ "$NAME" = "XForge" ] || { echo "::error::unexpected display name '$NAME'"; exit 1; }
           # The icon must reach the bundle: either as legacy AppIcon*.png files at
           # the bundle root, or compiled into Assets.car (Xcode 14+ does both).
@@ -95,27 +208,31 @@ jobs:
         run: |
           set -e
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
+          IPA="dist/XForge-0.5.0-unsigned.ipa"
           mkdir -p dist/Payload
           ditto "$APP" dist/Payload/XForge.app
-          ditto -c -k --keepParent dist/Payload dist/XForge-0.4.0-unsigned.ipa
-          unzip -l dist/XForge-0.4.0-unsigned.ipa | grep -q 'Payload/XForge.app/XForge$'
-          unzip -l dist/XForge-0.4.0-unsigned.ipa | grep -q 'Payload/XForge.app/install-toolchain.sh$'
-          unzip -l dist/XForge-0.4.0-unsigned.ipa | grep -q 'Payload/XForge.app/alpine-minirootfs-3.23.3-aarch64.tar.gz$'
-          echo "artifact=$GITHUB_WORKSPACE/dist/XForge-0.4.0-unsigned.ipa" >> "$GITHUB_ENV"
+          ditto -c -k --keepParent dist/Payload "$IPA"
+          unzip -l "$IPA" | grep -q 'Payload/XForge.app/XForge$'
+          unzip -l "$IPA" | grep -q 'Payload/XForge.app/install-toolchain.sh$'
+          unzip -l "$IPA" | grep -q 'Payload/XForge.app/alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz$'
+          echo "ipa: $(du -h "$IPA" | cut -f1)"
+          echo "artifact=$GITHUB_WORKSPACE/$IPA" >> "$GITHUB_ENV"
+          echo "ipa_name=$(basename "$IPA")" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: XForge-unsigned-ipa
-          path: dist/XForge-0.4.0-unsigned.ipa
+          path: dist/XForge-0.5.0-unsigned.ipa
           if-no-files-found: error
+          retention-days: 14
 
       - name: Upload to release (manual trigger only)
         if: github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: xforge-${{ github.run_number }}
-          name: XForge 0.4.0 — toolchain installs, with progress
-          files: dist/XForge-0.4.0-unsigned.ipa
+          name: XForge 0.5.0 — toolchain preinstalled
+          files: dist/XForge-0.5.0-unsigned.ipa
           body_path: CHANGELOG.md
           generate_release_notes: false

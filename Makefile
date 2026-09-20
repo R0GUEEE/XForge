@@ -1,4 +1,4 @@
-.PHONY: bootstrap submodule rootfs ish-core icon gen build test ipa sdk clean
+.PHONY: bootstrap submodule rootfs payload ish-core icon gen build test ipa sdk clean
 
 XCODE := xcodebuild
 SCHEME := XForge
@@ -13,6 +13,10 @@ submodule:
 ## Fetch the bundled Alpine aarch64 root filesystem into Support/Resources.
 rootfs:
 	@bash EmbeddedLinux/fetch-rootfs.sh
+
+## Fetch the provisioned Alpine root filesystem (payload). See build-rootfs-payload.sh.
+payload:
+	@bash EmbeddedLinux/build-rootfs-payload.sh
 
 ## Build the embedded iSH-AOK Linux engine into Vendor/ish-AOK-build/lib.
 ish-core:

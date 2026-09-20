@@ -1,6 +1,6 @@
 name: XForge
 options:
-  bundleIdPrefix: org.xforge
+  bundleIdPrefix: com.r0gueee
   deploymentTarget:
     iOS: "16.0"
   createIntermediateGroups: true
@@ -27,11 +27,11 @@ packages:
 # ---------------------------------------------------------------------------
 settings:
   base:
-    XFORGE_BUNDLE_ID: org.xforge.XForge
+    XFORGE_BUNDLE_ID: com.r0gueee.xforge
     XFORGE_DISPLAY_NAME: XForge
     XFORGE_DEVELOPMENT_TEAM: V5GXMU3HC2
-    XFORGE_MARKETING_VERSION: "0.4.0"
-    XFORGE_BUILD_NUMBER: "7"
+    XFORGE_MARKETING_VERSION: "0.5.0"
+    XFORGE_BUILD_NUMBER: "8"
     ISH_AOK_ROOT: $(SRCROOT)/Vendor/ish-AOK
     ISH_AOK_LIB_DIR: $(SRCROOT)/Vendor/ish-AOK-build/lib
 

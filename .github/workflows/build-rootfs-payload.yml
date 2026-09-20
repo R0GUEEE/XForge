@@ -1,0 +1,123 @@
+name: Build rootfs payload
+
+# Builds the *provisioned* Alpine root filesystem that the IPA bundles: the plain
+# Alpine minirootfs with XForge's whole guest toolchain already installed in it —
+# the apk build environment, the glibc compatibility layer, xtool, swiftly and the
+# Swift toolchain, plus the darwin Swift SDK when a `darwin-sdk-*` release has one.
+#
+# It exists so the expensive part happens once, here, instead of on the user's
+# phone: an app built against this payload has nothing left to install, and needs
+# no network to build a project. See EmbeddedLinux/build-rootfs-payload.sh.
+#
+# Runs on a native arm64 Linux runner, because the guest's apk/swift/xtool are
+# arm64 binaries and provisioning runs them for real inside a chroot.
+#
+# The payload is ~1 GB, so it is both cached and published: the cache makes repeat
+# runs of this workflow and of the IPA workflow cheap, the release makes the
+# payload reusable from anywhere (and lets the IPA workflow pin one).
+
+on:
+  workflow_dispatch:
+    inputs:
+      include_darwin_sdk:
+        description: "Bake the darwin Swift SDK into the rootfs"
+        type: choice
+        default: auto
+        options: [auto, "1", "0"]
+      publish:
+        description: "Publish the payload as a release asset"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rootfs-payload
+  cancel-in-progress: true
+
+jobs:
+  payload:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      XFORGE_INCLUDE_SDK: ${{ inputs.include_darwin_sdk }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the payload key
+        id: key
+        run: |
+          set -e
+          key="$(bash EmbeddedLinux/payload-key.sh)"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Rootfs payload"
+            echo "- key: \`$key\`"
+            echo "- darwin SDK: \`$XFORGE_INCLUDE_SDK\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Restore a cached payload with this key
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: dist/rootfs
+          key: xforge-payload-${{ steps.key.outputs.key }}
+
+      - name: Build the provisioned rootfs
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          # root inside the runner is doing the chroot; the knobs have to survive
+          # the sudo boundary, so they are named explicitly rather than inherited.
+          sudo --preserve-env=XFORGE_INCLUDE_SDK,GH_TOKEN,XFORGE_ROOTFS_URL \
+            bash EmbeddedLinux/build-rootfs-payload.sh dist/rootfs
+
+      - name: Read the payload's own manifest back out of the archive
+        id: manifest
+        run: |
+          set -e
+          archive="$(ls dist/rootfs/*-provisioned.tar.gz | head -1)"
+          member="$(tar -tzf "$archive" | grep -E 'usr/local/share/xforge/payload-manifest\.txt$' | head -1)"
+          test -n "$member"
+          tar -xzOf "$archive" "$member" | tee /tmp/payload-manifest.txt
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          # Everything below is what the app ends up with; assert it here so a
+          # half-provisioned payload never reaches a device.
+          grep -qE '^swift:[[:space:]]+Swift version' /tmp/payload-manifest.txt
+          grep -qE '^xtool:[[:space:]]+xtool ' /tmp/payload-manifest.txt
+          {
+            echo
+            echo '```'
+            cat /tmp/payload-manifest.txt
+            echo '```'
+            echo
+            echo "artifact: \`$(basename "$archive")\` — $(du -h "$archive" | cut -f1)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the payload for the next build
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: dist/rootfs
+          key: xforge-payload-${{ steps.key.outputs.key }}
+
+      - name: Upload the payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: xforge-rootfs-payload
+          path: dist/rootfs/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish the payload as a release asset
+        if: ${{ inputs.publish }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: xforge-payload-${{ steps.key.outputs.key }}
+          name: XForge rootfs payload ${{ steps.key.outputs.key }}
+          body_path: /tmp/payload-manifest.txt
+          files: |
+            dist/rootfs/*.tar.gz
+          generate_release_notes: false

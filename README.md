@@ -24,10 +24,17 @@ named `darwin`. All three heavyweight pieces are self-contained Linux artifacts:
 | Piece | Source | Notes |
 |---|---|---|
 | Linux engine | iSH-AOK (`Vendor/ish-AOK` submodule), built for iOS | runs in-process, no JIT entitlement |
-| Alpine aarch64 rootfs | `alpine-minirootfs-3.23.3-aarch64.tar.xz` from iSH-AOK | **bundled in the app** |
-| Swift aarch64 Linux toolchain | swift.org | provisioned in-guest (~700 MB) |
-| `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | fetched on first use |
-| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | provisioned in-guest |
+| Alpine aarch64 rootfs | `alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz` | **bundled in the app**, imported on first boot |
+| Swift aarch64 Linux toolchain | swift.org, via `swiftly` | **already installed in the bundled rootfs** |
+| `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | **installed in the bundled rootfs** (or fetched on first use) |
+| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | **already installed in the bundled rootfs** |
+
+The provisioning happens at **build** time, not on the device:
+`EmbeddedLinux/build-rootfs-payload.sh` unpacks the plain Alpine minirootfs on an
+arm64 Linux host, runs the app's own `EmbeddedLinux/install-toolchain.sh` inside a
+`chroot` of it, and packs the result as the `-provisioned` archive above. There is
+no second implementation that could drift from what a device installs, and an app
+built this way has nothing left to download — it even builds offline.
 
 ## Repo layout
 
@@ -50,7 +57,7 @@ Everything about the app's identity lives in the project-level `settings` block 
 
 | Field | Value |
 |---|---|
-| Bundle identifier | `org.xforge.XForge` |
+| Bundle identifier | `com.r0gueee.xforge` |
 | Display name | `XForge` |
 | Apple team | set in `XFORGE_DEVELOPMENT_TEAM` (a wildcard `TEAMID.*` profile, so any bundle ID works) |
 | Marketing version | `XFORGE_MARKETING_VERSION` |
@@ -96,10 +103,23 @@ make gen && open XForge.xcodeproj
 `make bootstrap` runs three steps:
 
 1. `git submodule update --init --depth 1 Vendor/ish-AOK` — the engine sources.
-2. `EmbeddedLinux/fetch-rootfs.sh` — downloads the Alpine aarch64 rootfs into
-   `Support/Resources/` so it is bundled into `XForge.app`.
+2. `EmbeddedLinux/fetch-rootfs.sh` — puts the Alpine aarch64 rootfs into
+   `Support/Resources/` so it is bundled into `XForge.app`. With
+   `XFORGE_ROOTFS=auto` (the default) it prefers the **provisioned** payload
+   published by the `Build rootfs payload` workflow, which already contains the
+   toolchain; `XFORGE_ROOTFS=plain` takes the small minirootfs instead and leaves
+   the toolchain to be installed on the device.
 3. `EmbeddedLinux/build-ish-aok-core.sh` — builds the engine's static libraries into
    `Vendor/ish-AOK-build/lib` for the linker.
+
+To build the payload yourself (arm64 Linux, as root — it chroots into the rootfs
+and runs the guest's arm64 binaries there):
+
+```bash
+sudo make payload                 # → dist/alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz
+XFORGE_ROOTFS=payload XFORGE_ROOTFS_ARCHIVE=dist/*-provisioned.tar.gz \
+  bash EmbeddedLinux/fetch-rootfs.sh
+```
 
 The engine is device-only; simulator builds (and `make test`) compile a stub instead
 and need none of the above beyond a plain `make gen`.
@@ -120,7 +140,9 @@ Or build the unsigned IPA for sideloading via GitHub Actions
 
 - [x] Embedded Linux engine: iSH-AOK built for iOS, running in-process
 - [x] Alpine aarch64 rootfs bundled in the app and imported on first boot
-- [ ] In-guest provisioning: Swift toolchain + xtool + `darwin` SDK
+- [x] Toolchain provisioning — at build time, into the bundled rootfs
+      (`EmbeddedLinux/build-rootfs-payload.sh`); in-guest install remains as the
+      fallback for a plain rootfs
 - [ ] XKit signing (free Apple ID) wired into the export flow
 - [ ] Hand-off of built `.ipa` to SideStore/AltStore for install
 - [ ] `RemoteExecutor` (build server) for fast compilation of real apps
