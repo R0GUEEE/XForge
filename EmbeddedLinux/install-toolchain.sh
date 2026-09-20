@@ -108,6 +108,7 @@ libssh-4
 librtmp1
 libssl3t64
 libzstd1
+liblzma5
 libgcrypt20
 libgpg-error0
 libuuid1
@@ -216,7 +217,7 @@ step_glibc() {
         }
         incomplete=""
         for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 libstdc++.so.6 \
-                   libgcc_s.so.1 libz.so.1 libzstd.so.1 libxml2.so.2 libcurl.so.4 \
+                   libgcc_s.so.1 libz.so.1 libzstd.so.1 liblzma.so.5 libxml2.so.2 libcurl.so.4 \
                    libssl.so.3 libcrypto.so.3 libgnutls.so.30 libhogweed.so.6 \
                    libnettle.so.8 libgmp.so.10 libicuuc.so.74 liblber.so.2 \
                    libldap.so.2 libpng16.so.16 libpsl.so.5 libz3.so.4 libsqlite3.so.0; do
@@ -476,8 +477,22 @@ step_verify() {
             printf 'XFORGE-VERIFY\tswift-sdk\tok\t%s\n' "${line:-swift sdk list}"
         else
             line="$(head -1 "$sdk_probe" 2>>"$SILENT" || true)"
-            echo "    swift-sdk: INSTALLED BUT NOT RUNNING — ${line:-no output}"
-            printf 'XFORGE-VERIFY\tswift-sdk\tbroken\t%s\n' "${line:-no output}"
+            last="$(tail -1 "$sdk_probe" 2>>"$SILENT" || true)"
+            echo "    swift-sdk: INSTALLED BUT NOT RUNNING — ${last:-${line:-no output}}"
+            echo "    what the probe said:"
+            head -6 "$sdk_probe" 2>>"$SILENT" | sed 's/^/      /'
+            # A load failure names a library but not why, so ask the loader which
+            # libraries it picks and which it cannot find at all. "not found"
+            # here means a package is missing from the glibc layer.
+            if [ -f "$SHARE/glibc.env" ]; then
+                . "$SHARE/glibc.env"
+                sdk_bin="$(ls "$SWIFTLY_HOME_DIR"/toolchains/*/usr/bin/swift-sdk 2>>"$SILENT" | head -1 || true)"
+                if [ -n "$sdk_bin" ]; then
+                    echo "    loader resolution for $(basename "$sdk_bin"):"
+                    "$XFORGE_GLIBC_LD" --list "$sdk_bin" 2>&1 | grep '=>' | sed 's/^/      /'
+                fi
+            fi
+            printf 'XFORGE-VERIFY\tswift-sdk\tbroken\t%s\n' "${last:-${line:-no output}}"
             failed=1
         fi
         rm -f "$sdk_probe"
