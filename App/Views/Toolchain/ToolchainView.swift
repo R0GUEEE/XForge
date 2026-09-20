@@ -144,6 +144,21 @@ struct ToolchainView: View {
                 }
                 .padding(.leading, 30)
                 .transition(.opacity)
+
+                if !toolchain.installOutput.isEmpty {
+                    ScrollView {
+                        Text(String(toolchain.installOutput.suffix(12_000)))
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.green)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .padding(8)
+                    }
+                    .frame(maxHeight: 180)
+                    .background(Color.black)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .padding(.leading, 30)
+                }
             }
         }
     }
