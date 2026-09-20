@@ -136,9 +136,10 @@ ar rcs "$OUT/libxforge-fakefsimport.a" "$MESON_BUILD/xforge-fakefs.o"
 log "Building libarchive for iOS"
 ARCHIVE_PROJ="$ISH/deps/libarchive.xcodeproj"
 if [[ -d "$ARCHIVE_PROJ" ]]; then
-    TARGET="$(xcodebuild -list -json -project "$ARCHIVE_PROJ" \
-        | python3 -c 'import json,sys; print(json.load(sys.stdin)["project"]["targets"][0])')"
-    xcodebuild -project "$ARCHIVE_PROJ" -target "$TARGET" \
+    # The project has one native target. Avoid `xcodebuild -list`, whose
+    # target discovery initializes Simulator services and can fail on a
+    # headless build host even though the device archive build is valid.
+    xcodebuild -project "$ARCHIVE_PROJ" -target libarchive \
         -configuration Release -sdk iphoneos ARCHS=arm64 \
         CONFIGURATION_BUILD_DIR="$MESON_BUILD/archive" \
         CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=NO build >/dev/null

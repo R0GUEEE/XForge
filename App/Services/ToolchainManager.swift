@@ -96,6 +96,9 @@ final class ToolchainManager: ObservableObject {
 
     func isInstalled(_ component: Component) -> Bool { installed.contains(component) }
 
+    /// Exposed for the import UI: iSH-AOK cannot replace a mounted rootfs.
+    var isGuestBooted: Bool { vm.isBooted }
+
     // MARK: - Status
 
     /// Refresh component status.
@@ -106,6 +109,14 @@ final class ToolchainManager: ObservableObject {
     func refresh(probeGuest: Bool = false) async {
         var found: Set<Component> = []
 
+        // RootTabView starts this at launch, but Settings can be presented before
+        // that task has completed. Await the same idempotent preparation here so
+        // the row reflects the actual bundled rootfs rather than a stale snapshot.
+        if !RootfsInstaller.isInstalled(in: XForgeEnvironment.rootsDirectory) {
+            activity = "Preparing the bundled Alpine rootfs…"
+            await vm.prepareRootfs()
+            activity = nil
+        }
         if RootfsInstaller.isInstalled(in: XForgeEnvironment.rootsDirectory) {
             found.insert(.rootfs)
         }
@@ -203,6 +214,87 @@ final class ToolchainManager: ObservableObject {
             XForgeLog.note("install: \(component.rawValue) FAILED: \(error.localizedDescription)")
             message = error.localizedDescription
         }
+    }
+
+    /// Replace the bundled rootfs with an Alpine `.tar.gz` chosen from Files.
+    /// iSH-AOK cannot switch roots after it has booted, so this is intentionally
+    /// limited to a fresh app launch.
+    func importRootfs(from archive: URL) async {
+        guard !vm.isBooted else {
+            message = "Quit and reopen XForge before replacing the Alpine rootfs. The running Linux guest cannot switch roots."
+            return
+        }
+
+        isInstalling = .rootfs
+        defer { isInstalling = nil }
+        beginProgress(.rootfs)
+        let scoped = archive.startAccessingSecurityScopedResource()
+        defer { if scoped { archive.stopAccessingSecurityScopedResource() } }
+        do {
+            activity = "Importing \(archive.lastPathComponent)…"
+            advanceProgress(0.2, "Validating and importing the selected Alpine rootfs")
+            _ = try RootfsInstaller.install(
+                archive: archive,
+                into: XForgeEnvironment.rootsDirectory
+            )
+            advanceProgress(1.0, "Done")
+            message = "Alpine rootfs imported from \(archive.lastPathComponent)."
+            installed.insert(.rootfs)
+        } catch {
+            message = error.localizedDescription
+        }
+        activity = nil
+        endProgress()
+    }
+
+    /// Install a locally supplied Darwin SDK archive. The zip must contain a
+    /// `darwin.artifactbundle` directory, at its root or in one enclosing folder.
+    func installSDKFromArchive(zip: URL) async {
+        isInstalling = .sdk
+        defer { isInstalling = nil }
+        beginProgress(.sdk)
+        let scoped = zip.startAccessingSecurityScopedResource()
+        defer { if scoped { zip.stopAccessingSecurityScopedResource() } }
+        do {
+            guard zip.pathExtension.lowercased() == "zip" else {
+                throw ToolchainError.sdkArchiveUnsupported
+            }
+            try await vm.boot()
+            let guestDirectory = "/root/.cache/xforge-sdk-import"
+            let guestArchive = guestDirectory + "/darwin-sdk.zip"
+            advanceProgress(0.15, "Copying \(zip.lastPathComponent) into Alpine")
+            _ = try await vm.run("rm -rf \(GuestShell.quote(guestDirectory)) && mkdir -p \(GuestShell.quote(guestDirectory))", environment: nil) { _ in }
+            try await vm.copyIn(hostURL: zip, to: guestArchive)
+
+            advanceProgress(0.6, "Installing the Darwin SDK from the local archive")
+            let script = """
+            set -eu
+            cache=\(GuestShell.quote(guestDirectory))
+            unpack="$cache/unpacked"
+            unzip -q "$cache/darwin-sdk.zip" -d "$unpack"
+            bundle="$(find "$unpack" -type d -name darwin.artifactbundle -print -quit)"
+            test -n "$bundle"
+            test -f "$bundle/info.json"
+            swift sdk install "$bundle"
+            rm -rf "$cache"
+            swift sdk list
+            """
+            let output = OutputCollector()
+            let status = try await vm.run(script, environment: nil) { output.append($0) }
+            guard status == 0 else {
+                if output.value.contains("info.json") || output.value.contains("darwin.artifactbundle") {
+                    throw ToolchainError.sdkLayoutUnexpected
+                }
+                throw ToolchainError.sdkInstallFailed(status)
+            }
+            advanceProgress(1.0, "Done")
+            message = "Darwin SDK installed from \(zip.lastPathComponent)."
+        } catch {
+            message = error.localizedDescription
+        }
+        activity = nil
+        endProgress()
+        await refresh(probeGuest: true)
     }
 
     /// Install the Darwin SDK from an `Xcode.xip` the user picked, instead of the
@@ -409,6 +501,7 @@ enum ToolchainError: LocalizedError {
     case sdkLayoutUnexpected
     case sdkInstallFailed(Int32)
     case sdkBuildFailed(Int32, String)
+    case sdkArchiveUnsupported
     case notEnoughSpace(needed: Int64, free: Int64)
 
     var errorDescription: String? {
@@ -429,6 +522,8 @@ enum ToolchainError: LocalizedError {
         case .sdkBuildFailed(let status, let output):
             return "`xtool sdk build` failed in the guest (exit \(status)). "
                 + (output.isEmpty ? "" : String(output.suffix(400)))
+        case .sdkArchiveUnsupported:
+            return "Choose a .zip archive containing darwin.artifactbundle."
         case .notEnoughSpace(let needed, let free):
             let formatter = ByteCountFormatter()
             return "Not enough free space: this needs about "

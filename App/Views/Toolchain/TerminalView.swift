@@ -53,7 +53,7 @@ final class TerminalSession: ObservableObject {
             await vm.prepareRootfs()
             try await vm.boot()
             didBoot = true
-            append("[guest is up; Alpine and its host bridge passed health checks]\n")
+            append("[guest is up; Alpine is ready for commands]\n")
         } catch {
             didBoot = false
             append("[error] \(error.localizedDescription)\n")

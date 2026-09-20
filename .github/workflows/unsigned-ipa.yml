@@ -55,12 +55,18 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             archive -archivePath build/XForge.xcarchive 2>&1 | tee /tmp/build.log
 
-      - name: Verify the rootfs is bundled
+      - name: Verify the complete embedded-Linux bundle
         run: |
           set -e
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
-          test -f "$APP/alpine-minirootfs-3.23.3-aarch64.tar.xz"
-          echo "rootfs bundled: $(du -h "$APP/alpine-minirootfs-3.23.3-aarch64.tar.xz" | cut -f1)"
+          test -d "$APP"
+          test -x "$APP/XForge"
+          test -f "$APP/Info.plist"
+          test -f "$APP/Assets.car"
+          test -f "$APP/install-toolchain.sh"
+          test -f "$APP/alpine-minirootfs-3.23.3-aarch64.tar.gz"
+          tar -tzf "$APP/alpine-minirootfs-3.23.3-aarch64.tar.gz" >/dev/null
+          echo "rootfs bundled: $(du -h "$APP/alpine-minirootfs-3.23.3-aarch64.tar.gz" | cut -f1)"
 
       - name: Verify app information
         run: |
@@ -91,8 +97,11 @@ jobs:
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
           mkdir -p dist/Payload
           ditto "$APP" dist/Payload/XForge.app
-          cd dist && zip -qry "XForge-0.4.0-unsigned.ipa" Payload
-          echo "artifact=$(pwd)/XForge-0.4.0-unsigned.ipa" >> "$GITHUB_ENV"
+          ditto -c -k --keepParent dist/Payload dist/XForge-0.4.0-unsigned.ipa
+          unzip -l dist/XForge-0.4.0-unsigned.ipa | grep -q 'Payload/XForge.app/XForge$'
+          unzip -l dist/XForge-0.4.0-unsigned.ipa | grep -q 'Payload/XForge.app/install-toolchain.sh$'
+          unzip -l dist/XForge-0.4.0-unsigned.ipa | grep -q 'Payload/XForge.app/alpine-minirootfs-3.23.3-aarch64.tar.gz$'
+          echo "artifact=$GITHUB_WORKSPACE/dist/XForge-0.4.0-unsigned.ipa" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

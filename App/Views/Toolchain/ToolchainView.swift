@@ -11,6 +11,8 @@ import UniformTypeIdentifiers
 struct ToolchainView: View {
     @StateObject private var toolchain = ToolchainManager()
     @State private var importingXcode = false
+    @State private var importingRootfs = false
+    @State private var importingSDKArchive = false
 
     var body: some View {
         Form {
@@ -55,11 +57,32 @@ struct ToolchainView: View {
                           systemImage: "doc.badge.plus")
                 }
                 .disabled(toolchain.isInstalling != nil)
+
+                Button {
+                    importingSDKArchive = true
+                } label: {
+                    Label("Install the Darwin SDK from an archive…",
+                          systemImage: "archivebox")
+                }
+                .disabled(toolchain.isInstalling != nil)
             } footer: {
                 Text("The Darwin SDK is normally downloaded prebuilt (214 MB). Building "
                      + "it from your own Xcode.xip runs `xtool sdk build` inside the guest "
                      + "instead — it needs xtool and Swift there, and room for the "
                      + "extracted Xcode.")
+            }
+
+            Section {
+                Button {
+                    importingRootfs = true
+                } label: {
+                    Label("Import an Alpine rootfs archive…", systemImage: "shippingbox.and.arrow.backward")
+                }
+                .disabled(toolchain.isInstalling != nil || toolchain.isGuestBooted)
+            } header: {
+                Text("Offline Imports")
+            } footer: {
+                Text("Choose an Alpine aarch64 .tar.gz minirootfs. It replaces the imported root only after validation. Quit and reopen XForge first if Linux is running.")
             }
 
             if let message = toolchain.message {
@@ -99,6 +122,22 @@ struct ToolchainView: View {
         ) { result in
             guard case .success(let urls) = result, let url = urls.first else { return }
             Task { await toolchain.installSDKFromXcode(xip: url) }
+        }
+        .fileImporter(
+            isPresented: $importingRootfs,
+            allowedContentTypes: [UTType(filenameExtension: "gz") ?? .data],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            Task { await toolchain.importRootfs(from: url) }
+        }
+        .fileImporter(
+            isPresented: $importingSDKArchive,
+            allowedContentTypes: [.zip],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            Task { await toolchain.installSDKFromArchive(zip: url) }
         }
     }
 

@@ -68,15 +68,13 @@ final class EmbeddedLinuxVM: LinuxVM {
             guard emulator.isRunning else {
                 throw LinuxVMError.guestDidNotStart
             }
-            try await verifyRootfs()
+            // The native engine has completed its boot at this point. Do not make
+            // Terminal availability depend on a headless shell probe: a damaged
+            // procfs/share mount can make that probe wait indefinitely even though
+            // Alpine itself is mounted and ready to accept a command. Commands are
+            // checked at their call sites and surface their own errors instead.
             isBooted = true
-            do {
-                try await verifyCommandBridge()
-            } catch {
-                isBooted = false
-                throw error
-            }
-            await configureGuestResolver()
+            XForgeLog.note("boot: native Alpine guest is ready")
         }
         bootTask = task
         do {
@@ -138,7 +136,7 @@ final class EmbeddedLinuxVM: LinuxVM {
     private func verifyCommandBridge() async throws {
         let token = "__XFORGE_BRIDGE_OK__"
         let output = OutputBox()
-        let status = try await runLoginStreaming(
+        let status = try await runLoginStreamingAfterBoot(
             "printf '%s\\n' \(GuestShell.quote(token))",
             environment: nil,
             onOutput: output.append
@@ -217,7 +215,18 @@ final class EmbeddedLinuxVM: LinuxVM {
         onOutput: @Sendable @escaping (String) -> Void
     ) async throws -> Int32 {
         try await boot()
+        return try await runCapturedAfterBoot(
+            command,
+            environment: environment,
+            onOutput: onOutput
+        )
+    }
 
+    private func runCapturedAfterBoot(
+        _ command: String,
+        environment: [String: String]?,
+        onOutput: @Sendable @escaping (String) -> Void
+    ) async throws -> Int32 {
         let env = GuestShell.environment(environment)
 
         let result = try await emulator.runCommand(
@@ -249,9 +258,24 @@ final class EmbeddedLinuxVM: LinuxVM {
         onOutput: @Sendable @escaping (String) -> Void
     ) async throws -> Int32 {
         try await boot()
+        return try await runLoginStreamingAfterBoot(
+            script,
+            environment: environment,
+            onOutput: onOutput
+        )
+    }
+
+    /// Run the shared-folder terminal transport after the caller has completed
+    /// boot. Keeping this separate prevents the boot health check from awaiting
+    /// its own in-flight boot task.
+    private func runLoginStreamingAfterBoot(
+        _ script: String,
+        environment: [String: String]?,
+        onOutput: @Sendable @escaping (String) -> Void
+    ) async throws -> Int32 {
         guard let share = hostShare else {
             // No shared folder to tail; fall back to the captured output.
-            return try await runCaptured(script, environment: environment, onOutput: onOutput)
+            return try await runCapturedAfterBoot(script, environment: environment, onOutput: onOutput)
         }
 
         let transfer = share.appendingPathComponent(Self.transferDir, isDirectory: true)
@@ -272,7 +296,7 @@ final class EmbeddedLinuxVM: LinuxVM {
         let tailer = FileTailer(url: logURL, onChunk: onOutput)
         tailer.start()
         do {
-            let status = try await runCaptured(wrapped, environment: environment) { _ in }
+            let status = try await runCapturedAfterBoot(wrapped, environment: environment) { _ in }
             tailer.stop()
             try? FileManager.default.removeItem(at: logURL)
             return status

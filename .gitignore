@@ -27,6 +27,9 @@ Vendor/ish-AOK-build/
 # single source of truth for the app's Info.plist.
 Support/Info.plist
 
-# Bundled root filesystem: fetched by EmbeddedLinux/fetch-rootfs.sh, not committed.
+# Rootfs variants other than the release-pinned asset stay local. The pinned
+# gzip archive is deliberately tracked so a clean checkout and CI-produced IPA
+# contain the complete embedded Linux environment without a pre-build download.
 Support/Resources/*.tar.xz
 Support/Resources/*.tar.gz
+!Support/Resources/alpine-minirootfs-3.23.3-aarch64.tar.gz

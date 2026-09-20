@@ -10,7 +10,7 @@ import Foundation
 enum RootfsInstaller {
     /// Base name of the bundled archive (the exact file the user pointed at).
     static let archiveName = "alpine-minirootfs-3.23.3-aarch64"
-    static let archiveExtension = "tar.xz"
+    static let archiveExtension = "tar.gz"
     /// Directory name of the installed root inside `<Documents>/embedded-linux/roots`.
     static let rootName = "alpine"
 
@@ -44,7 +44,6 @@ enum RootfsInstaller {
     /// the first time.
     @discardableResult
     static func installIfNeeded(into rootsDirectory: URL) throws -> URL {
-        let fm = FileManager.default
         let root = installedRoot(in: rootsDirectory)
         if isInstalled(in: rootsDirectory) {
             return root
@@ -56,12 +55,24 @@ enum RootfsInstaller {
                 + "Run EmbeddedLinux/fetch-rootfs.sh before building, or rebuild via CI.")
         }
 
+        return try install(archive: archive, into: rootsDirectory)
+    }
+
+    /// Import a user-selected rootfs archive. The existing root is retained until
+    /// the new archive has completely imported and passed fakefs validation.
+    @discardableResult
+    static func install(archive: URL, into rootsDirectory: URL) throws -> URL {
+        let fm = FileManager.default
+        let root = installedRoot(in: rootsDirectory)
+        guard archive.pathExtension.lowercased() == "gz" else {
+            throw RootfsError.importFailed("Choose an Alpine .tar.gz minirootfs archive.")
+        }
+
         try fm.createDirectory(at: rootsDirectory, withIntermediateDirectories: true)
 
         // `fakefs_import` requires its destination not to exist, so import into a
         // staging directory and move it into place atomically afterwards.
         let staging = rootsDirectory.appendingPathComponent(".import-\(UUID().uuidString)", isDirectory: true)
-        try? fm.removeItem(at: root)
         try? fm.removeItem(at: staging)
 
         let rc = archive.path.withCString { archivePath in
@@ -80,6 +91,11 @@ enum RootfsInstaller {
                 "the imported fakefs is missing its data directory or metadata database")
         }
 
+        // A stale partial import may exist even when `isInstalled` is false. It
+        // is safe to remove only now: `staging` has already passed validation.
+        if fm.fileExists(atPath: root.path) {
+            try fm.removeItem(at: root)
+        }
         try fm.moveItem(at: staging, to: root)
         return root
     }
