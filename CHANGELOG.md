@@ -2,6 +2,28 @@
 
 All notable changes to **XForge** are documented here.
 
+## [0.3.3] — 2026-09-20 — The guest gets DNS
+
+### Added
+- **The guest now gets the device's DNS servers.** Name resolution happens inside
+  the guest, and the bundled Alpine minirootfs ships no `/etc/resolv.conf` at all,
+  so nothing could resolve: `apk add` — the very first thing provisioning runs —
+  answered "DNS: transient error" for every repository. The boot sequence now
+  writes the file from the device's servers (iSH-AOK's own app does the same, for
+  the same reason), with public resolvers as the fallback. Guests that never
+  resolve are a guest that cannot install anything.
+  Verified on the host harness: before, `wget` answered
+  `bad address 'dl-cdn.alpinelinux.org'`; after, the same guest answers `net-ok`
+  and `apk update` reports 27,453 packages available.
+
+### Changed
+- **Long installs keep the app awake** — the screen no longer locks mid-install
+  (which suspends the app and leaves provisioning half-done), guarded by an idle
+  timer and a background task assertion.
+- The engine smoke test now probes the guest's network and `apk`, and configures
+  the guest resolver the way the app does, so the *provisioning* path has a
+  reproduction too.
+
 ## [0.3.2] — 2026-09-19 — The guest boots
 
 ### Fixed
