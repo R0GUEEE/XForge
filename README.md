@@ -26,10 +26,11 @@ named `darwin`. All three heavyweight pieces are self-contained Linux artifacts:
 | Linux engine | iSH-AOK (`Vendor/ish-AOK` submodule), built for iOS | runs in-process, no JIT entitlement |
 | Alpine aarch64 rootfs | `alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz` | **bundled in the app**, imported on first boot |
 | Swift aarch64 Linux toolchain | swift.org, via `swiftly` | **already installed in the bundled rootfs** |
-| `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | **installed in the bundled rootfs** (or fetched on first use) |
+| `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | fetched by the app on first use — **not bundled** (`include_darwin_sdk=1` bakes it in) |
 | `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | **already installed in the bundled rootfs** |
 
-The provisioning happens at **build** time, not on the device:
+The provisioning happens at **build** time, not on the device (the darwin SDK
+excepted — the app fetches that on first use unless `include_darwin_sdk=1`):
 `EmbeddedLinux/build-rootfs-payload.sh` unpacks the plain Alpine minirootfs on an
 arm64 Linux host, runs the app's own `EmbeddedLinux/install-toolchain.sh` inside a
 `chroot` of it, and packs the result as the `-provisioned` archive above. There is
@@ -117,6 +118,7 @@ and runs the guest's arm64 binaries there):
 
 ```bash
 sudo make payload                 # → dist/alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz
+#   sudo XFORGE_INCLUDE_SDK=1 make payload       # ... with the darwin SDK in it
 XFORGE_ROOTFS=payload XFORGE_ROOTFS_ARCHIVE=dist/*-provisioned.tar.gz \
   bash EmbeddedLinux/fetch-rootfs.sh
 ```

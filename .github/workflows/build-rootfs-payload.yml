@@ -22,8 +22,10 @@ on:
       include_darwin_sdk:
         description: "Bake the darwin Swift SDK into the rootfs"
         type: choice
-        default: auto
-        options: [auto, "1", "0"]
+        # Off by default, like the IPA build: the app fetches the SDK on first
+        # use, so bundling it is opt-in.
+        default: "0"
+        options: ["0", auto, "1"]
       publish:
         description: "Publish the payload as a release asset"
         type: boolean

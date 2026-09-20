@@ -17,8 +17,11 @@ on:
       include_darwin_sdk:
         description: "darwin Swift SDK baked into the bundled rootfs"
         type: choice
-        default: auto
-        options: [auto, "1", "0"]
+        # Off by default: the SDK is a ~200 MB asset that the app fetches on
+        # first use anyway, and it is a large part of the bundle. Set 1 to ship
+        # an app that can build with no network at all.
+        default: "0"
+        options: ["0", auto, "1"]
 
 permissions:
   contents: write
@@ -174,6 +177,13 @@ jobs:
           done
           tar -tzf "$ARCHIVE" | grep -qE "(^|/)swiftly/toolchains/" \
             || { echo "::error::the bundled rootfs has no Swift toolchain"; exit 1; }
+          # The darwin SDK is opt-in, and the manifest is where its absence is
+          # recorded — so assert the bundle matches what was asked for.
+          if [ "${{ inputs.include_darwin_sdk }}" = "0" ]; then
+            grep -qE '^darwin-sdk:[[:space:]]+not bundled' /tmp/bundled-manifest.txt \
+              || { echo "::error::the darwin SDK is in the bundled rootfs but this build excludes it"; exit 1; }
+            echo "darwin SDK: not bundled (the app fetches it on first use)"
+          fi
           echo "::notice::the bundled rootfs ships a working toolchain"
 
           {

@@ -11,9 +11,13 @@ All notable changes to **XForge** are documented here.
   release with the whole guest toolchain already in it — apk build dependencies
   (clang, lld, cmake, ninja, git, …), the glibc compatibility layer under
   `/opt/glibc`, the swift/swiftc/xtool wrappers, xtool unpacked in `/opt/xtool`,
-  swiftly and the Swift toolchain, and the `darwin` Swift SDK when a
-  `darwin-sdk-*` release has one. Importing it during the first launch is the
-  only setup left, and the app can then build a project without a network.
+  swiftly and the Swift toolchain. Importing it during the first launch is the
+  only setup left, and the compiler, the toolchain and the build requirements are
+  all already there.
+- **The `darwin` Swift SDK is not bundled.** It is a ~200 MB release asset that
+  the app fetches on first use, so it stays out of the IPA. Pass
+  `include_darwin_sdk=1` to the IPA (or the payload) workflow to bake it in as
+  well, which makes the app able to build with no network at all.
 - **Provisioning happens at build time**, in
   `EmbeddedLinux/build-rootfs-payload.sh`, on an arm64 Linux host: it chroots
   into the unpacked minirootfs and runs the app's *own*
