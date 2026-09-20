@@ -98,6 +98,30 @@ static void run_guest(const char *label, const char *command, int timeout_ms, in
     result(label, ok);
 }
 
+// The host's own DNS servers, the way the app gets them from iOS and writes
+// them into the guest's /etc/resolv.conf (App/Services/GuestNetwork.swift).
+// Without that file the guest cannot resolve anything: the bundled minirootfs
+// ships no nameservers, and resolution happens inside the guest.
+static int host_dns_servers(char *out, size_t cap) {
+    FILE *f = popen("scutil --dns 2>/dev/null | awk '/nameserver\\[[0-9]+\\]/{print $3}' | "
+                    "sort -u | head -2", "r");
+    if (f == NULL)
+        return 0;
+    size_t used = 0;
+    char line[256];
+    out[0] = '\0';
+    while (fgets(line, sizeof(line), f) != NULL && used + sizeof("nameserver ") + 64 < cap) {
+        char *nl = strchr(line, '\n');
+        if (nl != NULL) *nl = '\0';
+        if (line[0] == '\0') continue;
+        int n = snprintf(out + used, cap - used, "nameserver %s; ", line);
+        if (n <= 0) break;
+        used += (size_t) n;
+    }
+    pclose(f);
+    return (int) used;
+}
+
 // Run a command and print everything about it, but do not judge it: used for
 // probes whose failure is a fact about the environment (network reachability,
 // package repositories) rather than a regression in the bridge.
@@ -236,6 +260,28 @@ int main(int argc, char **argv) {
     // the host's network. These are probes, not assertions: a failure here is
     // a fact about the environment, and it is far better to see it here than
     // as a silent spinner on a phone.
+    step("write the guest's /etc/resolv.conf from the host's DNS");
+    {
+        char servers[512] = {0};
+        host_dns_servers(servers, sizeof servers);
+        if (servers[0] == '\0') {
+            say("[smoke] host published no DNS servers; leaving the guest alone");
+        } else {
+            char cmd[1024];
+            snprintf(cmd, sizeof cmd,
+                     "rm -f /etc/resolv.conf; printf '%s' > /etc/resolv.conf; cat /etc/resolv.conf",
+                     servers);
+            struct xf_guest_result r;
+            int rc = xf_ish_run(cmd, NULL, 60000, 1 << 16, &r);
+            if (rc != 0) {
+                say("[smoke] could not write resolv.conf: %s", xf_ish_last_error());
+            } else {
+                say("[smoke] guest resolv.conf now: %s", r.output != NULL ? r.output : "");
+            }
+            xf_guest_result_free(&r);
+        }
+    }
+
     probe_guest("network: DNS + HTTP from the guest",
                 "wget -q -T 30 -O /dev/null http://dl-cdn.alpinelinux.org/alpine/ && echo net-ok", 180000);
     probe_guest("network: apk update (the first thing provisioning runs)",

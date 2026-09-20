@@ -53,6 +53,39 @@ final class EmbeddedLinuxVM: LinuxVM {
         guard !isBooted else { return }
         try await emulator.boot()
         isBooted = emulator.isRunning
+        if isBooted { await configureGuestResolver() }
+    }
+
+    /// Write the guest's `/etc/resolv.conf` from the device's own DNS.
+    ///
+    /// Resolution happens in the guest, and the bundled minirootfs ships no
+    /// nameservers, so without this `apk add` — the first thing provisioning
+    /// runs — cannot reach its repositories. Failure is not fatal: the guest
+    /// still boots, and a user can see what happened in the engine log.
+    private func configureGuestResolver() async {
+        guard let share = hostShare else { return }
+        let (text, source) = GuestNetwork.resolvConfForDevice()
+
+        let staging = share.appendingPathComponent(Self.transferDir, isDirectory: true)
+        let file = staging.appendingPathComponent("resolv.conf")
+        do {
+            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        } catch {
+            XForgeLog.note("dns: could not stage resolv.conf: \(error.localizedDescription)")
+            return
+        }
+
+        let status = (try? await run(
+            // The file can be a dangling symlink into /run in newer roots, so
+            // replace it rather than writing through it (same reason iSH-AOK's
+            // app unlinks first).
+            "rm -f /etc/resolv.conf && cp -f /host/\(Self.transferDir)/resolv.conf /etc/resolv.conf && cat /etc/resolv.conf",
+            environment: nil
+        ) { _ in }) ?? -1
+
+        XForgeLog.note("dns: resolv.conf from \(source) servers (exit \(status)): "
+            + text.split(separator: "\n").joined(separator: " "))
     }
 
     /// Run a command in the guest, forwarding its output, and return its exit code.
