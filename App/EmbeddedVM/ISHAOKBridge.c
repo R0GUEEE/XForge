@@ -238,7 +238,11 @@ static void xf_global_init(void) {
     lockstats_init();
     guestprof_init();
     run_at_boot();
-    doEnableMulticore = true;
+    // XForge drives the guest from one serialized queue. iSH-AOK's multicore
+    // path can lose host wake signals while guest tasks sleep (notably during
+    // apk/curl/timeout), which presents as provisioning freezing indefinitely.
+    // Keep the guest single-core for deterministic headless command execution.
+    doEnableMulticore = false;
     ish_accel_init();
     ish_accel_pix_init();
 }
