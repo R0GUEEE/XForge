@@ -143,6 +143,31 @@ static void probe_guest(const char *label, const char *command, int timeout_ms) 
     xf_guest_result_free(&r);
 }
 
+// Like probe_guest, but the result is asserted: these checks exist to prove a
+// command *returns*, and probe_guest only reports. A hung lock burned a probe's
+// whole 15-minute timeout while the harness still printed no failed steps.
+static void probe_assert(const char *label, const char *command, int timeout_ms) {
+    step(label);
+    struct xf_guest_result r;
+    int rc = xf_ish_run(command, NULL, timeout_ms, 1 << 20, &r);
+    if (rc != 0) {
+        say("[smoke] probe could not start (%d): %s", rc, xf_ish_last_error());
+        result(label, 0);
+        return;
+    }
+    say("[smoke] --- %s ---", label);
+    say("launched=%d exited=%d exit_code=%d signal=%d timed_out=%d truncated=%d bytes=%zu",
+        r.launched, r.exited, r.exit_code, r.term_signal, r.timed_out, r.truncated, r.output_len);
+    if (r.output != NULL && r.output[0] != '\0') {
+        fputs(r.output, stdout);
+        if (r.output[r.output_len > 0 ? r.output_len - 1 : 0] != '\n')
+            fputc('\n', stdout);
+    }
+    fflush(stdout);
+    result(label, r.launched && r.exited && !r.timed_out && r.term_signal == 0 && r.exit_code == 0);
+    xf_guest_result_free(&r);
+}
+
 // Copy a host file into the shared folder, so the guest can see it at /host.
 static int stage_into_share(const char *source, const char *destination) {
     FILE *in = fopen(source, "rb");
@@ -374,12 +399,12 @@ int main(int argc, char **argv) {
                     }
                     result("stage the PI futex and Swift Mutex probes", staged);
                     if (staged) {
-                        probe_guest("PI futexes: FUTEX_LOCK_PI / TRYLOCK_PI / UNLOCK_PI",
+                        probe_assert("PI futexes: FUTEX_LOCK_PI / TRYLOCK_PI / UNLOCK_PI",
                                     "cd /root && cp -f /host/futex-pi-probe.c . && "
                                     "clang -O1 -pthread -o futex-pi-probe futex-pi-probe.c && "
                                     "./futex-pi-probe",
                                     900000);
-                        probe_guest("Swift Synchronization.Mutex under libdispatch workers",
+                        probe_assert("Swift Synchronization.Mutex under libdispatch workers",
                                     "swiftc -O -o /root/swift-mutex-probe /host/swift-mutex-probe.swift "
                                     "&& /root/swift-mutex-probe",
                                     1800000);

@@ -21,6 +21,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
@@ -48,8 +49,20 @@ static void check(const char *what, int ok, const char *detail) {
     printf("  %-46s %s%s%s\n", what, ok ? "ok" : "FAIL",
            detail != NULL && detail[0] != '\0' ? " — " : "",
            detail != NULL ? detail : "");
+    fflush(stdout);
     if (!ok)
         failures++;
+}
+
+/* A guest thread blocked on a lock that never comes free would otherwise burn
+ * the harness's whole timeout with no output; this turns that into a result.
+ * The correct probe finishes in well under a second of guest time (the emulator
+ * makes it seconds, not minutes). */
+static void watchdog(int sig) {
+    (void) sig;
+    printf("PI-FUTEX TIMED OUT — a lock or a wait never returned\n");
+    fflush(stdout);
+    _exit(2);
 }
 
 /* FUTEX_LOCK_PI/FUTEX_UNLOCK_PI take the value argument as unused, so this
@@ -58,8 +71,11 @@ static int pi_op(int *word, int op) {
     return (int) syscall(SYS_futex, word, op | FUTEX_PRIVATE_FLAG, 0, NULL, NULL, 0);
 }
 
+/* Deliberately small: these ops are microseconds natively but the guest is an
+ * emulated aarch64, and the point is whether lock/unlock/wake work under
+ * contention at all — not throughput. 4 x 250 contended pairs is ample. */
 #define THREADS 4
-#define ROUNDS 20000
+#define ROUNDS 250
 
 static int counter;                       /* guarded by the raw PI word */
 static pthread_mutex_t pi_mutex;          /* PTHREAD_PRIO_INHERIT */
@@ -97,6 +113,9 @@ static void *pi_mutex_worker(void *arg) {
 }
 
 int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    signal(SIGALRM, watchdog);
+    alarm(120);
     printf("futex-pi-probe: tid=%d\n", (int) gettid());
 
     /* 1. The syscall on its own: free word, lock, unlock, and the owner check. */
@@ -143,7 +162,7 @@ int main(void) {
             pthread_create(&t[i], NULL, raw_worker, NULL);
         for (int i = 0; i < THREADS; i++)
             pthread_join(t[i], NULL);
-        check("raw PI futex, 4 threads x 20000 lock/unlock",
+        check("raw PI futex, 4 threads x 250 contended lock/unlock",
               counter == 0, "no corruption, no deadlock");
     }
 
@@ -161,11 +180,12 @@ int main(void) {
                 pthread_create(&t[i], NULL, pi_mutex_worker, NULL);
             for (int i = 0; i < THREADS; i++)
                 pthread_join(t[i], NULL);
-            check("pthread PI mutex, 4 threads x 20000 lock/unlock",
+            check("pthread PI mutex, 4 threads x 250 lock/unlock",
                   pi_counter == THREADS * ROUNDS, "");
         }
     }
 
+    alarm(0);
     if (failures == 0)
         printf("PI-FUTEX OK\n");
     else

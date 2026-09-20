@@ -196,6 +196,22 @@ note "swift:  $SWIFT_VERSION"
 note "xtool:  $XTOOL_VERSION"
 note "glibc:  $GLIBC_LD"
 
+# Printing a version is not compiling. XForge exists to *build* a package in this
+# rootfs, and a toolchain whose frontend cannot find its own resource directory
+# still answers `swift --version` happily — it only fails when the compiler runs
+# ("missing required module 'SwiftShims'"). So compile and run something.
+log "Compiling and running a Swift program in the provisioned rootfs"
+cat > "$ROOTFS/root/swift-probe.swift" <<'SWIFT'
+print("xforge-swift-compile-ok")
+SWIFT
+SWIFT_RUN="$(chroot "$ROOTFS" /bin/sh -c "export PATH=$GUEST_PATH HOME=/root; cd /root && swiftc -o swift-probe swift-probe.swift && ./swift-probe" 2>&1 || true)"
+printf '%s\n' "$SWIFT_RUN" | sed 's/^/    /'
+case "$SWIFT_RUN" in
+    *xforge-swift-compile-ok*) ;;
+    *) die "the Swift toolchain in the payload cannot compile a program (see above)" ;;
+esac
+rm -f "$ROOTFS/root/swift-probe.swift" "$ROOTFS/root/swift-probe"
+
 # ---------------------------------------------------------------------------
 # 4. The darwin Swift SDK
 #
