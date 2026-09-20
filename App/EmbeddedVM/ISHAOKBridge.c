@@ -309,10 +309,15 @@ int xf_ish_import_rootfs(const char *archive_path, const char *dest_dir) {
     if (archive_path == NULL || dest_dir == NULL) return -EINVAL;
 
     xf_logf("import: begin %s -> %s", archive_path, dest_dir);
-    xf_global_init();
 
-    // libarchive needs a UTF-8 LC_CTYPE to read tarballs whose entries carry
-    // UTF-8 link paths; iSH-AOK's rootfs importer does this too.
+    // Importing a fakefs is a host-side archive/database operation. Do not
+    // initialize the emulator here: xf_global_init() calls run_at_boot(), starts
+    // emulator support threads, and initializes CPU/acceleration state. Starting
+    // that machinery during rootfs pre-install can leave first-run setup stalled
+    // immediately after a successful import.
+    //
+    // The engine is initialized later by xf_ish_boot(), on the same permanent
+    // guest pthread used by every guest command.
     fakefs_ensure_utf8_locale();
 
     struct fakefsify_error err;

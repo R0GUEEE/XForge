@@ -101,9 +101,9 @@ final class ISHAOKEmulator: LinuxEmulator {
         isRunning = true
     }
 
-    /// Import the bundled rootfs on the guest's own serial thread, without
-    /// booting. Doing it here keeps the engine's one-time global init on the
-    /// same thread that later mounts the root and runs commands.
+    /// Import the bundled rootfs on the guest's permanent serial thread,
+    /// without booting the emulator. The importer itself is host-only; the
+    /// engine's one-time initialization happens later in `boot()`.
     func prepareRootfs() async throws {
         let roots = rootsDirectory
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
