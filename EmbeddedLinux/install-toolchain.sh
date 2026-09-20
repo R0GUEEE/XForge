@@ -431,9 +431,21 @@ swift_wrapper() {
     # So the layer's directories go on the link line explicitly, ahead of
     # anything the driver adds. (-L only reorders the search; it changes no
     # runtime path, so Alpine's own binaries are untouched.)
-    link_dirs="-Xlinker -L$GLIBC_LIB -Xlinker -L$GLIBC_ROOT/usr/lib/gcc/$MULTIARCH"
-    for version_dir in "$GLIBC_ROOT"/usr/lib/gcc/$MULTIARCH/*/; do
-        [ -d "$version_dir" ] && link_dirs="$link_dirs -Xlinker -L${version_dir%/}"
+    # -rpath-link is the part that actually matters, and it is not the same thing
+    # as -L: when the linker pulls in a *shared* library, that library's own
+    # NEEDED entries (libswiftCore.so wants libstdc++.so.6 and libc.so.6) are
+    # resolved through the rpath-link path, not the -L path. Without it the
+    # linker falls back to the guest's /lib and /usr/lib, where Alpine's
+    # libc6-compat stubs and musl's libstdc++ sit — which is why every attempt
+    # with -L alone still failed:
+    #   ld: /lib/libc.musl-aarch64.so.1: warning: the `gets' ...
+    #   undefined reference to `std::__throw_logic_error(char const*)@GLIBCXX_3.4'
+    # Verified before shipping: with -rpath-link pointing at the layer, a link
+    # against Ubuntu's libxml2.so.2 is clean and the binary runs in a musl guest.
+    link_dirs=""
+    for dir in "$GLIBC_LIB" "$GLIBC_ROOT/usr/lib/gcc/$MULTIARCH" "$GLIBC_ROOT"/usr/lib/gcc/$MULTIARCH/*/; do
+        [ -d "$dir" ] || continue
+        link_dirs="$link_dirs -Xlinker -L${dir%/} -Xlinker -rpath-link -Xlinker ${dir%/}"
     done
 
     cat > "/usr/local/bin/$name" <<EOF
