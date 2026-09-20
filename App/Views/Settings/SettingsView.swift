@@ -94,7 +94,9 @@ struct SettingsView: View {
                     title: component.rawValue,
                     detail: storageDetail(for: component),
                     installed: toolchain.isInstalled(component),
-                    installing: toolchain.isInstalling == component
+                    installing: toolchain.isInstalling == component,
+                    progress: toolchain.isInstalling == component ? toolchain.progress : nil,
+                    progressLabel: toolchain.isInstalling == component ? toolchain.progressLabel : nil
                 ) {
                     Task { await toolchain.install(component) }
                 }
@@ -173,29 +175,50 @@ struct StorageRow: View {
     let detail: String
     var installed = true
     var installing = false
+    /// 0…1 while this component installs, and what that fraction is measuring.
+    var progress: Double?
+    var progressLabel: String?
     let onInstall: () -> Void
 
     var body: some View {
-        HStack {
-            Image(systemName: installed ? "checkmark.circle.fill" : "circle.dashed")
-                .foregroundStyle(installed ? .green : .secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                Text(detail).font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if !installed {
-                Button {
-                    onInstall()
-                } label: {
-                    if installing {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label("Install", systemImage: "arrow.down.circle")
-                    }
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Image(systemName: installed ? "checkmark.circle.fill" : "circle.dashed")
+                    .foregroundStyle(installed ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
                 }
-                .buttonStyle(.bordered)
-                .disabled(installing)
+                Spacer()
+                if !installed {
+                    Button {
+                        onInstall()
+                    } label: {
+                        if installing {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Install", systemImage: "arrow.down.circle")
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(installing)
+                }
+            }
+
+            // Under the row it belongs to, with what is happening right now: the
+            // engine returns a guest command's output only when it finishes, so
+            // this line is the only live feedback there is.
+            if let progress, let progressLabel {
+                VStack(alignment: .leading, spacing: 3) {
+                    ProgressView(value: progress).progressViewStyle(.linear)
+                    HStack(spacing: 4) {
+                        Text("\(Int(progress * 100))%")
+                        Text(progressLabel)
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.leading, 28)
             }
         }
     }

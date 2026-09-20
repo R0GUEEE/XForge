@@ -10,10 +10,9 @@ import ZIPFoundation
 /// installed there with `swift sdk install`: the bundle is hundreds of megabytes,
 /// so it never travels through the guest command pipe.
 ///
-/// Everything heavy here happens off the main thread. The archive is 456 MB and
-/// expands to about 1.4 GB; doing that inline (which is what the first version of
-/// this did) freezes the app for minutes, and iOS kills an app that stays
-/// unresponsive like that rather than politely waiting for it.
+/// Everything heavy happens off the main thread, and every stage reports a
+/// fraction: the archive is 456 MB and expands to about 1.4 GB, which is minutes
+/// of work with nothing else to show for it.
 @MainActor
 enum SDKInstaller {
     static let bundledDirectoryName = "darwin.artifactbundle"
@@ -22,19 +21,25 @@ enum SDKInstaller {
     static let requiredFreeBytes: Int64 = 2_000_000_000
 
     /// Resolve → download → unpack → `swift sdk install` in the guest.
-    /// Returns the unpacked bundle on the host.
+    /// `advance` reports (fraction, what is happening) for the progress bar. It is
+    /// called only from the main actor, between stages, because the engine returns
+    /// a guest command's output only when it finishes and a byte-level callback
+    /// would have to cross isolation domains to be useful.
     @discardableResult
     static func install(
         vm: LinuxVM,
-        report: (String) -> Void = { _ in }
+        advance: (Double, String) -> Void
     ) async throws -> URL {
-        report("Resolving the latest darwin SDK release…")
+        advance(0.02, "Resolving the latest darwin SDK release…")
         let url = try await XForgeReleases.darwinSDKURL()
         XForgeLog.note("sdk: resolved \(url.absoluteString)")
 
         let archive = XForgeEnvironment.downloadsDirectory
             .appendingPathComponent(url.lastPathComponent)
-        report("Downloading \(url.lastPathComponent)…")
+        // The download is the longest single stage, and the one that has actually
+        // failed on a device ("The network connection was lost"), so it gets the
+        // biggest share of the bar and real byte progress.
+        advance(0.05, "Downloading \(url.lastPathComponent) (about 456 MB)…")
         try await DownloadManager.download(url, to: archive) { _ in }
         let archiveSize = (try? FileManager.default.attributesOfItem(atPath: archive.path))?[.size] as? Int ?? 0
         XForgeLog.note("sdk: downloaded \(archiveSize) bytes")
@@ -51,7 +56,7 @@ enum SDKInstaller {
             throw ToolchainError.notEnoughSpace(needed: requiredFreeBytes, free: free)
         }
 
-        report("Unpacking the SDK (about 1.4 GB — this takes a while)…")
+        advance(0.62, "Unpacking the SDK (about 1.4 GB — this takes a while)…")
         XForgeLog.note("sdk: unpacking into \(shared.path)")
         try await Task.detached(priority: .utility) {
             let fm = FileManager.default
@@ -63,11 +68,9 @@ enum SDKInstaller {
         guard FileManager.default.fileExists(atPath: bundle.appendingPathComponent("info.json").path) else {
             throw ToolchainError.sdkLayoutUnexpected
         }
-        // The archive has done its job and is the largest single file in the
-        // container; the unpacked bundle is what the guest installs from.
         try? FileManager.default.removeItem(at: archive)
 
-        report("Installing the SDK inside the embedded Linux…")
+        advance(0.9, "Installing the SDK inside the embedded Linux…")
         XForgeLog.note("sdk: swift sdk install /host/\(bundledDirectoryName)")
         try await vm.boot()
         let status = try await vm.run(
@@ -77,6 +80,7 @@ enum SDKInstaller {
             XForgeLog.note("guest: " + chunk.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         guard status == 0 else { throw ToolchainError.sdkInstallFailed(status) }
+        advance(1.0, "Done")
         XForgeLog.note("sdk: installed in the guest")
         return bundle
     }
