@@ -2,6 +2,46 @@
 
 All notable changes to **XForge** are documented here.
 
+## [0.4.0] — 2026-09-20 — Toolchain installs, with progress
+
+### Added
+- **A determinate progress bar under the component being installed**, on both the
+  Toolchain screen and Settings → Storage, with the step it is on ("Installing the
+  glibc compatibility layer", "Downloading darwin.artifactbundle.zip (about
+  456 MB)", …). The engine returns a guest command's output only when it finishes,
+  so the install was split into steps — that is what makes a bar possible.
+- **`install-toolchain.sh` now follows the tools' own instructions, as steps** the
+  app drives one at a time (and that the Terminal can run by hand:
+  `sh /root/install-toolchain.sh deps|glibc|xtool|swiftly|swift|verify|all`):
+  base packages → glibc compatibility layer → **xtool** (the release asset
+  `xtool-<arch>.AppImage`, unpacked once into `/opt/xtool`) → **swiftly** (the
+  official installer) → **Swift toolchain** → verify.
+- **A glibc compatibility layer is now a dependency.** Every one of these tools is
+  a glibc binary and the guest is musl; `gcompat` alone is not enough (xtool dies
+  on `strptime_l`, `fts_*`, `fcntl64`). The script extracts Ubuntu's own libc6 and
+  its dependencies into `/opt/glibc` and runs the tools through that loader.
+- **Darwin SDK from your own Xcode.xip**: pick the file in the app, it is staged
+  into the shared folder and built in the guest with `xtool sdk build`, alongside
+  the existing prebuilt download.
+- **The verification step's verdict is shown per tool** — `xtool: ok 1.19.2`,
+  `swift: not installed`, or *installed but does not run in this guest*, so
+  "installed" and "works" are never confused.
+- Downloads report byte progress and retry three times; the previous version could
+  lose a 456 MB connection and give up.
+
+### Changed
+- **The Terminal keeps the shell's state**: the working directory survives `cd`
+  between commands, history is recalled with ↑/↓ and persists across launches, and
+  the scrollback is only cleared by Clear.
+
+### Known limitation
+- Running Swift-based tools *inside* the guest is not reliable yet, and it is not
+  an XForge bug: iSH-AOK's aarch64 guest emulation intermittently faults on them.
+  Measured on a static Swift binary in the same emulator: 4 clean runs and 2
+  `SIGTRAP` ("Trace/breakpoint trap") out of 6, with no glibc involved.
+  The install steps still do their job and the verify step says exactly which tool
+  runs — see the Engine log. This needs an upstream fix in the engine.
+
 ## [0.3.4] — 2026-09-20 — Network access for the guest
 
 Three fixes, all from the engine log of a real device install attempt.
