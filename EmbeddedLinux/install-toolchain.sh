@@ -87,6 +87,8 @@ libgcc-s1
 libgcc-13-dev
 libgcc-14-dev
 libstdc++6
+libstdc++-13-dev
+libstdc++-14-dev
 zlib1g
 libcom-err2
 libkeyutils1
@@ -235,7 +237,8 @@ step_glibc() {
             return 1
         }
         incomplete=""
-        for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 libstdc++.so.6 \
+        for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 libstdc++.so6 \
+                   libstdc++.so.6 \
                    libgcc_s.so.1 libz.so.1 libzstd.so.1 liblzma.so.5 libxml2.so.2 libcurl.so.4 \
                    libssl.so.3 libcrypto.so.3 libgnutls.so.30 libhogweed.so.6 \
                    libnettle.so.8 libgmp.so.10 libicuuc.so.74 liblber.so.2 \
@@ -394,12 +397,24 @@ step_swiftly() {
 # environment file, which is exactly what XForge's command runner is not.
 swift_wrapper() {
     name="$1"
+    # The linker's own search path is the guest's (musl) one, where Alpine's
+    # libstdc++ — which carries no symbol versions — shadows Ubuntu's, and
+    # linking anything against libswiftCore fails with
+    #   undefined reference to \`std::__throw_logic_error(char const*)@GLIBCXX_3.4'
+    # So the layer's directories go on the link line explicitly, ahead of
+    # anything the driver adds. (-L only reorders the search; it changes no
+    # runtime path, so Alpine's own binaries are untouched.)
+    link_dirs="-Xlinker -L$GLIBC_LIB -Xlinker -L$GLIBC_ROOT/usr/lib/gcc/$MULTIARCH"
+    for version_dir in "$GLIBC_ROOT"/usr/lib/gcc/$MULTIARCH/*/; do
+        [ -d "$version_dir" ] && link_dirs="$link_dirs -Xlinker -L${version_dir%/}"
+    done
+
     cat > "/usr/local/bin/$name" <<EOF
 #!/bin/sh
 . /usr/local/share/xforge/glibc.env
 
 # Linking has the same problem running does, one step earlier: the linker's own
-# default paths are Alpine's, so `-lstdc++` resolves to the musl build — which
+# default paths are Alpine's, so \`-lstdc++\` resolves to the musl build — which
 # carries no symbol versions at all — and linking anything against libswiftCore
 # fails with
 #   undefined reference to \`std::__throw_logic_error(char const*)@GLIBCXX_3.4'
@@ -413,7 +428,7 @@ home="\${SWIFTLY_HOME_DIR:-/root/.local/share/swiftly}"
 
 for candidate in "\$home"/toolchains/*/usr/bin/$name "\$home"/bin/$name; do
     [ -x "\$candidate" ] || continue
-    exec "\$candidate" "\$@"
+    exec "\$candidate" $link_dirs "\$@"
 done
 
 . "\$home/env.sh" >/dev/null 2>&1 || true   # sourcing, not a forked program: the only safe /dev/null here
