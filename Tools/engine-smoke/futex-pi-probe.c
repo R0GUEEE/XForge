@@ -93,10 +93,12 @@ static void *raw_worker(void *arg) {
         /* The word must name us while we hold it. */
         if (counter != (int) gettid()) {
             printf("  owner tid wrong while held: %d != %d\n", counter, (int) gettid());
-            pi_op(&counter, FUTEX_UNLOCK_PI);
             return NULL;
         }
-        counter = 0;
+        /* The word must NOT be written here: for a PI futex the kernel owns it,
+         * and FUTEX_UNLOCK_PI is what clears it and wakes a waiter. Zeroing it
+         * first made the unlock an EPERM no-op, so no wake was ever issued and
+         * the waiters slept for good — which is how this probe first timed out. */
         pi_op(&counter, FUTEX_UNLOCK_PI);
     }
     return NULL;

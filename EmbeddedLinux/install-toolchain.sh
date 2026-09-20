@@ -73,7 +73,16 @@ SILENT="${TMPDIR:-/tmp}/xforge-silent.$$"
 glibc_packages() {
     cat <<'EOF'
 libc6
+# The development halves are needed to *link*, not just to run: glibc's
+# crt1.o/crti.o/crtn.o/libc.so (libc6-dev) and GCC's crtbeginS.o/libgcc.a
+# (libgcc-<n>-dev). Without them a link dies with
+#   /usr/bin/ld: cannot find crtbeginS.o / cannot find -lgcc
+# which is what compiling a Swift program in this rootfs hit — `swift --version`
+# was fine, because printing a version does not link anything.
+libc6-dev
 libgcc-s1
+libgcc-13-dev
+libgcc-14-dev
 libstdc++6
 zlib1g
 libcom-err2
@@ -190,6 +199,13 @@ step_glibc() {
                 if [ -d "usr/lib/$MULTIARCH" ]; then
                     cp -a "usr/lib/$MULTIARCH/." "$GLIBC_LIB/"
                 fi
+                # GCC's own directory: crtbeginS.o/crtendS.o/libgcc.a live under
+                # usr/lib/gcc/<triple>/<version>/, which is where clang looks for
+                # the GNU toolchain it links with.
+                if [ -d "usr/lib/gcc/$MULTIARCH" ]; then
+                    mkdir -p "$GLIBC_ROOT/usr/lib/gcc/$MULTIARCH"
+                    cp -a "usr/lib/gcc/$MULTIARCH/." "$GLIBC_ROOT/usr/lib/gcc/$MULTIARCH/"
+                fi
                 if [ -e "usr/lib/ld-linux-$ARCH.so.1" ]; then
                     cp -a "usr/lib/ld-linux-$ARCH.so.1" "$GLIBC_ROOT/usr/lib/" 2>>"$SILENT" || true
                 fi
@@ -223,16 +239,36 @@ step_glibc() {
                    libldap.so.2 libpng16.so.16 libpsl.so.5 libz3.so.4 libsqlite3.so.0; do
             glibc_have "$lib" || incomplete="$incomplete $lib"
         done
+        # Startup and compiler objects, which are files rather than shared
+        # libraries: glibc's crt1.o/crti.o/crtn.o/libc.so land in the multiarch
+        # directory, GCC's crtbeginS.o/crtendS.o/libgcc.a in its versioned one.
+        for obj in crt1.o crti.o crtn.o libc_nonshared.a; do
+            glibc_have "$obj" || incomplete="$incomplete $obj"
+        done
+        for obj in crtbeginS.o crtendS.o libgcc.a; do
+            found=""
+            for candidate in "$GLIBC_ROOT/usr/lib/gcc/$MULTIARCH"/*/"$obj"; do
+                [ -e "$candidate" ] && found=1
+            done
+            [ -n "$found" ] || incomplete="$incomplete $obj"
+        done
         if [ -n "$incomplete" ]; then
             echo "the glibc layer is incomplete — nothing provides:$incomplete" >&2
             echo "a package in glibc_packages() was renamed in $UBUNTU_SUITE; the" >&2
-            echo "libraries above are the ones the Swift/xtool binaries load." >&2
+            echo "names above are what the Swift/xtool binaries load and link against." >&2
             exit 1
         fi
         log "glibc at $GLIBC_LD"
     fi
 
     mkdir -p "$GLIBC_ROOT/usr/lib" "$SHARE"
+    # A compiler finds its GNU toolchain by path, not through a search path:
+    # clang looks in /usr/lib/gcc/<triple>/<version>, so the extracted copy has
+    # to be visible there (the same trick the multiarch directory below uses).
+    if [ -d "$GLIBC_ROOT/usr/lib/gcc/$MULTIARCH" ]; then
+        mkdir -p /usr/lib/gcc
+        ln -sfn "$GLIBC_ROOT/usr/lib/gcc/$MULTIARCH" "/usr/lib/gcc/$MULTIARCH"
+    fi
     if [ ! -e "$GLIBC_ROOT/usr/lib/ld-linux-$ARCH.so.1" ]; then
         ln -sf "$GLIBC_LD" "$GLIBC_ROOT/usr/lib/ld-linux-$ARCH.so.1"
     fi
