@@ -111,9 +111,13 @@ final class EmbeddedLinuxVM: LinuxVM {
             pairs.map { "\($0.key)=\($0.value)" }.joined(separator: " ") + " "
         } ?? ""
 
+        // Always execute through Alpine's non-login shell. A login wrapper is
+        // inappropriate for the headless bridge (no controlling TTY/PAM
+        // session) and causes otherwise valid commands such as cp, nslookup and
+        // terminal probes to exit 1 before the script body runs.
         let result = try await emulator.runCommand(
             env + command,
-            shell: nil,
+            shell: "/bin/sh",
             timeout: Self.noTimeout,
             maxOutput: Self.outputCap
         )
