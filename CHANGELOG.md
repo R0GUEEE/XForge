@@ -2,6 +2,31 @@
 
 All notable changes to **XForge** are documented here.
 
+## [0.3.4] — 2026-09-20 — Network access for the guest
+
+Three fixes, all from the engine log of a real device install attempt.
+
+### Fixed
+- **The guest could not resolve anything even with a correct `/etc/resolv.conf`.**
+  The device's resolver is normally the router (`192.168.x.1`), which is a *local*
+  address: iOS refuses connections to those unless the app declares
+  `NSLocalNetworkUsageDescription` and the user allows it. The app now declares it
+  (so the prompt appears), puts the public resolvers first — they need no
+  permission — and keeps the device's servers as the fallback for networks where
+  public DNS is blocked. The provisioning failure message now points at
+  Settings → Privacy & Security → Local Network.
+- **Four bogus `WARNING filesystem 'x' is not registered` lines on every boot.**
+  The check added with the boot fix used the `fs_ops` variable names; the names
+  filesystems are registered under are `fake`, `real`, `proc`, `sysfs`, `devpts`.
+- **The 456 MB darwin SDK download dropped its connection 22 seconds in** ("The
+  network connection was lost"). Downloads now retry up to three times with
+  backoff; a server-side error (404/403) still fails immediately.
+
+### Added
+- The boot sequence performs a real resolution lookup and logs the answer, so a
+  guest that cannot resolve says so in the engine log instead of only inside
+  `apk`'s output.
+
 ## [0.3.3] — 2026-09-20 — The guest gets DNS
 
 ### Added

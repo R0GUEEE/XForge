@@ -75,7 +75,7 @@ jobs:
           echo "bundle id : $BID"
           echo "name      : $NAME"
           echo "version   : $VER ($BUILD)"
-          [ "$VER" = "0.3.3" ]   || { echo "::error::CFBundleShortVersionString is '$VER', expected 0.3.3"; exit 1; }
+          [ "$VER" = "0.3.4" ]   || { echo "::error::CFBundleShortVersionString is '$VER', expected 0.3.4"; exit 1; }
           [ "$BID" = "org.xforge.XForge" ] || { echo "::error::unexpected bundle id '$BID'"; exit 1; }
           [ "$NAME" = "XForge" ] || { echo "::error::unexpected display name '$NAME'"; exit 1; }
           # The icon must reach the bundle: either as legacy AppIcon*.png files at
@@ -91,14 +91,14 @@ jobs:
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
           mkdir -p dist/Payload
           ditto "$APP" dist/Payload/XForge.app
-          cd dist && zip -qry "XForge-0.3.3-unsigned.ipa" Payload
-          echo "artifact=$(pwd)/XForge-0.3.3-unsigned.ipa" >> "$GITHUB_ENV"
+          cd dist && zip -qry "XForge-0.3.4-unsigned.ipa" Payload
+          echo "artifact=$(pwd)/XForge-0.3.4-unsigned.ipa" >> "$GITHUB_ENV"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: XForge-unsigned-ipa
-          path: dist/XForge-0.3.3-unsigned.ipa
+          path: dist/XForge-0.3.4-unsigned.ipa
           if-no-files-found: error
 
       - name: Upload to release (manual trigger only)
@@ -106,7 +106,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: xforge-${{ github.run_number }}
-          name: XForge 0.3.3 — the guest gets DNS
-          files: dist/XForge-0.3.3-unsigned.ipa
+          name: XForge 0.3.4 — network access for the guest
+          files: dist/XForge-0.3.4-unsigned.ipa
           body_path: CHANGELOG.md
           generate_release_notes: false
