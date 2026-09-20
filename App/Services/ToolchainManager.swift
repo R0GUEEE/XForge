@@ -84,6 +84,8 @@ final class ToolchainManager: ObservableObject {
     @Published private(set) var progressLabel: String?
     /// Per-tool result, straight from the script's own verification step.
     @Published private(set) var toolVerdicts: [String: ToolVerdict] = [:]
+    /// Live stdout/stderr from the current guest-side install.
+    @Published private(set) var installOutput = ""
 
     private let vm: LinuxVM
 
@@ -164,6 +166,7 @@ final class ToolchainManager: ObservableObject {
     func install(_ component: Component) async {
         isInstalling = component
         defer { isInstalling = nil }
+        installOutput = ""
         XForgeLog.prepare()
         XForgeLog.note("install: \(component.rawValue) requested")
         // Provisioning downloads and unpacks inside the guest for many minutes,
@@ -285,7 +288,9 @@ final class ToolchainManager: ObservableObject {
     }
 
     /// Run the in-guest provisioning script (Swift toolchain, xtool and the glibc
-    /// layer they need), one step at a time.
+    /// layer they need), one step at a time. Output is redirected into /host,
+    /// which is realfs, so the host can display it while the bridge is blocked
+    /// waiting for the command to finish.
     private func provisionGuest() async throws {
         try await vm.boot()
 
@@ -299,28 +304,25 @@ final class ToolchainManager: ObservableObject {
         beginProgress(.swift, steps: steps.count)
 
         for (index, step) in steps.enumerated() {
-            advanceProgress(Double(index) / Double(steps.count), step.title)
+            let start = (Double(index) + 0.05) / Double(steps.count)
+            advanceProgress(start, step.title)
             XForgeLog.note("provision: \(step.rawValue)")
 
-            let collector = OutputCollector()
-            // These steps download hundreds of megabytes inside the guest and can
-            // take many minutes each; the engine returns a command's output only
-            // when it finishes, so the log gets it step by step.
-            let status = try await vm.run(
-                "sh \(guestPath) \(step.rawValue)",
-                environment: ["PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
-            ) { chunk in
-                collector.append(chunk)
-                let text = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty { XForgeLog.note("guest: " + text) }
-            }
+            let result = try await runProvisionStep(
+                step,
+                guestPath: guestPath,
+                index: index,
+                total: steps.count
+            )
 
             if step == .verify {
-                recordVerdicts(from: collector.value)
+                recordVerdicts(from: result.output)
             }
-            guard status == 0 || step == .verify else {
-                throw ToolchainError.provisioningFailed(status, step: step.title,
-                                                       output: collector.tail)
+            guard result.status == 0 || step == .verify else {
+                let collector = OutputCollector()
+                collector.append(result.output)
+                throw ToolchainError.provisioningFailed(
+                    result.status, step: step.title, output: collector.tail)
             }
             advanceProgress(Double(index + 1) / Double(steps.count), step.title)
         }
@@ -332,6 +334,81 @@ final class ToolchainManager: ObservableObject {
         } else {
             message = "Swift and xtool are installed in the embedded Linux."
         }
+    }
+
+    private func runProvisionStep(
+        _ step: ProvisionStep,
+        guestPath: String,
+        index: Int,
+        total: Int
+    ) async throws -> (status: Int32, output: String) {
+        let transfer = XForgeEnvironment.hostShareDirectory
+            .appendingPathComponent(".xforge-transfer", isDirectory: true)
+        try FileManager.default.createDirectory(at: transfer, withIntermediateDirectories: true)
+
+        let name = "provision-\(UUID().uuidString).log"
+        let hostLog = transfer.appendingPathComponent(name)
+        let guestLog = "/host/.xforge-transfer/\(name)"
+        try? FileManager.default.removeItem(at: hostLog)
+
+        let collector = OutputCollector()
+        let poller = Task { @MainActor in
+            var consumed = 0
+            var updates = 0
+
+            func drain() {
+                guard let data = try? Data(contentsOf: hostLog),
+                      data.count > consumed else { return }
+                let chunkData = data.subdata(in: consumed..<data.count)
+                consumed = data.count
+                guard let chunk = String(data: chunkData, encoding: .utf8),
+                      !chunk.isEmpty else { return }
+
+                collector.append(chunk)
+                installOutput += chunk
+
+                let nonEmpty = chunk
+                    .split(separator: "\n")
+                    .map(String.init)
+                    .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+                for line in nonEmpty {
+                    XForgeLog.note("guest: " + line)
+                }
+
+                updates += 1
+                let withinStep = min(0.90, 0.12 + Double(updates) * 0.035)
+                progress = (Double(index) + withinStep) / Double(total)
+                if let last = nonEmpty.last {
+                    progressLabel = "\(step.title) — \(last)"
+                } else {
+                    progressLabel = step.title
+                }
+            }
+
+            while !Task.isCancelled {
+                drain()
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            drain()
+        }
+
+        let status: Int32
+        do {
+            status = try await vm.run(
+                "sh '\(guestPath)' '\(step.rawValue)' > '\(guestLog)' 2>&1",
+                environment: ["PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
+            ) { _ in }
+        } catch {
+            poller.cancel()
+            await poller.value
+            try? FileManager.default.removeItem(at: hostLog)
+            throw error
+        }
+
+        poller.cancel()
+        await poller.value
+        try? FileManager.default.removeItem(at: hostLog)
+        return (status, collector.value)
     }
 
     /// Parse the verification step's `XFORGE-VERIFY <tool> <kind> <detail>` lines.
