@@ -23,8 +23,14 @@ enum RootfsInstaller {
     }
 
     static func isInstalled(in rootsDirectory: URL) -> Bool {
-        FileManager.default.fileExists(
-            atPath: installedRoot(in: rootsDirectory).appendingPathComponent("meta.db").path)
+        let root = installedRoot(in: rootsDirectory)
+        var isDirectory: ObjCBool = false
+        let hasMetadata = FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("meta.db").path)
+        let hasData = FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("data", isDirectory: true).path,
+            isDirectory: &isDirectory)
+        return hasMetadata && hasData && isDirectory.boolValue
     }
 
     /// Returns the ready-to-boot fakefs root, importing from the bundled archive
@@ -33,7 +39,7 @@ enum RootfsInstaller {
     static func installIfNeeded(into rootsDirectory: URL) throws -> URL {
         let fm = FileManager.default
         let root = installedRoot(in: rootsDirectory)
-        if fm.fileExists(atPath: root.appendingPathComponent("meta.db").path) {
+        if isInstalled(in: rootsDirectory) {
             return root
         }
 
