@@ -116,7 +116,20 @@ static int futex_lock_pi(guest_addr_t uaddr, dword_t op, bool try_only, struct t
         err = futex_wait_masked(uaddr, op, (dword_t) owner, timeout, ~0u);
         if (err == _ETIMEDOUT)
             return err;
-        if (err != 0 && err != _EAGAIN && err != _EINTR)
+        if (err == _EINTR) {
+            // A signal interrupted the wait. FUTEX_WAIT parks the futex so that
+            // a re-executed syscall (SA_RESTART) can resume the same wait; this
+            // op is re-entered in kernel context instead, so the park has to be
+            // dropped before reporting EINTR -- and a restartable interrupt has
+            // to look like one, or a caller with SA_RESTART would see an errno
+            // Linux would never have given it. Swift's Mutex accepts EINTR and
+            // re-locks, so an ordinary delivery is fine to surface.
+            if (signal_should_restart_syscall())
+                return _ERESTART;
+            futex_release_restart_park();
+            return _EINTR;
+        }
+        if (err != 0 && err != _EAGAIN)
             return err;
         // Woken, or the word moved under us: try to take it again.
     }
