@@ -143,6 +143,30 @@ static void probe_guest(const char *label, const char *command, int timeout_ms) 
     xf_guest_result_free(&r);
 }
 
+// Copy a host file into the shared folder, so the guest can see it at /host.
+static int stage_into_share(const char *source, const char *destination) {
+    FILE *in = fopen(source, "rb");
+    if (in == NULL)
+        return -1;
+    FILE *out = fopen(destination, "wb");
+    if (out == NULL) {
+        fclose(in);
+        return -1;
+    }
+    char buffer[65536];
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof buffer, in)) > 0) {
+        if (fwrite(buffer, 1, n, out) != n) {
+            fclose(in);
+            fclose(out);
+            return -1;
+        }
+    }
+    fclose(in);
+    fclose(out);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: engine-smoke <rootfs.tar.xz> [workdir]\n");
@@ -289,6 +313,35 @@ int main(int argc, char **argv) {
                 "wget -q -T 30 -O /dev/null http://dl-cdn.alpinelinux.org/alpine/ && echo net-ok", 180000);
     probe_guest("network: apk update (the first thing provisioning runs)",
                 "apk update 2>&1 | tail -3", 300000);
+
+    // --- 7. the provisioning steps themselves (opt-in) ----------------
+    // With XFORGE_SMOKE_TOOLCHAIN pointing at the app's install script, run the
+    // same steps the Toolchain screen runs -- base packages, the glibc layer,
+    // xtool -- and then try to *run* what they installed. This is the difference
+    // between "the install command succeeded" and "the tool works in a guest".
+    {
+        const char *script = getenv("XFORGE_SMOKE_TOOLCHAIN");
+        if (script != NULL && script[0] != '\0') {
+            char staged[4096];
+            snprintf(staged, sizeof staged, "%s/install-toolchain.sh", host);
+            step("stage the provisioning script into the guest");
+            if (stage_into_share(script, staged) != 0) {
+                say("[smoke] could not copy %s into the share", script);
+            } else {
+                result("stage the provisioning script", 1);
+                probe_guest("provision: base packages",
+                            "cp -f /host/install-toolchain.sh /root/ && sh /root/install-toolchain.sh deps", 900000);
+                probe_guest("provision: glibc layer",
+                            "sh /root/install-toolchain.sh glibc", 1800000);
+                probe_guest("provision: xtool",
+                            "sh /root/install-toolchain.sh xtool", 900000);
+                probe_guest("provision: verify (the script's own verdict)",
+                            "sh /root/install-toolchain.sh verify", 600000);
+                probe_guest("does xtool actually run in the guest?",
+                            "xtool --version", 300000);
+            }
+        }
+    }
 
     step("shut down");
     xf_ish_shutdown();

@@ -86,6 +86,10 @@ jobs:
         run: |
           set -o pipefail
           uname -m
+          # XFORGE_SMOKE_TOOLCHAIN makes it also run the app's real provisioning
+          # steps in the guest (base packages, the glibc layer, xtool) and then
+          # try to run what they installed.
+          XFORGE_SMOKE_TOOLCHAIN="$PWD/EmbeddedLinux/install-toolchain.sh" \
           ./Vendor/ish-AOK/build-host/tools/engine_smoke \
             Support/Resources/alpine-minirootfs-3.23.3-aarch64.tar.xz \
             "$RUNNER_TEMP/xforge-smoke" 2>&1 | tee /tmp/engine-smoke.log
