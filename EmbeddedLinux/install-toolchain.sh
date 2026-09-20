@@ -100,6 +100,9 @@ libssl3
 libzstd1
 libgcrypt20
 libgpg-error0
+libuuid1
+libblkid1
+libcap2
 libedit2
 libpython3.12t64
 libsqlite3-0
