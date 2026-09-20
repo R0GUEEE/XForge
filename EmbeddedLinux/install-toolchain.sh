@@ -397,6 +397,18 @@ swift_wrapper() {
     cat > "/usr/local/bin/$name" <<EOF
 #!/bin/sh
 . /usr/local/share/xforge/glibc.env
+
+# Linking has the same problem running does, one step earlier: the linker's own
+# default paths are Alpine's, so `-lstdc++` resolves to the musl build — which
+# carries no symbol versions at all — and linking anything against libswiftCore
+# fails with
+#   undefined reference to \`std::__throw_logic_error(char const*)@GLIBCXX_3.4'
+# The driver turns LIBRARY_PATH into -L flags ahead of its defaults, so the
+# glibc layer's copies win. (It also puts glibc's libc.so first, which is what
+# makes the produced binary use the glibc loader — the same one this rootfs
+# already points /lib/ld-linux-aarch64.so.1 at.)
+export LIBRARY_PATH="\${XFORGE_GLIBC_LIB}\${LIBRARY_PATH:+:\$LIBRARY_PATH}"
+
 home="\${SWIFTLY_HOME_DIR:-/root/.local/share/swiftly}"
 
 for candidate in "\$home"/toolchains/*/usr/bin/$name "\$home"/bin/$name; do
