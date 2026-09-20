@@ -12,7 +12,7 @@ struct SettingsView: View {
         List {
             Section {
                 NavigationLink { DownloadsView() } label: {
-                    Label("Downloads", systemImage: "arrow.down.circle")
+                    Label("Linux Toolchain", systemImage: "terminal")
                 }
                 NavigationLink {
                     SandboxBrowserView(root: XForgeEnvironment.documentDirectory)

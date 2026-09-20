@@ -28,27 +28,32 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    if !vm.isBooted {
-                        continuation.yield(.plan("Booting embedded Linux…"))
-                        try await vm.boot()
-                    }
-                    // Probe with commands whose exit status is meaningful. A
-                    // trailing `|| echo …` would make any probe "succeed".
+                    continuation.yield(.plan("Booting embedded Alpine Linux…"))
+                    await vm.prepareRootfs()
+                    try await vm.boot()
+
+                    // A bundled minirootfs deliberately contains only Alpine itself.
+                    // Before every build, the guest verifies its required packages and
+                    // toolchain. The script is idempotent, so an already-ready rootfs
+                    // only performs inexpensive checks.
+                    try await provisionGuestForBuild(continuation: continuation)
+
                     continuation.yield(.plan("Verifying Swift toolchain…"))
-                    let swift = try await vm.run("command -v swift", environment: nil) { _ in }
+                    let swift = try await vm.run("swift --version", environment: nil) {
+                        continuation.yield(.output($0))
+                    }
                     guard swift == 0 else {
-                        continuation.yield(.failed(
-                            "The Swift toolchain is not provisioned. Install it on the "
-                            + "Toolchain screen (or run `sh /root/install-toolchain.sh` in the Terminal)."))
+                        continuation.yield(.failed("The Swift toolchain could not run in the embedded Linux."))
                         continuation.finish()
                         return
                     }
 
                     continuation.yield(.plan("Verifying xtool…"))
-                    let xtool = try await vm.run("command -v xtool", environment: nil) { _ in }
+                    let xtool = try await vm.run("xtool --version", environment: nil) {
+                        continuation.yield(.output($0))
+                    }
                     guard xtool == 0 else {
-                        continuation.yield(.failed(
-                            "xtool is not provisioned. Install it on the Toolchain screen."))
+                        continuation.yield(.failed("xtool could not run in the embedded Linux."))
                         continuation.finish()
                         return
                     }
@@ -75,6 +80,33 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
             // Alpine downloads, extracts, and installs the published SDK directly
             // into its rootfs. The iOS host only provides the resolved asset URL.
             try await SDKInstaller.install(vm: vm, remoteURL: url) { _, _ in }
+        }
+    }
+
+    /// Stages the app-owned provisioning script inside Alpine and executes every
+    /// required step there. The script itself checks installed packages before
+    /// calling apk, so this is safe to run at the start of each build.
+    private func provisionGuestForBuild(
+        continuation: AsyncThrowingStream<BuildEvent, Error>.Continuation
+    ) async throws {
+        guard let script = Bundle.main.url(forResource: "install-toolchain", withExtension: "sh") else {
+            throw ToolchainError.scriptMissing
+        }
+
+        let guestPath = "/root/install-toolchain.sh"
+        try await vm.copyIn(hostURL: script, to: guestPath)
+
+        for step in ToolchainManager.ProvisionStep.allCases {
+            continuation.yield(.plan("Alpine: \(step.title)…"))
+            let status = try await vm.run(
+                "sh \(GuestShell.quote(guestPath)) \(GuestShell.quote(step.rawValue))",
+                environment: nil
+            ) {
+                continuation.yield(.output($0))
+            }
+            guard status == 0 else {
+                throw BuildError.stepFailed("Alpine \(step.title)", status)
+            }
         }
     }
 

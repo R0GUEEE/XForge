@@ -221,12 +221,30 @@ EOF
 }
 
 step_deps() {
-    log "Installing base packages"
-    apk add --no-cache \
-        bash curl wget tar xz zip unzip git ca-certificates \
-        gcompat libc6-compat zlib-static openssl \
+    # These are the Alpine-side prerequisites for importing projects, resolving
+    # SwiftPM packages, extracting the Darwin SDK and compiling C/C++ package
+    # dependencies. Keep this list in the rootfs: XForge's host is only a UI and
+    # file-transfer bridge, never the build environment.
+    packages="
+        bash curl wget tar xz zip unzip git ca-certificates
+        gcompat libc6-compat zlib-static openssl
         binutils zstd file gnupg tzdata
-    log "base packages installed"
+        build-base clang lld cmake ninja pkgconf
+        linux-headers musl-dev openssl-dev libxml2-dev icu-dev
+        python3 perl sqlite-dev
+    "
+
+    missing=""
+    for package in $packages; do
+        apk info -e "$package" >/dev/null 2>&1 || missing="$missing $package"
+    done
+
+    if [ -n "$missing" ]; then
+        log "Installing missing Alpine build dependencies:$missing"
+        apk add --no-cache $missing
+    else
+        log "Alpine build dependencies already installed"
+    fi
 }
 
 xtool_wrapper() {
