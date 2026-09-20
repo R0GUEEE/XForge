@@ -81,8 +81,10 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: Support/XForge-Bridging-Header.h
         HEADER_SEARCH_PATHS:
           - $(SRCROOT)/App/EmbeddedVM
+          - $(SRCROOT)/App/Services
         "HEADER_SEARCH_PATHS[sdk=iphoneos*]":
           - $(SRCROOT)/App/EmbeddedVM
+          - $(SRCROOT)/App/Services
           - $(ISH_AOK_ROOT)
           - $(ISH_AOK_ROOT)/deps/libarchive/libarchive
         "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]":

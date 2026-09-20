@@ -1,5 +1,4 @@
 import Foundation
-import SystemConfiguration
 
 /// The guest's `nameserver` configuration.
 ///
@@ -13,18 +12,23 @@ import SystemConfiguration
 ///
 /// Verified on the host harness before this existed: `wget` in a booted guest
 /// answered `bad address 'dl-cdn.alpinelinux.org'`, and `apk update` reported
-/// "DNS: transient error" for every repository.
+/// "DNS: transient error" for every repository. With the resolver configured the
+/// same guest answers `net-ok` and `apk update` reports 27,453 packages.
 enum GuestNetwork {
-    /// The DNS servers iOS is handing out right now, in preference order.
-    /// Empty when the system will not say (no network, or a VPN that does not
-    /// publish them).
+    /// The device's DNS servers, in preference order. Empty when the system
+    /// will not say (no network, or the dnsinfo SPI is unavailable) — see
+    /// HostDNS.c for why this is not SystemConfiguration.
     static func systemDNSServers() -> [String] {
-        guard let store = SCDynamicStoreCreate(nil, "org.xforge.dns" as CFString, nil, nil),
-              let dns = SCDynamicStoreCopyValue(store, "State:/Network/Global/DNS" as CFString)
-                as? [String: Any],
-              let addresses = dns[kSCPropNetDNSServerAddresses as String] as? [String]
-        else { return [] }
-        return addresses.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        var buffer = [CChar](repeating: 0, count: 512)
+        let count = buffer.withUnsafeMutableBufferPointer { pointer -> Int32 in
+            guard let base = pointer.baseAddress else { return 0 }
+            return xf_host_dns_servers(base, pointer.count)
+        }
+        guard count > 0 else { return [] }
+        return String(cString: buffer)
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { !$0.isEmpty }
     }
 
     /// Fallback for when the system publishes nothing. Both are public
