@@ -439,6 +439,11 @@ case "${1:-all}" in
         step_swiftly
         step_swift
         step_verify
+        # The build executor checks this stamp alongside the actual commands and
+        # package database. Bump its suffix whenever the required rootfs setup
+        # changes so existing guests are provisioned again exactly once.
+        mkdir -p "$SHARE"
+        touch "$SHARE/build-environment-v2"
         ;;
     *)
         echo "usage: $0 [deps|glibc|xtool|swiftly|swift|verify|all]" >&2

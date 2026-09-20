@@ -95,6 +95,38 @@ enum XForgeEnvironment {
         EmbeddedLinuxExecutor(vm: makeVM(), stagingDir: stagingDirectory)
     }
 
+    /// Prepares the persistent Alpine rootfs while the app is already open, so
+    /// a later build can reuse Swift, xtool, and the checked package set.
+    ///
+    /// Failures are logged rather than treated as launch failures. The build
+    /// pipeline repeats the same idempotent check and surfaces a useful error.
+    private static var buildEnvironmentWarmup: Task<Void, Never>?
+
+    static func prewarmBuildEnvironment() async {
+        if let buildEnvironmentWarmup {
+            await buildEnvironmentWarmup.value
+            return
+        }
+
+        let task = Task {
+            do {
+                let stream = try await makeExecutor().bootstrap()
+                for try await event in stream {
+                    switch event {
+                    case .plan(let message), .output(let message), .failed(let message):
+                        XForgeLog.note("prewarm: \(message)")
+                    case .artifact, .finished:
+                        break
+                    }
+                }
+            } catch {
+                XForgeLog.note("prewarm: failed: \(error.localizedDescription)")
+            }
+        }
+        buildEnvironmentWarmup = task
+        await task.value
+    }
+
     /// The in-process Linux emulator that runs the embedded Alpine guest.
     /// iSH-AOK runs a real aarch64 Linux guest in-process; its "gadget JIT"
     /// needs no JIT entitlement, so it works in a sideloaded app.

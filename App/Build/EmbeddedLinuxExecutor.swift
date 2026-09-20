@@ -89,25 +89,39 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
     private func provisionGuestForBuild(
         continuation: AsyncThrowingStream<BuildEvent, Error>.Continuation
     ) async throws {
+        if try await buildEnvironmentIsReady() {
+            continuation.yield(.plan("Reusing the prebuilt Alpine build environment…"))
+            return
+        }
+
         guard let script = Bundle.main.url(forResource: "install-toolchain", withExtension: "sh") else {
             throw ToolchainError.scriptMissing
         }
 
         let guestPath = "/root/install-toolchain.sh"
         try await vm.copyIn(hostURL: script, to: guestPath)
-
-        for step in ToolchainManager.ProvisionStep.allCases {
-            continuation.yield(.plan("Alpine: \(step.title)…"))
-            let status = try await vm.run(
-                "sh \(GuestShell.quote(guestPath)) \(GuestShell.quote(step.rawValue))",
-                environment: nil
-            ) {
-                continuation.yield(.output($0))
-            }
-            guard status == 0 else {
-                throw BuildError.stepFailed("Alpine \(step.title)", status)
-            }
+        continuation.yield(.plan("Prebuilding the Alpine toolchain and build requirements…"))
+        let status = try await vm.run(
+            "sh \(GuestShell.quote(guestPath)) all",
+            environment: nil
+        ) {
+            continuation.yield(.output($0))
         }
+        guard status == 0 else {
+            throw BuildError.stepFailed("Alpine build environment provisioning", status)
+        }
+    }
+
+    /// The readiness stamp changes when XForge's rootfs requirements change. The
+    /// executable and apk checks make a stale or partially restored stamp harmless.
+    private func buildEnvironmentIsReady() async throws -> Bool {
+        let status = try await vm.run(
+            "test -f /usr/local/share/xforge/build-environment-v2 && "
+            + "apk info -e clang lld cmake ninja git >/dev/null 2>&1 && "
+            + "swift --version >/dev/null 2>&1 && xtool --version >/dev/null 2>&1",
+            environment: nil
+        ) { _ in }
+        return status == 0
     }
 
     func createProject(named name: String, organizationIdentifier: String) async throws -> Project {

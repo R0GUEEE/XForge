@@ -50,6 +50,10 @@ struct RootTabView: View {
             await vm.prepareRootfs()
             do {
                 try await vm.boot()
+                // Prebuild the persistent guest environment after startup. This
+                // does not block the interface; Build repeats the same checks if
+                // the warmup did not finish or was interrupted.
+                Task { await XForgeEnvironment.prewarmBuildEnvironment() }
             } catch {
                 startupError = error.localizedDescription
                 XForgeLog.note("startup: Alpine guest failed to boot: \(error.localizedDescription)")
