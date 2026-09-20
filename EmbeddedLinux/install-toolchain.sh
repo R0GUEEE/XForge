@@ -312,9 +312,20 @@ step_glibc() {
     # and glibc binaries resolve those through /lib/aarch64-linux-gnu as before.
     for link_name in libc.so libm.so libpthread.so librt.so libdl.so libutil.so \
                      libresolv.so libcrypt.so libstdc++.so libgcc_s.so; do
-        [ -e "$GLIBC_LIB/$link_name" ] || continue
+        source=""
+        [ -e "$GLIBC_LIB/$link_name" ] && source="$GLIBC_LIB/$link_name"
+        if [ -z "$source" ]; then
+            # libstdc++.so and libgcc_s.so live in GCC's versioned directory, not
+            # in the multiarch one — the first version of this loop looked only in
+            # the multiarch directory and silently skipped exactly the name that
+            # matters most.
+            for candidate in "$GLIBC_ROOT"/usr/lib/gcc/$MULTIARCH/*/"$link_name"; do
+                [ -e "$candidate" ] && source="$candidate"
+            done
+        fi
+        [ -n "$source" ] || continue
         rm -f "/usr/lib/$link_name"
-        ln -s "$GLIBC_LIB/$link_name" "/usr/lib/$link_name"
+        ln -s "$source" "/usr/lib/$link_name"
     done
 
     cat > "$SHARE/glibc.env" <<EOF
