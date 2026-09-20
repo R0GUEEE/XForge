@@ -200,6 +200,23 @@ note "glibc:  $GLIBC_LD"
 # rootfs, and a toolchain whose frontend cannot find its own resource directory
 # still answers `swift --version` happily — it only fails when the compiler runs
 # ("missing required module 'SwiftShims'"). So compile and run something.
+log "Checking what a link sees (the layer's paths and the linker's defaults)"
+cat > "$ROOTFS/root/link-diagnose.sh" <<'DIAG'
+for f in /lib/aarch64-linux-gnu/libc.so /usr/lib/aarch64-linux-gnu/libc.so \
+         /usr/lib/libc.so /usr/lib/libstdc++.so /lib/aarch64-linux-gnu/libc.so.6 \
+         /usr/lib/aarch64-linux-gnu/libstdc++.so.6; do
+    if [ -e "$f" ]; then
+        printf '%-46s -> %s\n' "$f" "$(readlink -f "$f" 2>/dev/null || echo file)"
+    else
+        printf '%-46s MISSING\n' "$f"
+    fi
+done
+# Where the linker looks when nothing on the command line says otherwise.
+ld --verbose 2>&1 | sed -n 's/^SEARCH_DIR("=\?\(.*\)");.*/ld SEARCH_DIR: \1/p' | head -3
+DIAG
+chroot "$ROOTFS" /bin/sh /root/link-diagnose.sh 2>&1 | sed 's/^/    /'
+rm -f "$ROOTFS/root/link-diagnose.sh"
+
 log "Compiling and running a Swift program in the provisioned rootfs"
 cat > "$ROOTFS/root/swift-probe.swift" <<'SWIFT'
 print("xforge-swift-compile-ok")
