@@ -178,11 +178,41 @@ EOF
 }
 
 step_deps() {
-    log "Installing base packages"
-    apk add --no-cache \
-        bash curl wget tar xz zip unzip git ca-certificates \
-        gcompat libc6-compat zlib-static openssl \
-        binutils zstd file gnupg
+    log "Refreshing Alpine package indexes"
+    apk update
+
+    # Install one package at a time. Besides making failures attributable, this
+    # produces steady output for XForge's live installer log instead of one
+    # opaque apk transaction that can look stuck at 0%.
+    packages="
+bash
+curl
+wget
+tar
+xz
+zip
+unzip
+git
+ca-certificates
+gcompat
+libc6-compat
+zlib-static
+openssl
+binutils
+zstd
+file
+gnupg
+"
+    total="$(printf '%s\n' "$packages" | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')"
+    current=0
+    printf '%s\n' "$packages" | while IFS= read -r pkg; do
+        [ -n "$pkg" ] || continue
+        current=$((current + 1))
+        log "Installing base package $current/$total: $pkg"
+        apk add --no-cache "$pkg"
+    done
+
+    update-ca-certificates >/dev/null 2>&1 || true
     log "base packages installed"
 }
 
