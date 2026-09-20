@@ -262,8 +262,10 @@ step_swift() {
     [ -e "$SHARE/glibc.env" ] || { echo "run the glibc step first" >&2; exit 1; }
     . "$SHARE/glibc.env"
     . "$SWIFTLY_HOME_DIR/env.sh"
-    if swiftly list 2>/dev/null | grep -q .; then
-        log "a toolchain is already installed: $(swiftly list 2>/dev/null | tail -1)"
+    # `swiftly list` exits 0 and prints a separator even with nothing installed,
+    # so ask the directory that actually holds toolchains.
+    if [ -n "$(ls -A "$SWIFTLY_HOME_DIR/toolchains" 2>/dev/null)" ]; then
+        log "a toolchain is already installed: $(ls "$SWIFTLY_HOME_DIR/toolchains" | tail -1)"
     else
         swiftly install latest --use --assume-yes
     fi
@@ -278,22 +280,33 @@ step_verify() {
     log "Verifying the tools"
     failed=0
     for tool in xtool swift swiftly; do
-        if command -v "$tool" >/dev/null 2>&1; then
-            out="$("$tool" --version 2>&1 | head -1 || true)"
-            if [ -n "$out" ]; then
-                echo "    $tool: ok — $out"
-                # Machine-readable for the app: kind and detail after a tab.
-                printf 'XFORGE-VERIFY\t%s\tok\t%s\n' "$tool" "$out"
-            else
-                echo "    $tool: INSTALLED BUT NOT RUNNING in this guest"
-                printf 'XFORGE-VERIFY\t%s\tbroken\tinstalled, but it does not run here\n' "$tool"
-                failed=1
-            fi
-        else
+        if ! command -v "$tool" >/dev/null 2>&1; then
             echo "    $tool: not installed"
             printf 'XFORGE-VERIFY\t%s\tmissing\tnot installed\n' "$tool"
             failed=1
+            continue
         fi
+        # The exit status decides, not the output: a wrapper that reports "not
+        # installed" prints a line and exits 127, and counting that as success is
+        # how "installed" and "works" got confused the first time.
+        version_file="/tmp/xforge-version.$$"
+        if timeout 120 "$tool" --version >"$version_file" 2>&1; then
+            out="$(head -1 "$version_file")"
+            if [ -n "$out" ]; then
+                echo "    $tool: ok — $out"
+                printf 'XFORGE-VERIFY\t%s\tok\t%s\n' "$tool" "$out"
+            else
+                echo "    $tool: INSTALLED BUT SILENT (no version output)"
+                printf 'XFORGE-VERIFY\t%s\tbroken\tinstalled, but it prints nothing\n' "$tool"
+                failed=1
+            fi
+        else
+            out="$(head -1 "$version_file")"
+            echo "    $tool: INSTALLED BUT NOT RUNNING — ${out:-no output}"
+            printf 'XFORGE-VERIFY\t%s\tbroken\t%s\n' "$tool" "${out:-no output}"
+            failed=1
+        fi
+        rm -f "$version_file"
     done
     if [ "$failed" -eq 0 ]; then
         log "All tools are ready."
