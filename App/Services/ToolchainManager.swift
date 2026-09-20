@@ -129,6 +129,12 @@ final class ToolchainManager: ObservableObject {
         defer { isInstalling = nil }
         XForgeLog.prepare()
         XForgeLog.note("install: \(component.rawValue) requested")
+        // Provisioning downloads and unpacks inside the guest for many minutes,
+        // and the SDK unpacks ~1.4 GB on the host. If the screen locks mid-way
+        // iOS suspends the app and the install dies half-done, leaving the kind
+        // of broken state the next attempt then has to work around.
+        let keepAwake = InstallAssertion.begin(reason: "install \(component.rawValue)")
+        defer { keepAwake.end() }
         do {
             switch component {
             case .rootfs:

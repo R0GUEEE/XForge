@@ -102,24 +102,22 @@ static void run_guest(const char *label, const char *command, int timeout_ms, in
 // them into the guest's /etc/resolv.conf (App/Services/GuestNetwork.swift).
 // Without that file the guest cannot resolve anything: the bundled minirootfs
 // ships no nameservers, and resolution happens inside the guest.
-static int host_dns_servers(char *out, size_t cap) {
+static int host_dns_servers(char out[][64], int max) {
     FILE *f = popen("scutil --dns 2>/dev/null | awk '/nameserver\\[[0-9]+\\]/{print $3}' | "
-                    "sort -u | head -2", "r");
+                    "sort -u | head -4", "r");
     if (f == NULL)
         return 0;
-    size_t used = 0;
+    int count = 0;
     char line[256];
-    out[0] = '\0';
-    while (fgets(line, sizeof(line), f) != NULL && used + sizeof("nameserver ") + 64 < cap) {
+    while (count < max && fgets(line, sizeof(line), f) != NULL) {
         char *nl = strchr(line, '\n');
         if (nl != NULL) *nl = '\0';
         if (line[0] == '\0') continue;
-        int n = snprintf(out + used, cap - used, "nameserver %s; ", line);
-        if (n <= 0) break;
-        used += (size_t) n;
+        snprintf(out[count], 64, "%s", line);
+        count++;
     }
     pclose(f);
-    return (int) used;
+    return count;
 }
 
 // Run a command and print everything about it, but do not judge it: used for
@@ -262,21 +260,26 @@ int main(int argc, char **argv) {
     // as a silent spinner on a phone.
     step("write the guest's /etc/resolv.conf from the host's DNS");
     {
-        char servers[512] = {0};
-        host_dns_servers(servers, sizeof servers);
-        if (servers[0] == '\0') {
+        char servers[4][64];
+        int count = host_dns_servers(servers, 4);
+        if (count == 0) {
             say("[smoke] host published no DNS servers; leaving the guest alone");
         } else {
+            // One `nameserver` line per server: musl's resolver reads
+            // /etc/resolv.conf line by line and anything else on the line (a
+            // separator, a comment) becomes part of the address.
             char cmd[1024];
-            snprintf(cmd, sizeof cmd,
-                     "rm -f /etc/resolv.conf; printf '%s' > /etc/resolv.conf; cat /etc/resolv.conf",
-                     servers);
+            int n = snprintf(cmd, sizeof cmd, "rm -f /etc/resolv.conf");
+            for (int i = 0; i < count && n > 0 && (size_t) n < sizeof(cmd); i++)
+                n += snprintf(cmd + n, sizeof(cmd) - (size_t) n,
+                              "; echo 'nameserver %s' >> /etc/resolv.conf", servers[i]);
+            snprintf(cmd + n, sizeof(cmd) - (size_t) n, "; cat /etc/resolv.conf");
             struct xf_guest_result r;
             int rc = xf_ish_run(cmd, NULL, 60000, 1 << 16, &r);
             if (rc != 0) {
                 say("[smoke] could not write resolv.conf: %s", xf_ish_last_error());
             } else {
-                say("[smoke] guest resolv.conf now: %s", r.output != NULL ? r.output : "");
+                say("[smoke] guest resolv.conf now:\n%s", r.output != NULL ? r.output : "");
             }
             xf_guest_result_free(&r);
         }
