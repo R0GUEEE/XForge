@@ -98,6 +98,29 @@ static void run_guest(const char *label, const char *command, int timeout_ms, in
     result(label, ok);
 }
 
+// Run a command and print everything about it, but do not judge it: used for
+// probes whose failure is a fact about the environment (network reachability,
+// package repositories) rather than a regression in the bridge.
+static void probe_guest(const char *label, const char *command, int timeout_ms) {
+    step(label);
+    struct xf_guest_result r;
+    int rc = xf_ish_run(command, NULL, timeout_ms, 1 << 20, &r);
+    if (rc != 0) {
+        say("[smoke] probe could not start (%d): %s", rc, xf_ish_last_error());
+        return;
+    }
+    say("[smoke] --- %s ---", label);
+    say("launched=%d exited=%d exit_code=%d signal=%d timed_out=%d truncated=%d bytes=%zu",
+        r.launched, r.exited, r.exit_code, r.term_signal, r.timed_out, r.truncated, r.output_len);
+    if (r.output != NULL && r.output[0] != '\0') {
+        fputs(r.output, stdout);
+        if (r.output[r.output_len > 0 ? r.output_len - 1 : 0] != '\n')
+            fputc('\n', stdout);
+    }
+    fflush(stdout);
+    xf_guest_result_free(&r);
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: engine-smoke <rootfs.tar.xz> [workdir]\n");
@@ -206,6 +229,17 @@ int main(int argc, char **argv) {
 
     // --- 5. a long-running command, as a build would be --------------------
     run_guest("a slower command (shell loop)", "i=0; while [ $i -lt 200 ]; do i=$((i+1)); done; echo counted=$i", 120000, 0);
+
+    // --- 6. what provisioning will need --------------------------------
+    // Installing the Swift toolchain runs `apk add` and then downloads a
+    // several-hundred-megabyte tarball *inside* the guest, so the guest needs
+    // the host's network. These are probes, not assertions: a failure here is
+    // a fact about the environment, and it is far better to see it here than
+    // as a silent spinner on a phone.
+    probe_guest("network: DNS + HTTP from the guest",
+                "wget -q -T 30 -O /dev/null http://dl-cdn.alpinelinux.org/alpine/ && echo net-ok", 180000);
+    probe_guest("network: apk update (the first thing provisioning runs)",
+                "apk update 2>&1 | tail -3", 300000);
 
     step("shut down");
     xf_ish_shutdown();
