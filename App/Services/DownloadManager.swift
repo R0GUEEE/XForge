@@ -70,28 +70,48 @@ final class DownloadManager: ObservableObject {
 
     /// Download `url` to `destination`, replacing anything already there.
     /// One-shot helper for services that don't need the observable list.
+    ///
+    /// Retries on failure: a 456 MB macrotarget over Wi-Fi dropped its
+    /// connection 22 seconds in on a real device, and one dropped connection is
+    /// not a reason to make the user start over.
     @discardableResult
     nonisolated static func download(
         _ url: URL,
         to destination: URL,
+        attempts: Int = 3,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> URL {
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
 
-        let (temp, response) = try await URLSession.shared.download(from: url)
-        guard let http = response as? HTTPURLResponse else {
-            throw DownloadError.invalidResponse(url)
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            try? FileManager.default.removeItem(at: temp)
-            throw DownloadError.http(status: http.statusCode, url: url)
-        }
+        var lastError: Error = DownloadError.invalidResponse(url)
+        for attempt in 1...max(1, attempts) {
+            do {
+                let (temp, response) = try await URLSession.shared.download(from: url)
+                guard let http = response as? HTTPURLResponse else {
+                    throw DownloadError.invalidResponse(url)
+                }
+                guard (200..<300).contains(http.statusCode) else {
+                    try? FileManager.default.removeItem(at: temp)
+                    throw DownloadError.http(status: http.statusCode, url: url)
+                }
 
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temp, to: destination)
-        progress(1.0)
-        return destination
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: temp, to: destination)
+                progress(1.0)
+                return destination
+            } catch let error as DownloadError {
+                // A server-side answer (404, 403) will not change on a retry.
+                throw error
+            } catch {
+                lastError = error
+                if attempt < attempts {
+                    let wait = UInt64(attempt) * 2_000_000_000
+                    try? await Task.sleep(nanoseconds: wait)
+                }
+            }
+        }
+        throw lastError
     }
 }
 

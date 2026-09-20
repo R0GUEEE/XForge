@@ -7,13 +7,20 @@ import Foundation
 /// `/etc/resolv.conf`, and the Alpine minirootfs XForge bundles ships no
 /// nameservers at all. iSH-AOK's own app writes that file from the device's DNS
 /// on every boot for exactly this reason; without the same step the guest
-/// resolves nothing — `apk add`, `git clone` and the Swift toolchain download in
-/// `install-toolchain.sh` all fail with `bad address` / `DNS: transient error`.
+/// resolves nothing — `apk add`, and therefore all of
+/// `install-toolchain.sh`, fails with `DNS: transient error`.
 ///
-/// Verified on the host harness before this existed: `wget` in a booted guest
-/// answered `bad address 'dl-cdn.alpinelinux.org'`, and `apk update` reported
-/// "DNS: transient error" for every repository. With the resolver configured the
-/// same guest answers `net-ok` and `apk update` reports 27,453 packages.
+/// **Order matters, and it is not the obvious one.** A home network hands out
+/// its router (`192.168.x.1`), which is a *local* address: iOS refuses
+/// connections to those unless the user has granted Local Network access, and
+/// the guest's DNS queries are made by this very process, so the refusal lands
+/// as an in-guest "DNS: transient error" with a correct-looking resolv.conf.
+/// Observed exactly that on a device whose resolver was `192.168.4.1`: the file
+/// was right, `apk` still failed.
+///
+/// So the public resolvers go first — they are reachable without any
+/// permission — and the device's own servers are kept as the fallback for
+/// networks where public DNS is blocked (captive portals, some VPNs).
 enum GuestNetwork {
     /// The device's DNS servers, in preference order. Empty when the system
     /// will not say (no network, or the dnsinfo SPI is unavailable) — see
@@ -31,21 +38,30 @@ enum GuestNetwork {
             .filter { !$0.isEmpty }
     }
 
-    /// Fallback for when the system publishes nothing. Both are public
-    /// resolvers; a device with no network at all will fail either way, but a
-    /// device whose DNS simply was not advertised (some VPNs) will work.
-    static let fallbackServers = ["1.1.1.1", "8.8.8.8"]
+    /// Reachable without Local Network permission, so they are tried first.
+    static let publicServers = ["1.1.1.1", "8.8.8.8"]
+
+    /// musl reads every `nameserver` line and tries them in order, so the list
+    /// is short on purpose: a dead entry costs a timeout before the next one.
+    static let maxServers = 3
 
     static func resolvConf(servers: [String]) -> String {
-        let list = servers.isEmpty ? fallbackServers : servers
-        return list.map { "nameserver \($0)" }.joined(separator: "\n") + "\n"
+        var ordered: [String] = []
+        for server in publicServers + servers where !ordered.contains(server) {
+            ordered.append(server)
+            if ordered.count == maxServers { break }
+        }
+        return ordered.map { "nameserver \($0)" }.joined(separator: "\n") + "\n"
     }
 
-    /// The file the guest should have, using the device's DNS when it is known.
+    /// The file the guest should have. `source` says which servers were
+    /// actually used, for the engine log.
     static func resolvConfForDevice() -> (text: String, source: String) {
-        let serverList = systemDNSServers()
-        return serverList.isEmpty
-            ? (resolvConf(servers: serverList), "fallback")
-            : (resolvConf(servers: serverList), "device")
+        let deviceServers = systemDNSServers()
+        let text = resolvConf(servers: deviceServers)
+        let source = deviceServers.isEmpty
+            ? "public (the device published none)"
+            : "public + device (\(deviceServers.joined(separator: ", ")))"
+        return (text, source)
     }
 }

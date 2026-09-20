@@ -180,14 +180,24 @@ final class ToolchainManager: ObservableObject {
         // Provisioning downloads the Swift toolchain (hundreds of MB) inside the
         // guest and can take many minutes. Stream its output into the log as it
         // goes: otherwise the only thing anybody can see is a spinner.
+        let networkTrouble = Flag()
         let status = try await vm.run(
             "chmod +x \(guestPath) && sh \(guestPath)",
             environment: ["PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
         ) { chunk in
-            XForgeLog.note("guest: " + chunk.trimmingCharacters(in: .whitespacesAndNewlines))
+            let text = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            XForgeLog.note("guest: " + text)
+            // The guest's own wording for "I could not resolve or reach
+            // anything", which is the failure that needs a permission changed
+            // rather than a retry.
+            if text.contains("DNS:") || text.contains("bad address")
+                || text.contains("temporary failure in name resolution") {
+                networkTrouble.raise()
+            }
         }
         guard status == 0 else {
-            throw ToolchainError.provisioningFailed(status)
+            throw ToolchainError.provisioningFailed(status, networkHint: networkTrouble.isRaised)
         }
         message = "Provisioned the Swift toolchain and xtool inside the embedded Linux."
     }
@@ -221,7 +231,7 @@ final class ToolchainManager: ObservableObject {
 
 enum ToolchainError: LocalizedError {
     case scriptMissing
-    case provisioningFailed(Int32)
+    case provisioningFailed(Int32, networkHint: Bool)
     case sdkLayoutUnexpected
     case sdkInstallFailed(Int32)
     case notEnoughSpace(needed: Int64, free: Int64)
@@ -230,7 +240,17 @@ enum ToolchainError: LocalizedError {
         switch self {
         case .scriptMissing:
             return "install-toolchain.sh is not bundled in the app."
-        case .provisioningFailed(let status):
+        case .provisioningFailed(let status, let networkHint):
+            if networkHint {
+                // The guest's resolver is usually the router, and a router is a
+                // *local* address: iOS blocks those until the user allows it,
+                // and the guest reports it as a DNS failure.
+                return "In-guest provisioning failed (exit \(status)): the guest could not "
+                    + "reach the network. Allow XForge local network access in "
+                    + "Settings → Privacy & Security → Local Network, then try again — a "
+                    + "router's DNS server is a local address. The engine log has the "
+                    + "guest's own output."
+            }
             return "In-guest provisioning failed (exit \(status)). The guest needs network access "
                 + "to fetch the Swift toolchain; open the Terminal and run "
                 + "`sh /root/install-toolchain.sh` to see the full output."
@@ -244,5 +264,24 @@ enum ToolchainError: LocalizedError {
                 + "\(formatter.string(fromByteCount: needed)) and "
                 + "\(formatter.string(fromByteCount: free)) is free."
         }
+    }
+}
+
+/// A `@Sendable`-callable boolean, for observations made inside an output
+/// callback (which cannot touch captured state directly).
+final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var raised = false
+
+    func raise() {
+        lock.lock()
+        raised = true
+        lock.unlock()
+    }
+
+    var isRaised: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return raised
     }
 }

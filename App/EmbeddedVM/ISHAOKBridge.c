@@ -260,7 +260,10 @@ static void xf_global_init(void) {
 // so this bridge has nothing to register. If a future one does, it must fit in
 // what is left.
 static void xf_check_filesystems(void) {
-    static const char *const needed[] = {"fakefs", "realfs", "procfs", "sysfs", "devptsfs"};
+    // These are the names the guest mounts them by (fs_ops.name), not the
+    // variable names in fs/: fakefs is "fake", realfs is "real", procfs is
+    // "proc", devptsfs is "devpts".
+    static const char *const needed[] = {"fake", "real", "proc", "sysfs", "devpts"};
     for (size_t i = 0; i < sizeof(needed) / sizeof(needed[0]); i++) {
         if (fs_lookup(needed[i]) == NULL)
             xf_logf("boot: WARNING filesystem '%s' is not registered", needed[i]);

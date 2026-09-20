@@ -86,6 +86,17 @@ final class EmbeddedLinuxVM: LinuxVM {
 
         XForgeLog.note("dns: resolv.conf from \(source) servers (exit \(status)): "
             + text.split(separator: "\n").joined(separator: " "))
+
+        // Prove resolution actually works, and say so in the log. A guest with a
+        // correct-looking resolv.conf that still cannot resolve is the failure
+        // that costs the most time to find: it looks like a code bug when it is
+        // the network, or the Local Network permission, and the guest's own
+        // error ("DNS: transient error") says nothing about which.
+        let box = OutputBox()
+        _ = try? await run("timeout 8 nslookup dl-cdn.alpinelinux.org 2>&1 | tail -3",
+                           environment: nil) { box.append($0) }
+        let answer = box.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        XForgeLog.note("dns: resolution probe: \(answer.isEmpty ? "(no output)" : answer)")
     }
 
     /// Run a command in the guest, forwarding its output, and return its exit code.

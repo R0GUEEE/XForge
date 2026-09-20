@@ -121,6 +121,15 @@ targets:
           - arm64
         UIApplicationSupportsIndirectInputEvents: true
         ITSAppUsesNonExemptEncryption: false
+        # The guest makes its own DNS and socket calls in this process, and a
+        # home router's resolver is a *local* address. iOS refuses connections
+        # to those unless the app declares why -- without this key the user
+        # never even gets the prompt, and the failure shows up inside the guest
+        # as "DNS: transient error" with a perfectly correct resolv.conf.
+        NSLocalNetworkUsageDescription: >-
+          XForge runs a Linux guest. Programs in it (apk, wget, git) make their
+          own network connections, including to servers on your local network such
+          as your router's DNS resolver.
         # The app builds, stores and exports .ipa artifacts in its Documents
         # directory; make that visible in the Files app.
         UIFileSharingEnabled: true
