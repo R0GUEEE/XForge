@@ -335,10 +335,16 @@ int main(int argc, char **argv) {
                             "sh /root/install-toolchain.sh glibc", 1800000);
                 probe_guest("provision: xtool",
                             "sh /root/install-toolchain.sh xtool", 900000);
+                probe_guest("provision: swiftly (the Swift installer)",
+                            "sh /root/install-toolchain.sh swiftly", 900000);
+                probe_guest("provision: Swift toolchain (this downloads a lot)",
+                            "sh /root/install-toolchain.sh swift", 3600000);
                 probe_guest("provision: verify (the script's own verdict)",
                             "sh /root/install-toolchain.sh verify", 600000);
                 probe_guest("does xtool actually run in the guest?",
                             "xtool --version", 300000);
+                probe_guest("does swift actually run in the guest?",
+                            "swift --version", 600000);
             }
         }
     }
