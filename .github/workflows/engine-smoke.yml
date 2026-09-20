@@ -21,7 +21,9 @@ concurrency:
 jobs:
   smoke:
     runs-on: macos-15
-    timeout-minutes: 75
+    # The provisioning run downloads and unpacks a whole Swift toolchain inside
+    # the guest, through the emulator; that is the slowest thing here.
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
 
