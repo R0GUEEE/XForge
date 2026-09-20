@@ -168,7 +168,9 @@ set -e
 # The script's own verdicts decide, not its exit status: it reports each tool it
 # executed as a XFORGE-VERIFY line, and "installed but does not run" is a failure
 # here — a payload whose swift traps on the device is worse than no payload.
-for tool in xtool swift swiftly; do
+# swift-sdk is a separate binary (`swift sdk list`) and is what installs the
+# darwin SDK, so it has to run before the SDK step can be trusted.
+for tool in xtool swift swiftly swift-sdk; do
     grep -qE "^XFORGE-VERIFY[[:space:]]+$tool[[:space:]]+ok" "$LOG" \
         || die "$tool did not verify inside the chroot — see $LOG"
 done

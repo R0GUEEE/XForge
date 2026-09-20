@@ -84,8 +84,7 @@ libkrb5support0
 libgssapi-krb5-2
 libsasl2-2
 libldap2
-liblber2
-libgnutls30
+libgnutls30t64
 libp11-kit0
 libtasn1-6
 libunistring5
@@ -94,7 +93,7 @@ libffi8
 libbrotli1
 libicu74
 libxml2
-libpng16-16
+libpng16-16t64
 libselinux1
 libpcre2-8-0
 libacl1
@@ -103,13 +102,11 @@ libgmp10
 libnettle8t64
 libhogweed6t64
 libcurl4t64
-libcurl4
 libnghttp2-14
-libpsl5
+libpsl5t64
 libssh-4
 librtmp1
 libssl3t64
-libssl3
 libzstd1
 libgcrypt20
 libgpg-error0
@@ -159,10 +156,19 @@ step_glibc() {
         mkdir -p "$GLIBC_LIB" "$GLIBC_ROOT/usr/lib" /tmp/xforge-glibc
         glibc_fetch_indexes
 
+        missing_packages=""
         for pkg in $(glibc_packages); do
             url="$(glibc_package_url "$pkg" || true)"
             if [ -z "$url" ]; then
-                echo "    $pkg: not found in the $UBUNTU_SUITE indexes"
+                # Not something to skip quietly. A name the suite does not have
+                # means the layer will be missing a library, and that surfaces
+                # much later as a symbol lookup error inside one of the tools:
+                # `libgnutls30` became `libgnutls30t64` in noble, and the miss
+                # only showed up as "swift-sdk: undefined symbol
+                # nettle_rsa_oaep_sha512_decrypt, version HOGWEED_6" — while
+                # `swift --version` kept working, so nothing looked wrong.
+                echo "    $pkg: NOT FOUND in the $UBUNTU_SUITE indexes" >&2
+                missing_packages="$missing_packages $pkg"
                 continue
             fi
             deb="/tmp/xforge-glibc/$pkg.deb"
@@ -193,6 +199,35 @@ step_glibc() {
             )
             echo "    $pkg"
         done
+        if [ -n "$missing_packages" ]; then
+            echo "the glibc layer cannot be built — no such package:$missing_packages" >&2
+            echo "fix glibc_packages() for Ubuntu $UBUNTU_SUITE ($UBUNTU_ARCH)" >&2
+            exit 1
+        fi
+
+        # A name that resolved is not the same as a library that arrived: the
+        # layer is only useful if the files a Swift or xtool binary loads are
+        # actually present, so the files are what gets checked.
+        glibc_have() {
+            for candidate in "$GLIBC_LIB/$1"*; do
+                [ -e "$candidate" ] && return 0
+            done
+            return 1
+        }
+        incomplete=""
+        for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 libstdc++.so.6 \
+                   libgcc_s.so.1 libz.so.1 libzstd.so.1 libxml2.so.2 libcurl.so.4 \
+                   libssl.so.3 libcrypto.so.3 libgnutls.so.30 libhogweed.so.6 \
+                   libnettle.so.8 libgmp.so.10 libicuuc.so.74 liblber.so.2 \
+                   libldap.so.2 libpng16.so.16 libpsl.so.5 libz3.so.4 libsqlite3.so.0; do
+            glibc_have "$lib" || incomplete="$incomplete $lib"
+        done
+        if [ -n "$incomplete" ]; then
+            echo "the glibc layer is incomplete — nothing provides:$incomplete" >&2
+            echo "a package in glibc_packages() was renamed in $UBUNTU_SUITE; the" >&2
+            echo "libraries above are the ones the Swift/xtool binaries load." >&2
+            exit 1
+        fi
         log "glibc at $GLIBC_LD"
     fi
 
@@ -429,6 +464,25 @@ step_verify() {
         fi
         rm -f "$version_file"
     done
+    # `swift sdk list` runs a *second* Swift binary — swift-sdk — with its own
+    # library needs, and it is what installs the darwin SDK. It fails differently
+    # from `swift --version` when the glibc layer is incomplete (a symbol lookup
+    # error naming a library rather than the tool), so it is checked on its own.
+    if command -v swift >/dev/null 2>&1; then
+        sdk_probe="/tmp/xforge-sdk-probe.$$"
+        if timeout 180 swift sdk list >"$sdk_probe" 2>&1; then
+            line="$(head -1 "$sdk_probe" 2>>"$SILENT" || true)"
+            echo "    swift-sdk: ok${line:+ — $line}"
+            printf 'XFORGE-VERIFY\tswift-sdk\tok\t%s\n' "${line:-swift sdk list}"
+        else
+            line="$(head -1 "$sdk_probe" 2>>"$SILENT" || true)"
+            echo "    swift-sdk: INSTALLED BUT NOT RUNNING — ${line:-no output}"
+            printf 'XFORGE-VERIFY\tswift-sdk\tbroken\t%s\n' "${line:-no output}"
+            failed=1
+        fi
+        rm -f "$sdk_probe"
+    fi
+
     if [ "$failed" -eq 0 ]; then
         log "All tools are ready."
     else
