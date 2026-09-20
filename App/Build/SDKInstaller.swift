@@ -58,12 +58,16 @@ enum SDKInstaller {
 
         advance(0.62, "Unpacking the SDK (about 1.4 GB — this takes a while)…")
         XForgeLog.note("sdk: unpacking into \(shared.path)")
-        try await Task.detached(priority: .utility) {
+        let unpackStats = try await Task.detached(priority: .utility) {
             let fm = FileManager.default
             try? fm.removeItem(at: bundle)
-            try fm.unzipItem(at: archive, to: shared)
+            return try unpackSDKArchive(at: archive, to: shared)
         }.value
-        XForgeLog.note("sdk: unpacked")
+        XForgeLog.note(
+            "sdk: unpacked \(unpackStats.extracted) entries; "
+            + "skipped \(unpackStats.metadataSkipped) AppleDouble/metadata entries "
+            + "and \(unpackStats.duplicatesSkipped) duplicate entries"
+        )
 
         guard FileManager.default.fileExists(atPath: bundle.appendingPathComponent("info.json").path) else {
             throw ToolchainError.sdkLayoutUnexpected
@@ -83,5 +87,53 @@ enum SDKInstaller {
         advance(1.0, "Done")
         XForgeLog.note("sdk: installed in the guest")
         return bundle
+    }
+
+    /// ZIPFoundation's convenience unzip rejects duplicate paths. Some release
+    /// archives created on macOS contain repeated AppleDouble `._*` records,
+    /// which are irrelevant to the SDK and caused extraction to abort halfway
+    /// through. Extract the archive entry-by-entry, ignore macOS metadata, and
+    /// deterministically keep the first occurrence of any repeated path.
+    nonisolated private static func unpackSDKArchive(
+        at archiveURL: URL,
+        to destination: URL
+    ) throws -> (extracted: Int, metadataSkipped: Int, duplicatesSkipped: Int) {
+        let archive = try Archive(url: archiveURL, accessMode: .read)
+        let base = destination.standardizedFileURL.path
+        let basePrefix = base.hasSuffix("/") ? base : base + "/"
+
+        var seen = Set<String>()
+        var extracted = 0
+        var metadataSkipped = 0
+        var duplicatesSkipped = 0
+
+        for entry in archive {
+            let path = entry.path
+            let parts = path.split(separator: "/", omittingEmptySubsequences: true)
+
+            // Finder resource forks and __MACOSX are never part of a Swift SDK.
+            if path.hasPrefix("__MACOSX/")
+                || parts.contains(where: { $0.hasPrefix("._") }) {
+                metadataSkipped += 1
+                continue
+            }
+
+            guard seen.insert(path).inserted else {
+                duplicatesSkipped += 1
+                continue
+            }
+
+            // Do not allow a malformed release archive to escape /host.
+            let target = destination.appendingPathComponent(path)
+            let targetPath = target.standardizedFileURL.path
+            guard targetPath == base || targetPath.hasPrefix(basePrefix) else {
+                throw CocoaError(.fileReadInvalidFileName)
+            }
+
+            try archive.extract(entry, to: target)
+            extracted += 1
+        }
+
+        return (extracted, metadataSkipped, duplicatesSkipped)
     }
 }
