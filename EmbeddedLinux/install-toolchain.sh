@@ -70,15 +70,18 @@ SILENT="${TMPDIR:-/tmp}/xforge-silent.$$"
 # link against libxml2, curl, krb5, ldap and ICU (Foundation), which the Ubuntu
 # AppImage does not bundle.
 
+# The development halves are needed to *link*, not just to run: glibc's
+# crt1.o/crti.o/crtn.o/libc.so and libc_nonshared.a come from libc6-dev, and
+# GCC's crtbeginS.o/crtendS.o/libgcc.a from libgcc-<n>-dev. Without them a link
+# dies with
+#     /usr/bin/ld: cannot find crtbeginS.o / cannot find -lgcc
+# which is what compiling a Swift program in this rootfs hit — `swift --version`
+# was fine, because printing a version does not link anything.
+#
+# One name per line, NO comments: the caller reads this list with word splitting.
 glibc_packages() {
     cat <<'EOF'
 libc6
-# The development halves are needed to *link*, not just to run: glibc's
-# crt1.o/crti.o/crtn.o/libc.so (libc6-dev) and GCC's crtbeginS.o/libgcc.a
-# (libgcc-<n>-dev). Without them a link dies with
-#   /usr/bin/ld: cannot find crtbeginS.o / cannot find -lgcc
-# which is what compiling a Swift program in this rootfs hit — `swift --version`
-# was fine, because printing a version does not link anything.
 libc6-dev
 libgcc-s1
 libgcc-13-dev
