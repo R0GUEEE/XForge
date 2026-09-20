@@ -300,6 +300,23 @@ step_glibc() {
         fi
     done
 
+    # What a link searches by default is the guest's /usr/lib, where Alpine's musl
+    # copies of the *unversioned* names (libc.so, libstdc++.so, libm.so …) come
+    # first. A Swift link asks for -lstdc++ and gets the musl build, which carries
+    # no symbol versions, so it fails with
+    #   undefined reference to `std::__throw_logic_error(char const*)@GLIBCXX_3.4'
+    # Passing -L/-Xlinker -L from the wrapper did not change that (the driver does
+    # not always hand those through), so the link names themselves are pointed at
+    # the layer. Only the unversioned files are touched: the runtime sonames
+    # (libstdc++.so.6, libc.so.6) are left to Alpine's for Alpine's own binaries,
+    # and glibc binaries resolve those through /lib/aarch64-linux-gnu as before.
+    for link_name in libc.so libm.so libpthread.so librt.so libdl.so libutil.so \
+                     libresolv.so libcrypt.so libstdc++.so libgcc_s.so; do
+        [ -e "$GLIBC_LIB/$link_name" ] || continue
+        rm -f "/usr/lib/$link_name"
+        ln -s "$GLIBC_LIB/$link_name" "/usr/lib/$link_name"
+    done
+
     cat > "$SHARE/glibc.env" <<EOF
 # Sourced by the wrappers in /usr/local/bin. Each tool's wrapper appends the
 # libraries it ships with to XFORGE_GLIBC_LIB.

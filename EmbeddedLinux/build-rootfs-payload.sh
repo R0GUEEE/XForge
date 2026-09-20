@@ -204,8 +204,10 @@ log "Compiling and running a Swift program in the provisioned rootfs"
 cat > "$ROOTFS/root/swift-probe.swift" <<'SWIFT'
 print("xforge-swift-compile-ok")
 SWIFT
-SWIFT_RUN="$(chroot "$ROOTFS" /bin/sh -c "export PATH=$GUEST_PATH HOME=/root; cd /root && swiftc -o swift-probe swift-probe.swift && ./swift-probe" 2>&1 || true)"
-printf '%s\n' "$SWIFT_RUN" | sed 's/^/    /'
+# -v so a failure shows the linker command the driver actually ran: the last
+# attempt to fix this was guessed at, and the guess could not be checked.
+SWIFT_RUN="$(chroot "$ROOTFS" /bin/sh -c "export PATH=$GUEST_PATH HOME=/root; cd /root && swiftc -v -o swift-probe swift-probe.swift && ./swift-probe" 2>&1 || true)"
+printf '%s\n' "$SWIFT_RUN" | tail -40 | sed 's/^/    /'
 case "$SWIFT_RUN" in
     *xforge-swift-compile-ok*) ;;
     *) die "the Swift toolchain in the payload cannot compile a program (see above)" ;;
