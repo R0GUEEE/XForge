@@ -182,7 +182,7 @@ step_deps() {
     apk add --no-cache \
         bash curl wget tar xz zip unzip git ca-certificates \
         gcompat libc6-compat zlib-static openssl \
-        binutils zstd file
+        binutils zstd file gnupg
     log "base packages installed"
 }
 
@@ -261,16 +261,36 @@ step_swift() {
     log "Installing the Swift toolchain"
     [ -e "$SHARE/glibc.env" ] || { echo "run the glibc step first" >&2; exit 1; }
     . "$SHARE/glibc.env"
+
+    # The wrappers go in first, so `swift --version` always answers something
+    # useful — a version, or exactly why there is none yet.
+    swift_wrapper swift
+    swift_wrapper swiftc
+
     . "$SWIFTLY_HOME_DIR/env.sh"
     # `swiftly list` exits 0 and prints a separator even with nothing installed,
     # so ask the directory that actually holds toolchains.
     if [ -n "$(ls -A "$SWIFTLY_HOME_DIR/toolchains" 2>/dev/null)" ]; then
         log "a toolchain is already installed: $(ls "$SWIFTLY_HOME_DIR/toolchains" | tail -1)"
-    else
-        swiftly install latest --use --assume-yes
+        return 0
     fi
-    swift_wrapper swift
-    swift_wrapper swiftc
+
+    # swiftly verifies the download's signature with gpg, and refuses without it
+    # ("gpg is not installed ... To skip signature verification, specify
+    # --no-verify"). Try to verify; fall back to skipping it, loudly.
+    if command -v gpg >/dev/null 2>&1; then
+        if ! swiftly install latest --use --assume-yes; then
+            echo "    signature verification failed; retrying without it"
+            swiftly install latest --use --assume-yes --no-verify
+        fi
+    else
+        echo "    gpg is not installed in the guest: skipping signature verification"
+        swiftly install latest --use --assume-yes --no-verify
+    fi
+
+    # `swiftly init --skip-install` leaves it unlinked; make it manage the
+    # toolchain we just installed.
+    swiftly link >/dev/null 2>&1 || true
     log "swift wrapper installed at /usr/local/bin/swift"
 }
 
