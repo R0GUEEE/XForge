@@ -1,15 +1,44 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  XForge's entitlements.
+
+  These are the only ones the app asks for, and they are here on purpose:
+
+  * com.apple.developer.kernel.extended-virtual-addressing — the embedded
+    iSH-AOK guest is a whole 64-bit Linux userland living in this process. It
+    maps a large sparse guest address space, and without this entitlement the
+    mapping fails and the guest cannot boot. iSH-AOK's own iOS build declares
+    the same key.
+
+  * com.apple.developer.kernel.increased-memory-limit — the guest holds a Linux
+    root filesystem, a Swift toolchain and the compiler's working set. The
+    default jetsam budget is far below what a compile needs, so this asks for the
+    larger limit.
+
+  Both are also the keys a signer may refuse: a wildcard or free-account profile
+  cannot always grant them. If a sideloader strips them, XForge still installs
+  and runs — the guest just gets the default address space and memory budget,
+  which is enough to boot and use the shell but not to compile large packages.
+
+  * get-task-allow — true, which is what a development-signed app has; a
+    sideloader re-signs with its own certificate and sets this itself.
+
+  * application-identifier — the signing identity. The $(AppIdentifierPrefix)
+    placeholder is resolved by the signer from its provisioning profile, so it
+    must not be hardcoded here.
+
+  Deliberately absent: keychain-access-groups, app groups, user-fonts,
+  notifications, network extensions. The app uses none of them, and asking for
+  an entitlement a free-account profile cannot grant makes some sideloaders
+  refuse the install outright — the safe set is the set that is actually used.
+-->
 <plist version="1.0">
 <dict>
 	<key>get-task-allow</key>
 	<true/>
 	<key>application-identifier</key>
 	<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-	<!-- The embedded iSH-AOK guest maps a large guest address space and runs a
-	     whole Linux userland; these two are what iSH-AOK's own iOS build asks
-	     for. Sideloading may strip them, in which case the guest still runs
-	     with a smaller address space / memory budget. -->
 	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
 	<true/>
 	<key>com.apple.developer.kernel.increased-memory-limit</key>
