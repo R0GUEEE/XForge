@@ -40,6 +40,11 @@ if [[ ! -f "$ISH/meson.build" ]]; then
     echo "       run: git submodule update --init --depth 1 Vendor/ish-AOK" >&2
     exit 1
 fi
+# XForge's local fixes to the vendored engine (see EmbeddedLinux/patches).
+# Applied before meson runs, never committed into the submodule, idempotent.
+log "Applying XForge's engine patches"
+bash "$HERE/apply-engine-patches.sh" "$ISH"
+
 if [[ ! -d "$ISH/deps/smallclue/src" || ! -d "$ISH/deps/libarchive" ]]; then
     echo "error: iSH-AOK's required submodules are missing." >&2
     echo "       run: git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue" >&2

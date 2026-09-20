@@ -345,6 +345,46 @@ int main(int argc, char **argv) {
                             "xtool --version", 300000);
                 probe_guest("does swift actually run in the guest?",
                             "swift --version", 600000);
+
+                // --- PI futexes, which is what Swift's Mutex is built on -------
+                // The engine answered ENOSYS for every PI futex op, and Swift 6's
+                // Synchronization.Mutex turns that unexpected errno into a
+                // fatalError -- a SIGTRAP, "Trace/breakpoint trap", exit 133. So
+                // any Swift binary doing concurrent work died on its first Mutex
+                // while single-threaded commands kept working. The C probe checks
+                // the syscall itself, under contention; the Swift probe is the
+                // end-to-end check that the fix reaches the runtime the app uses.
+                {
+                    const char *sources[] = {
+                        "Tools/engine-smoke/futex-pi-probe.c",
+                        "Tools/engine-smoke/swift-mutex-probe.swift",
+                    };
+                    int staged = 1;
+                    step("stage the PI futex and Swift Mutex probes");
+                    for (unsigned i = 0; i < sizeof sources / sizeof sources[0]; i++) {
+                        const char *slash = strrchr(sources[i], '/');
+                        char destination[4096];
+                        snprintf(destination, sizeof destination, "%s/%s", host,
+                                 slash != NULL ? slash + 1 : sources[i]);
+                        if (stage_into_share(sources[i], destination) != 0) {
+                            say("[smoke] could not stage %s (run this from the repository root)",
+                                sources[i]);
+                            staged = 0;
+                        }
+                    }
+                    result("stage the PI futex and Swift Mutex probes", staged);
+                    if (staged) {
+                        probe_guest("PI futexes: FUTEX_LOCK_PI / TRYLOCK_PI / UNLOCK_PI",
+                                    "cd /root && cp -f /host/futex-pi-probe.c . && "
+                                    "clang -O1 -pthread -o futex-pi-probe futex-pi-probe.c && "
+                                    "./futex-pi-probe",
+                                    900000);
+                        probe_guest("Swift Synchronization.Mutex under libdispatch workers",
+                                    "swiftc -O -o /root/swift-mutex-probe /host/swift-mutex-probe.swift "
+                                    "&& /root/swift-mutex-probe",
+                                    1800000);
+                    }
+                }
             }
         }
     }

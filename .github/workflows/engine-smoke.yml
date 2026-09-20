@@ -33,6 +33,12 @@ jobs:
           git submodule update --init --depth 1 Vendor/ish-AOK
           git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue
 
+      - name: Apply XForge's engine patches
+        # XForge's local fixes to the vendored iSH-AOK, so the harness tests the
+        # engine the app actually ships (kernel/futex.c gains PI futex support —
+        # Swift 6's Synchronization.Mutex is built on FUTEX_LOCK_PI).
+        run: bash EmbeddedLinux/apply-engine-patches.sh
+
       - name: Install build tools
         run: |
           set -e
