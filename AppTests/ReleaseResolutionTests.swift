@@ -85,6 +85,8 @@ final class StubLinuxVM: LinuxVM {
 
     func boot() async throws { bootCount += 1; isBooted = true }
 
+    func prepareRootfs() async {}
+
     func run(
         _ command: String,
         environment: [String: String]?,

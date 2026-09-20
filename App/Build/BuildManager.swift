@@ -2,8 +2,8 @@ import Foundation
 import Combine
 
 /// Orchestrates the on-device IPA build pipeline. Exposes a `PipelineSnapshot` that
-/// drives the GUI's stage UI. Heavy stages run in the embedded Linux via `BuildExecutor`;
-/// packaging/signing runs on the host via `IPABuilder`.
+/// drives the GUI's stage UI. Provisioning, dependency resolution, compilation,
+/// packaging, and SDK tooling all run inside Alpine via `BuildExecutor`.
 @MainActor
 final class BuildManager: ObservableObject {
     let project: Project
@@ -35,6 +35,8 @@ final class BuildManager: ObservableObject {
         guard !snapshot.isRunning else { return }
         snapshot.isRunning = true
         snapshot.error = nil
+        buildNumber = Self.nextBuildNumber()
+        appInfo.buildNumber = String(buildNumber)
         resetStages()
 
         // Stop at the first failed stage: later stages fail as a consequence and
@@ -66,6 +68,10 @@ final class BuildManager: ObservableObject {
         do {
             let stream = try await executor.bootstrap()
             for try await event in stream { consume(event) }
+            guard snapshot.error == nil else {
+                snapshot.stages[.provision] = .failed
+                return
+            }
             markSucceeded(.provision)
         } catch { markFailed(.provision, error) }
     }
@@ -92,24 +98,27 @@ final class BuildManager: ObservableObject {
             let vm = XForgeEnvironment.makeVM()
             if !vm.isBooted { try await vm.boot() }
 
+            guard project.hasSafeRootPath else {
+                throw ProjectValidationError.unsafePath
+            }
             let dir = project.rootPath
-            let mkdir = try await vm.run("mkdir -p '\(dir)'", environment: nil) { _ in }
+            let mkdir = try await vm.run(
+                "mkdir -p \(GuestShell.quote(dir))",
+                environment: nil
+            ) { _ in }
             guard mkdir == 0 else { throw BuildError.stepFailed("mkdir \(dir)", mkdir) }
 
-            let json = """
-            {
-              "bundleIdentifier": "\(appInfo.bundleIdentifier)",
-              "displayName": "\(appInfo.displayName)",
-              "version": "\(appInfo.version)",
-              "buildNumber": "\(appInfo.buildNumber)",
-              "minimumOSVersion": "\(appInfo.minimumOSVersion)",
-              "configuration": "\(configuration.rawValue)"
-            }
-
-            """
+            let metadata = BuildMetadata(
+                bundleIdentifier: appInfo.bundleIdentifier,
+                displayName: appInfo.displayName,
+                version: appInfo.version,
+                buildNumber: appInfo.buildNumber,
+                minimumOSVersion: appInfo.minimumOSVersion,
+                configuration: configuration.rawValue
+            )
             let temp = FileManager.default.temporaryDirectory
                 .appendingPathComponent("xforge-app-\(UUID().uuidString).json")
-            try Data(json.utf8).write(to: temp)
+            try JSONEncoder().encode(metadata).write(to: temp, options: .atomic)
             defer { try? FileManager.default.removeItem(at: temp) }
             try await vm.copyIn(hostURL: temp, to: "\(dir)/xforge-app.json")
 
@@ -127,6 +136,10 @@ final class BuildManager: ObservableObject {
         do {
             let stream = try await executor.resolve(project)
             for try await event in stream { consume(event) }
+            guard snapshot.error == nil else {
+                snapshot.stages[.resolve] = .failed
+                return
+            }
             markSucceeded(.resolve)
         } catch { markFailed(.resolve, error) }
     }
@@ -143,6 +156,10 @@ final class BuildManager: ObservableObject {
                 default: consume(event)
                 }
             }
+            guard snapshot.error == nil else {
+                snapshot.stages[.compile] = .failed
+                return
+            }
             guard let produced else {
                 markFailed(.compile, BuildError.noArtifact)
                 return
@@ -152,29 +169,18 @@ final class BuildManager: ObservableObject {
         } catch { markFailed(.compile, error) }
     }
 
-    /// Host-side packaging: if the compiler produced a raw `.app`, package it into a
-    /// `.ipa` with `IPABuilder`. If it already produced an `.ipa`, nothing to do.
+    /// Packaging belongs to xtool inside Alpine. The host receives only the final
+    /// IPA for export; it never runs build or SDK tooling.
     private func package() async {
-        guard let compiled = compiledURL else {
+        guard let compiled = compiledURL,
+              compiled.pathExtension.lowercased() == "ipa" else {
             markFailed(.package, BuildError.noArtifact)
             return
         }
         markRunning(.package)
-        if compiled.pathExtension == "app" {
-            do {
-                let ipa = try IPABuilder.buildIPA(
-                    appBundle: compiled,
-                    appInfo: appInfo,
-                    outputDir: XForgeEnvironment.stagingDirectory
-                )
-                snapshot.lastIpa = ipa
-                markSucceeded(.package)
-            } catch { markFailed(.package, error) }
-        } else {
-            snapshot.lastIpa = compiled
-            appendConsole("✓ .ipa already packaged in guest")
-            markSucceeded(.package)
-        }
+        snapshot.lastIpa = compiled
+        appendConsole("✓ .ipa packaged by xtool inside Alpine")
+        markSucceeded(.package)
     }
 
     private func stageArtifact() async {
@@ -225,7 +231,9 @@ final class BuildManager: ObservableObject {
         case .output(let s): appendConsole(s)
         case .artifact(let url): snapshot.lastIpa = url
         case .finished: break
-        case .failed(let s): appendConsole("[failed] \(s)")
+        case .failed(let s):
+            if snapshot.error == nil { snapshot.error = s }
+            appendConsole("[failed] \(s)")
         }
     }
     private func appendConsole(_ line: String) {
@@ -245,6 +253,15 @@ final class BuildManager: ObservableObject {
     private static func nextBuildNumber() -> Int {
         Int(Date().timeIntervalSince1970) % 100_000
     }
+}
+
+private struct BuildMetadata: Encodable {
+    let bundleIdentifier: String
+    let displayName: String
+    let version: String
+    let buildNumber: String
+    let minimumOSVersion: String
+    let configuration: String
 }
 
 enum BuildError: LocalizedError {

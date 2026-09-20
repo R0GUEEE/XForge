@@ -34,6 +34,10 @@ protocol LinuxEmulator: AnyObject {
     var isRunning: Bool { get }
     /// Boot the guest; returns once commands can be run.
     func boot() async throws
+    /// Import the bundled root filesystem into the engine's on-disk format
+    /// ahead of first use, without booting the guest. Idempotent: a root that
+    /// is already installed is left untouched.
+    func prepareRootfs() async throws
     /// Run one command headlessly in the guest.
     func runCommand(
         _ command: String,
@@ -55,6 +59,9 @@ final class PendingLinuxEmulator: LinuxEmulator {
             "The embedded iSH-AOK Linux core is not linked into this build. " +
             "Rebuild with `make ish-core` (see EmbeddedLinux/build-ish-aok-core.sh)."
         )
+    }
+    func prepareRootfs() async throws {
+        // No engine is linked; the boot path reports the real problem.
     }
     func runCommand(
         _ command: String,

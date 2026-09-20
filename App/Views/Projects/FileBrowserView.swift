@@ -1,77 +1,60 @@
 import SwiftUI
 
-/// Browse the whole SwiftPM package tree and open source files for editing.
+/// Browse every readable file in the project's real guest filesystem.
 struct FileBrowserView: View {
     let project: Project
-    @State private var tree: [FSNode] = []
-    @State private var selection: FSNode?
-
-    struct FSNode: Identifiable, Hashable {
-        let id: String
-        let name: String
-        let isDir: Bool
-        let path: String
-        var children: [FSNode] = []
-
-        static func swiftFile(_ name: String, in root: String) -> FSNode {
-            FSNode(id: "\(root)/\(name)", name: name, isDir: false, path: "\(root)/\(name)")
-        }
-    }
+    @State private var files: [GuestProjectFiles.File] = []
+    @State private var error: String?
+    @State private var loading = true
 
     var body: some View {
         List {
-            Section("Package") {
-                ForEach(tree) { node in
-                    NodeRow(node: node)
+            if loading {
+                ProgressView("Loading files…")
+            } else if let error {
+                ContentUnavailableViewCompat(
+                    title: "Could Not Load Files",
+                    systemImage: "exclamationmark.triangle",
+                    message: error
+                )
+            } else if files.isEmpty {
+                ContentUnavailableViewCompat(
+                    title: "Empty Project",
+                    systemImage: "folder",
+                    message: "No readable files were found."
+                )
+            } else {
+                Section("Package") {
+                    ForEach(files) { file in
+                        NavigationLink(value: file) {
+                            Label(file.relativePath, systemImage: symbol(for: file))
+                        }
+                    }
                 }
             }
         }
         .navigationTitle("Files")
-        .navigationDestination(for: FSNode.self) { node in
-            if !node.isDir {
-                SourceEditorView(
-                    file: SourceBrowserView.SourceFile(id: node.id, name: node.name, contents: "// \(node.path)\n")
-                ) { _ in }
-            }
-        }
-        .task { buildTree() }
-    }
-
-    private func buildTree() {
-        let src = FSNode(id: "Sources", name: "Sources", isDir: true, path: "Sources", children: [
-            FSNode(id: "Sources/\(project.name)", name: project.name, isDir: true, path: "Sources/\(project.name)", children: [
-                .swiftFile("\(project.name).swift", in: "Sources/\(project.name)"),
-                .swiftFile("ContentView.swift", in: "Sources/\(project.name)"),
-            ])
-        ])
-        let tests = FSNode(id: "Tests", name: "Tests", isDir: true, path: "Tests", children: [
-            FSNode(id: "Tests/\(project.name)Tests", name: "\(project.name)Tests", isDir: true, path: "Tests/\(project.name)Tests", children: [
-                .swiftFile("\(project.name)Tests.swift", in: "Tests/\(project.name)Tests"),
-            ])
-        ])
-        tree = [
-            FSNode(id: "Package.swift", name: "Package.swift", isDir: false, path: "Package.swift"),
-            src,
-            tests,
-        ]
-    }
-}
-
-struct NodeRow: View {
-    let node: FileBrowserView.FSNode
-    var body: some View {
-        if node.isDir {
-            DisclosureGroup {
-                ForEach(node.children) { child in
-                    NodeRow(node: child)
+        .navigationDestination(for: GuestProjectFiles.File.self) { file in
+            SourceEditorView(file: file, project: project) { updated in
+                if let index = files.firstIndex(where: { $0.id == file.id }) {
+                    files[index].contents = updated
                 }
-            } label: {
-                Label(node.name, systemImage: "folder")
-            }
-        } else {
-            NavigationLink(value: node) {
-                Label(node.name, systemImage: node.name.hasSuffix(".swift") ? "swift" : "doc")
             }
         }
+        .task { await load() }
+    }
+
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        do {
+            files = try await GuestProjectFiles.load(project: project, sourcesOnly: false)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    private func symbol(for file: GuestProjectFiles.File) -> String {
+        file.name.hasSuffix(".swift") ? "swift" : "doc"
     }
 }

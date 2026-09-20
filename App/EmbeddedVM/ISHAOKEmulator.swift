@@ -1,5 +1,46 @@
 import Foundation
 
+/// A serial executor backed by one permanent OS thread.
+///
+/// A DispatchQueue is not sufficient here: it preserves ordering but may move
+/// work between pthreads. iSH-AOK stores its active guest process in thread-local
+/// storage, so importing, booting, and every command must run on the exact same
+/// pthread for the lifetime of the guest.
+private final class GuestThreadExecutor: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var jobs: [@Sendable () -> Void] = []
+    private var thread: Thread?
+
+    init() {
+        let thread = Thread { [weak self] in
+            self?.run()
+        }
+        thread.name = "org.xforge.ish.guest"
+        thread.qualityOfService = .userInitiated
+        self.thread = thread
+        thread.start()
+    }
+
+    func submit(_ job: @escaping @Sendable () -> Void) {
+        condition.lock()
+        jobs.append(job)
+        condition.signal()
+        condition.unlock()
+    }
+
+    private func run() {
+        while true {
+            condition.lock()
+            while jobs.isEmpty {
+                condition.wait()
+            }
+            let job = jobs.removeFirst()
+            condition.unlock()
+            job()
+        }
+    }
+}
+
 /// `LinuxEmulator` backed by the embedded iSH-AOK engine.
 ///
 /// iSH-AOK runs a real Linux guest in-process (its aarch64 "gadget JIT" needs no
@@ -16,7 +57,7 @@ final class ISHAOKEmulator: LinuxEmulator {
 
     private let rootsDirectory: URL
     private let hostDirectory: URL
-    private let guestQueue = DispatchQueue(label: "org.xforge.ish.guest", qos: .userInitiated)
+    private let guestThread = GuestThreadExecutor()
 
     init(rootsDirectory: URL, hostDirectory: URL) {
         self.rootsDirectory = rootsDirectory
@@ -28,7 +69,7 @@ final class ISHAOKEmulator: LinuxEmulator {
         let roots = rootsDirectory
         let host = hostDirectory
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            guestQueue.async {
+            guestThread.submit {
                 do {
                     // Capture the engine's own log before it can write anything:
                     // its kernel messages (including the one `die()` prints on
@@ -60,6 +101,27 @@ final class ISHAOKEmulator: LinuxEmulator {
         isRunning = true
     }
 
+    /// Import the bundled rootfs on the guest's own serial thread, without
+    /// booting. Doing it here keeps the engine's one-time global init on the
+    /// same thread that later mounts the root and runs commands.
+    func prepareRootfs() async throws {
+        let roots = rootsDirectory
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            guestThread.submit {
+                do {
+                    XForgeLog.prepare()
+                    XForgeLog.note("emulator: rootfs pre-install requested")
+                    let root = try RootfsInstaller.installIfNeeded(into: roots)
+                    XForgeLog.note("emulator: rootfs pre-installed at \(root.lastPathComponent)")
+                    continuation.resume()
+                } catch {
+                    XForgeLog.note("emulator: rootfs pre-install failed: \(error.localizedDescription)")
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     func runCommand(
         _ command: String,
         shell: String?,
@@ -71,7 +133,7 @@ final class ISHAOKEmulator: LinuxEmulator {
         let maxOut = maxOutput > 0 ? maxOutput : 256 * 1024
 
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<GuestCommandResult, Error>) in
-            guestQueue.async {
+            guestThread.submit {
                 var raw = xf_guest_result()
                 let rc: Int32 = command.withCString { cCommand in
                     if let shell {
@@ -107,7 +169,7 @@ final class ISHAOKEmulator: LinuxEmulator {
     func shutdown() async {
         guard isRunning else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            guestQueue.async {
+            guestThread.submit {
                 xf_ish_shutdown()
                 continuation.resume()
             }
@@ -116,7 +178,7 @@ final class ISHAOKEmulator: LinuxEmulator {
     }
 }
 
-/// Reads the bridge's thread-local last error. Must be called on the guest queue.
+/// Reads the bridge's thread-local last error. Must be called on the guest thread.
 private func ishLastError(fallback: String) -> String {
     let message = String(cString: xf_ish_last_error())
     return message.isEmpty ? fallback : message

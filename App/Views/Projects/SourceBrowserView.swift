@@ -1,31 +1,166 @@
 import SwiftUI
 
-/// Browse the SwiftPM package's `Sources/` tree and view/edit source files.
-struct SourceBrowserView: View {
-    let project: Project
-    @State private var files: [SourceFile] = []
-
-    struct SourceFile: Identifiable, Hashable {
-        let id: String        // relative path
+@MainActor
+enum GuestProjectFiles {
+    struct File: Identifiable, Hashable {
+        let id: String
         let name: String
+        let relativePath: String
         var contents: String
     }
 
+    static func load(project: Project, sourcesOnly: Bool) async throws -> [File] {
+        guard project.hasSafeRootPath else { throw ProjectValidationError.unsafePath }
+
+        let vm = XForgeEnvironment.makeVM()
+        let root = sourcesOnly ? "\(project.rootPath)/Sources" : project.rootPath
+        let output = GuestFileOutputCollector()
+        let status = try await vm.run(
+            "find \(GuestShell.quote(root)) -type f -print 2>/dev/null | sort",
+            environment: nil
+        ) { output.append($0) }
+        guard status == 0 else { throw GuestProjectFileError.listFailed(status) }
+
+        let paths = output.value
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { $0.hasPrefix(project.rootPath + "/") }
+
+        var files: [File] = []
+        for path in paths {
+            let relativePath = String(path.dropFirst(project.rootPath.count + 1))
+            guard !relativePath.contains("\n") else { continue }
+            let temporaryURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xforge-source-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: temporaryURL) }
+            try await vm.copyOut(guestPath: path, to: temporaryURL)
+            guard let contents = try? String(contentsOf: temporaryURL, encoding: .utf8) else {
+                continue
+            }
+            files.append(File(
+                id: relativePath,
+                name: (relativePath as NSString).lastPathComponent,
+                relativePath: relativePath,
+                contents: contents
+            ))
+        }
+        return files
+    }
+
+    static func load(relativePath: String, project: Project) async throws -> File {
+        guard project.hasSafeRootPath else { throw ProjectValidationError.unsafePath }
+        guard isSafe(relativePath: relativePath) else {
+            throw GuestProjectFileError.unsafeRelativePath
+        }
+
+        let temporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xforge-source-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        try await XForgeEnvironment.makeVM().copyOut(
+            guestPath: "\(project.rootPath)/\(relativePath)",
+            to: temporaryURL
+        )
+        let contents = try String(contentsOf: temporaryURL, encoding: .utf8)
+        return File(
+            id: relativePath,
+            name: (relativePath as NSString).lastPathComponent,
+            relativePath: relativePath,
+            contents: contents
+        )
+    }
+
+    static func save(_ contents: String, file: File, project: Project) async throws {
+        guard project.hasSafeRootPath else { throw ProjectValidationError.unsafePath }
+        guard isSafe(relativePath: file.relativePath) else {
+            throw GuestProjectFileError.unsafeRelativePath
+        }
+
+        let temporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xforge-source-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        try contents.write(to: temporaryURL, atomically: true, encoding: .utf8)
+        try await XForgeEnvironment.makeVM().copyIn(
+            hostURL: temporaryURL,
+            to: "\(project.rootPath)/\(file.relativePath)"
+        )
+    }
+
+    private static func isSafe(relativePath: String) -> Bool {
+        !relativePath.isEmpty
+            && !relativePath.hasPrefix("/")
+            && !relativePath.split(separator: "/").contains("..")
+            && !relativePath.contains("\n")
+    }
+}
+
+private final class GuestFileOutputCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage = ""
+
+    func append(_ text: String) {
+        lock.lock()
+        storage += text
+        lock.unlock()
+    }
+
+    var value: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
+enum GuestProjectFileError: LocalizedError {
+    case listFailed(Int32)
+    case unsafeRelativePath
+
+    var errorDescription: String? {
+        switch self {
+        case .listFailed(let status):
+            return "Could not list project files (exit \(status))."
+        case .unsafeRelativePath:
+            return "The selected file is outside the project."
+        }
+    }
+}
+
+struct SourceBrowserView: View {
+    let project: Project
+    @State private var files: [GuestProjectFiles.File] = []
+    @State private var error: String?
+    @State private var loading = true
+
     var body: some View {
         List {
-            Section("Sources") {
-                ForEach(files) { file in
-                    NavigationLink(value: file) {
-                        Label(file.name, systemImage: "swift")
+            if loading {
+                ProgressView("Loading sources…")
+            } else if let error {
+                ContentUnavailableViewCompat(
+                    title: "Could Not Load Sources",
+                    systemImage: "exclamationmark.triangle",
+                    message: error
+                )
+            } else if files.isEmpty {
+                ContentUnavailableViewCompat(
+                    title: "No Source Files",
+                    systemImage: "doc",
+                    message: "The project has no readable files under Sources."
+                )
+            } else {
+                Section("Sources") {
+                    ForEach(files) { file in
+                        NavigationLink(value: file) {
+                            Label(file.relativePath, systemImage: "swift")
+                        }
                     }
                 }
             }
         }
         .navigationTitle("Sources")
-        .navigationDestination(for: SourceFile.self) { file in
-            SourceEditorView(file: file) { updated in
-                if let idx = files.firstIndex(where: { $0.id == file.id }) {
-                    files[idx].contents = updated
+        .navigationDestination(for: GuestProjectFiles.File.self) { file in
+            SourceEditorView(file: file, project: project) { updated in
+                if let index = files.firstIndex(where: { $0.id == file.id }) {
+                    files[index].contents = updated
                 }
             }
         }
@@ -33,13 +168,12 @@ struct SourceBrowserView: View {
     }
 
     private func load() async {
-        // Seed with a default target file; real listing comes from the VM file access.
-        if files.isEmpty {
-            files = [SourceFile(
-                id: "Sources/\(project.name)/\(project.name).swift",
-                name: "\(project.name).swift",
-                contents: SourceEditorView.template(name: project.name)
-            )]
+        loading = true
+        defer { loading = false }
+        do {
+            files = try await GuestProjectFiles.load(project: project, sourcesOnly: true)
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 }
@@ -47,37 +181,33 @@ struct SourceBrowserView: View {
 struct SourceEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
-    let file: SourceBrowserView.SourceFile
+    @State private var saving = false
+    @State private var error: String?
+
+    let file: GuestProjectFiles.File
+    let project: Project
     let onSave: (String) -> Void
 
-    init(file: SourceBrowserView.SourceFile, onSave: @escaping (String) -> Void) {
+    init(
+        file: GuestProjectFiles.File,
+        project: Project,
+        onSave: @escaping (String) -> Void
+    ) {
         self.file = file
+        self.project = project
         self.onSave = onSave
         _text = State(initialValue: file.contents)
     }
 
-    static func template(name: String) -> String {
-        """
-        import SwiftUI
-
-        public struct \(name)App: App {
-            public var body: some Scene {
-                WindowGroup {
-                    ContentView()
-                }
-            }
-        }
-
-        struct ContentView: View {
-            var body: some View {
-                Text("Hello, world!")
-            }
-        }
-        """
-    }
-
     var body: some View {
         VStack(spacing: 0) {
+            if let error {
+                Text(error)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
             TextEditor(text: $text)
                 .font(.system(.body, design: .monospaced))
                 .autocorrectionDisabled()
@@ -87,8 +217,24 @@ struct SourceEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save") { onSave(text); dismiss() }
+                Button(saving ? "Saving…" : "Save") {
+                    Task { await save() }
+                }
+                .disabled(saving)
             }
+        }
+    }
+
+    private func save() async {
+        saving = true
+        error = nil
+        defer { saving = false }
+        do {
+            try await GuestProjectFiles.save(text, file: file, project: project)
+            onSave(text)
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 }

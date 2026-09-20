@@ -15,7 +15,8 @@ enum XForgeEnvironment {
     }
 
     /// Installed iSH-AOK `fakefs` root filesystems. The bundled Alpine rootfs is
-    /// imported here on first boot and reused afterwards.
+    /// imported here at launch and reused afterwards (the first boot imports it
+    /// as a fallback).
     static var rootsDirectory: URL {
         embeddedRoot.appendingPathComponent("roots", isDirectory: true)
     }

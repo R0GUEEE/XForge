@@ -14,7 +14,7 @@ struct SignInstallTab: View {
                         Label {
                             VStack(alignment: .leading) {
                                 Text("Signing").font(.headline)
-                                Text(signingStateSummary)
+                                Text("Unavailable in this build")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         } icon: {
@@ -24,8 +24,8 @@ struct SignInstallTab: View {
                     NavigationLink { InstallView(device: device) } label: {
                         Label {
                             VStack(alignment: .leading) {
-                                Text("Install").font(.headline)
-                                Text(deviceSummary)
+                                Text("Export & Install").font(.headline)
+                                Text("Export for SideStore, AltStore, or Xcode")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         } icon: {

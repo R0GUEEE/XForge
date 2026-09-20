@@ -223,9 +223,13 @@ final class ToolchainManager: ObservableObject {
             advanceProgress(0.5, "Building the darwin SDK inside the guest with xtool")
 
             let guestXip = "/host/\(Self.hostShareName(for: xip))"
+            let guestOutput = "/root/.cache/xforge-sdk-build"
             let output = OutputCollector()
             let status = try await vm.run(
-                "cd /root && xtool sdk build '\(guestXip)' /host/darwin-sdk-out",
+                "rm -rf \(GuestShell.quote(guestOutput)) && "
+                + "mkdir -p \(GuestShell.quote(guestOutput)) && "
+                + "cd /root && xtool sdk build \(GuestShell.quote(guestXip)) "
+                + GuestShell.quote(guestOutput),
                 environment: nil
             ) { chunk in
                 output.append(chunk)
@@ -238,7 +242,8 @@ final class ToolchainManager: ObservableObject {
 
             advanceProgress(0.9, "Installing the built SDK in the guest")
             let installStatus = try await vm.run(
-                "swift sdk install /host/darwin-sdk-out/darwin.artifactbundle",
+                "swift sdk install \(GuestShell.quote(guestOutput + "/darwin.artifactbundle")) "
+                + "&& rm -rf \(GuestShell.quote(guestOutput))",
                 environment: nil
             ) { chunk in
                 XForgeLog.note("guest: " + chunk.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -280,13 +285,15 @@ final class ToolchainManager: ObservableObject {
     }
 
     static func hostShareName(for url: URL) -> String {
-        let name = url.lastPathComponent
-        return name.isEmpty ? "Xcode.xip" : name
+        url.pathExtension.lowercased() == "xip" ? "Xcode-import.xip" : "Xcode-import"
     }
 
     /// Run the in-guest provisioning script (Swift toolchain, xtool and the glibc
     /// layer they need), one step at a time.
     private func provisionGuest() async throws {
+        // Every guest-side component installs *into the embedded Alpine rootfs*:
+        // import it first if it is not already there, then boot from it.
+        await vm.prepareRootfs()
         try await vm.boot()
 
         guard let script = Bundle.main.url(forResource: "install-toolchain", withExtension: "sh") else {
@@ -307,7 +314,7 @@ final class ToolchainManager: ObservableObject {
             // take many minutes each; the engine returns a command's output only
             // when it finishes, so the log gets it step by step.
             let status = try await vm.run(
-                "sh \(guestPath) \(step.rawValue)",
+                "sh \(GuestShell.quote(guestPath)) \(GuestShell.quote(step.rawValue))",
                 environment: ["PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
             ) { chunk in
                 collector.append(chunk)
@@ -349,8 +356,7 @@ final class ToolchainManager: ObservableObject {
         }
     }
 
-    /// Download the darwin Swift SDK, unzip it into the shared directory, and
-    /// install it in the guest.
+    /// Download, extract, and install the Darwin Swift SDK inside Alpine.
     private func installSDK() async throws {
         try await SDKInstaller.install(vm: vm) { [weak self] fraction, label in
             guard let self else { return }
@@ -387,7 +393,6 @@ final class ToolchainManager: ObservableObject {
         endProgress()
         let fm = FileManager.default
         try? fm.removeItem(at: XForgeEnvironment.rootsDirectory)
-        try? fm.removeItem(at: XForgeEnvironment.hostShareDirectory.appendingPathComponent("darwin.artifactbundle"))
         try? fm.removeItem(at: XForgeEnvironment.downloadsDirectory)
         installed = []
         guestKnown = []

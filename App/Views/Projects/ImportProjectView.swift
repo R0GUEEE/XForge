@@ -59,19 +59,20 @@ struct ImportProjectView: View {
         isImporting = true
         error = nil
         let url = gitURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let projectName = derivedName
         let org = orgId
         Task {
             defer { isImporting = false }
             do {
+                let projectName = try Project.validatedName(derivedName)
                 // Clone into the guest; without this the project path does not
                 // exist and every later build step fails.
                 let vm = XForgeEnvironment.makeVM()
                 if !vm.isBooted { try await vm.boot() }
-                let path = "/root/projects/\(projectName)"
+                let path = Project.path(forValidatedName: projectName)
                 let status = try await vm.run(
-                    "mkdir -p /root/projects && rm -rf '\(path)' && "
-                    + "git clone --depth 1 '\(url)' '\(path)'",
+                    "mkdir -p \(GuestShell.quote(Project.projectsRoot)) && "
+                    + "rm -rf \(GuestShell.quote(path)) && "
+                    + "git clone --depth 1 -- \(GuestShell.quote(url)) \(GuestShell.quote(path))",
                     environment: nil
                 ) { _ in }
                 guard status == 0 else {

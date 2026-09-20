@@ -6,6 +6,8 @@ struct RootTabView: View {
     @StateObject private var device = XKitDeviceService()
     @StateObject private var preferences = AppPreferences()
     @State private var selection: AppTab = .projects
+    @State private var startupAttempt = 0
+    @State private var startupError: String?
 
     enum AppTab: Hashable {
         case projects
@@ -39,6 +41,34 @@ struct RootTabView: View {
             SettingsTab(preferences: preferences)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppTab.settings)
+        }
+        .task(id: startupAttempt) {
+            // Import and boot the shared Alpine guest as part of app startup.
+            // Every feature then reuses this verified interactive terminal.
+            startupError = nil
+            let vm = XForgeEnvironment.makeVM()
+            await vm.prepareRootfs()
+            do {
+                try await vm.boot()
+            } catch {
+                startupError = error.localizedDescription
+                XForgeLog.note("startup: Alpine guest failed to boot: \(error.localizedDescription)")
+            }
+        }
+        .alert(
+            "Linux Failed to Start",
+            isPresented: Binding(
+                get: { startupError != nil },
+                set: { if !$0 { startupError = nil } }
+            )
+        ) {
+            Button("Retry") {
+                startupError = nil
+                startupAttempt += 1
+            }
+            Button("Dismiss", role: .cancel) {}
+        } message: {
+            Text(startupError ?? "The embedded Alpine system could not be started.")
         }
     }
 }

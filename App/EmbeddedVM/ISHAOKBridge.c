@@ -104,7 +104,7 @@ extern bool doEnableMulticore;
 // --- state ------------------------------------------------------------------
 
 // iSH-AOK's `current` is thread-local, so the thread that boots must be the one
-// that runs commands. Swift funnels every call through one serial queue.
+// that runs commands. Swift funnels every call through one permanent OS thread.
 static __thread char s_error[512];
 static bool s_global_inited = false;
 static bool s_booted = false;

@@ -25,8 +25,8 @@ struct SettingsView: View {
             } header: {
                 Text("Files & Downloads")
             } footer: {
-                Text("Downloads land in the app's Documents/downloads folder, which the "
-                     + "embedded Linux sees at /host/downloads.")
+                Text("User downloads and exported artifacts live in the app sandbox. "
+                     + "Toolchains and SDKs are installed directly in the Alpine rootfs.")
             }
 
             preferencesSection
@@ -63,12 +63,9 @@ struct SettingsView: View {
         switch component {
         case .rootfs:
             return XForgeEnvironment.rootsDirectory
-        case .sdk:
-            return XForgeEnvironment.hostShareDirectory
-                .appendingPathComponent("darwin.artifactbundle")
-        case .swift, .xtool:
-            // Guest-side; the SDK share and downloads are the host-side footprint.
-            return XForgeEnvironment.embeddedRoot
+        case .swift, .xtool, .sdk:
+            // Every tool and SDK lives in the imported Alpine fakefs.
+            return RootfsInstaller.installedRoot(in: XForgeEnvironment.rootsDirectory)
         }
     }
 

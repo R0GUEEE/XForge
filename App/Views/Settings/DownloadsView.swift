@@ -72,7 +72,7 @@ struct DownloadsView: View {
                     Text("Alpine aarch64 rootfs").font(.headline)
                     Text(rootfsInstalled
                          ? "Installed — imported from the copy bundled in the app"
-                         : "Bundled in the app · installed on first boot, no download")
+                         : "Bundled in the app · installed automatically at launch, no download")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

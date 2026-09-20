@@ -52,6 +52,9 @@ enum XForgeLog {
     /// Append one breadcrumb line, timestamped by the bridge.
     static func note(_ line: String) {
         _ = line.withCString { xf_ish_log($0) }
+#if DEBUG
+        print("[XForge] \(line)")
+#endif
     }
 
     /// The log as text (empty when nothing has been written yet).

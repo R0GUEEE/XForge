@@ -1,7 +1,7 @@
 import Foundation
 
 /// Installs the bundled Alpine aarch64 root filesystem into the app container
-/// the first time the guest boots.
+/// ahead of first use — at launch, with the first boot as the fallback.
 ///
 /// The archive ships *inside the app* (see `project.yml` and
 /// `EmbeddedLinux/fetch-rootfs.sh`), so nothing is downloaded after install. On
@@ -23,8 +23,21 @@ enum RootfsInstaller {
     }
 
     static func isInstalled(in rootsDirectory: URL) -> Bool {
-        FileManager.default.fileExists(
-            atPath: installedRoot(in: rootsDirectory).appendingPathComponent("meta.db").path)
+        let fm = FileManager.default
+        let root = installedRoot(in: rootsDirectory)
+        let metadata = root.appendingPathComponent("meta.db")
+        let data = root.appendingPathComponent("data", isDirectory: true)
+
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: data.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              fm.fileExists(atPath: metadata.path),
+              let attributes = try? fm.attributesOfItem(atPath: metadata.path),
+              let size = attributes[.size] as? NSNumber,
+              size.intValue > 0 else {
+            return false
+        }
+        return true
     }
 
     /// Returns the ready-to-boot fakefs root, importing from the bundled archive
@@ -33,7 +46,7 @@ enum RootfsInstaller {
     static func installIfNeeded(into rootsDirectory: URL) throws -> URL {
         let fm = FileManager.default
         let root = installedRoot(in: rootsDirectory)
-        if fm.fileExists(atPath: root.appendingPathComponent("meta.db").path) {
+        if isInstalled(in: rootsDirectory) {
             return root
         }
 
@@ -61,9 +74,28 @@ enum RootfsInstaller {
             let detail = String(cString: xf_ish_last_error())
             throw RootfsError.importFailed(detail.isEmpty ? "errno \(rc)" : detail)
         }
+        guard isValidImportedRoot(staging, fileManager: fm) else {
+            try? fm.removeItem(at: staging)
+            throw RootfsError.importFailed(
+                "the imported fakefs is missing its data directory or metadata database")
+        }
 
         try fm.moveItem(at: staging, to: root)
         return root
+    }
+
+    private static func isValidImportedRoot(_ root: URL, fileManager fm: FileManager) -> Bool {
+        let metadata = root.appendingPathComponent("meta.db")
+        let data = root.appendingPathComponent("data", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: data.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              fm.fileExists(atPath: metadata.path),
+              let attributes = try? fm.attributesOfItem(atPath: metadata.path),
+              let size = attributes[.size] as? NSNumber else {
+            return false
+        }
+        return size.intValue > 0
     }
 }
 

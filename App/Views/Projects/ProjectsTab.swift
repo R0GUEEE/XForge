@@ -1,16 +1,21 @@
 import SwiftUI
 
 /// Tab 1 — author and manage SwiftPM projects.
+///
+/// Navigation is driven by an explicit `path` rather than `List(selection:)`:
+/// binding a selection made row taps update the selection instead of pushing the
+/// detail view, so a project could not be opened. The same path lets a freshly
+/// created or imported project open by itself.
 struct ProjectsTab: View {
     @EnvironmentObject private var store: ProjectStore
     @EnvironmentObject private var preferences: AppPreferences
-    @State private var selection: Project?
+    @State private var path: [Project] = []
     @State private var showingNewProject = false
-    @State private var importURL = ""
+    @State private var showingImport = false
 
     var body: some View {
-        NavigationStack {
-            List(selection: $selection) {
+        NavigationStack(path: $path) {
+            List {
                 ForEach(store.projects) { project in
                     NavigationLink(value: project) {
                         ProjectRow(project: project)
@@ -50,13 +55,13 @@ struct ProjectsTab: View {
             .sheet(isPresented: $showingNewProject) {
                 NewProjectView { project in
                     store.add(project)
-                    selection = project
+                    path.append(project)
                 }
             }
             .sheet(isPresented: $showingImport) {
                 ImportProjectView { project in
                     store.add(project)
-                    selection = project
+                    path.append(project)
                 }
             }
             .overlay {
@@ -70,8 +75,6 @@ struct ProjectsTab: View {
             }
         }
     }
-
-    @State private var showingImport = false
 }
 
 struct ProjectRow: View {

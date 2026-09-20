@@ -72,7 +72,7 @@ private struct OverviewSection: View {
             }
         }
         .sheet(isPresented: $showingDeps) {
-            NavigationStack { DependenciesView() }
+            NavigationStack { DependenciesView(project: project) }
         }
     }
 

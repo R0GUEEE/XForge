@@ -10,10 +10,9 @@ private final class ExecOutputBox: @unchecked Sendable {
 
 /// BuildExecutor backed by the embedded Linux VM.
 ///
-/// Only the genuinely heavy operations cross into the VM (toolchain bootstrap,
-/// SDK install, and `swift package resolve` / `xtool dev build`). Everything else
-/// is native. Every guest command's exit status is checked — a build that did not
-/// run must never report success.
+/// Commands run in the shared Alpine guest through its interactive login terminal.
+/// Every guest command's exit status is checked — a build that did not run must
+/// never report success.
 @MainActor
 final class EmbeddedLinuxExecutor: BuildExecutor {
     let vm: LinuxVM
@@ -67,25 +66,30 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
         switch source {
         case .bundled(let path):
             // Already inside the guest filesystem.
-            let status = try await vm.run("swift sdk install '\(path)'", environment: nil) { _ in }
+            let status = try await vm.run(
+                "swift sdk install \(GuestShell.quote(path))",
+                environment: nil
+            ) { _ in }
             guard status == 0 else { throw BuildError.stepFailed("swift sdk install", status) }
-        case .hostedRemote:
-            // Resolve the published asset, stage it on the host and install it in
-            // the guest (see SDKInstaller). No progress sink here: a build drives
-            // this, and the pipeline view has its own console.
-            try await SDKInstaller.install(vm: vm) { _, _ in }
+        case .hostedRemote(let url):
+            // Alpine downloads, extracts, and installs the published SDK directly
+            // into its rootfs. The iOS host only provides the resolved asset URL.
+            try await SDKInstaller.install(vm: vm, remoteURL: url) { _, _ in }
         }
     }
 
     func createProject(named name: String, organizationIdentifier: String) async throws -> Project {
         if !vm.isBooted { try await vm.boot() }
-        let path = "/root/projects/\(name)"
+        let validatedName = try Project.validatedName(name)
+        let path = Project.path(forValidatedName: validatedName)
         let status = try await vm.run(
-            "mkdir -p '\(path)' && cd '\(path)' && XTOOL_ORG='\(organizationIdentifier)' xtool new --name '\(name)'",
+            "mkdir -p \(GuestShell.quote(path)) && cd \(GuestShell.quote(path)) "
+            + "&& XTOOL_ORG=\(GuestShell.quote(organizationIdentifier)) "
+            + "xtool new --name \(GuestShell.quote(validatedName))",
             environment: nil
         ) { _ in }
         guard status == 0 else { throw BuildError.stepFailed("xtool new", status) }
-        return Project(name: name, organizationIdentifier: organizationIdentifier, rootPath: path)
+        return Project(name: validatedName, organizationIdentifier: organizationIdentifier, rootPath: path)
     }
 
     func resolve(_ project: Project) -> AsyncThrowingStream<BuildEvent, Error> {
@@ -94,8 +98,11 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                 do {
                     if !vm.isBooted { try await vm.boot() }
                     continuation.yield(.plan("Resolving dependencies for \(project.name)…"))
+                    guard project.hasSafeRootPath else {
+                        throw ProjectValidationError.unsafePath
+                    }
                     let status = try await vm.run(
-                        "cd '\(project.rootPath)' && swift package resolve",
+                        "cd \(GuestShell.quote(project.rootPath)) && swift package resolve",
                         environment: nil
                     ) { line in
                         continuation.yield(.output(line))
@@ -124,8 +131,11 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                     if configuration == .release { flags = "-c release -s -i" }
 
                     continuation.yield(.plan("Building \(project.name) (\(configuration.rawValue))…"))
+                    guard project.hasSafeRootPath else {
+                        throw ProjectValidationError.unsafePath
+                    }
                     let code = try await vm.run(
-                        "cd '\(project.rootPath)' && xtool dev build \(flags)",
+                        "cd \(GuestShell.quote(project.rootPath)) && xtool dev build \(flags)",
                         environment: nil
                     ) { line in
                         continuation.yield(.output(line))
@@ -164,7 +174,8 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
     private func newestIPA(in project: Project) async throws -> String? {
         let box = ExecOutputBox()
         let status = try await vm.run(
-            "ls -t '\(project.rootPath)/.build'/*.ipa 2>/dev/null | head -1",
+            "find \(GuestShell.quote("\(project.rootPath)/.build")) -maxdepth 1 -type f "
+            + "-name '*.ipa' -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1",
             environment: nil
         ) { box.append($0) }
         guard status == 0 else { return nil }

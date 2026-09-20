@@ -12,7 +12,7 @@ struct ArtifactsView: View {
                 ContentUnavailableViewCompat(
                     title: "No Artifacts",
                     systemImage: "shippingbox",
-                    message: "Built .ipa files appear here, ready to export or install."
+                    message: "Built .ipa files appear here, ready to export."
                 )
             }
             ForEach(artifacts) { artifact in

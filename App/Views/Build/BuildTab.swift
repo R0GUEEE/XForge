@@ -5,6 +5,11 @@ struct BuildTab: View {
     @EnvironmentObject private var store: ProjectStore
     @State private var selection: Project?
 
+    private var selectedProject: Project? {
+        guard let selection else { return nil }
+        return store.projects.first { $0.id == selection.id }
+    }
+
     var body: some View {
         NavigationStack {
             Group {
@@ -15,10 +20,18 @@ struct BuildTab: View {
                         message: "Create a project first, then build it here."
                     )
                 } else {
-                    BuildPipelineView(project: selection ?? store.projects[0])
+                    let project = selectedProject ?? store.projects[0]
+                    BuildPipelineView(project: project)
+                        .id(project.id)
                 }
             }
             .navigationTitle("Build")
+            .onChange(of: store.projects) { projects in
+                if let selection,
+                   !projects.contains(where: { $0.id == selection.id }) {
+                    self.selection = nil
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     NavigationLink {

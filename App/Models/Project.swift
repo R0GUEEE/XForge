@@ -2,6 +2,7 @@ import Foundation
 
 /// A SwiftPM package that can be built into an iOS app.
 struct Project: Identifiable, Hashable, Codable {
+    static let projectsRoot = "/root/projects"
     var id: UUID = UUID()
     var name: String
     var organizationIdentifier: String = "com.example"
@@ -13,6 +14,38 @@ struct Project: Identifiable, Hashable, Codable {
 
     var packageManifestPath: String { "\(rootPath)/Package.swift" }
     var ipaOutputPath: String { "\(rootPath)/.build/xforge-\(name).ipa" }
+
+    static func validatedName(_ value: String) throws -> String {
+        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        guard !name.isEmpty, name.count <= 80,
+              name.unicodeScalars.allSatisfy(allowed.contains) else {
+            throw ProjectValidationError.invalidName
+        }
+        return name
+    }
+
+    static func path(forValidatedName name: String) -> String {
+        "\(projectsRoot)/\(name)"
+    }
+
+    var hasSafeRootPath: Bool {
+        rootPath == Self.path(forValidatedName: name)
+    }
+}
+
+enum ProjectValidationError: LocalizedError {
+    case invalidName
+    case unsafePath
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidName:
+            return "Project names may contain only letters, numbers, hyphens, and underscores."
+        case .unsafePath:
+            return "The project path is outside XForge's projects directory."
+        }
+    }
 }
 
 enum BuildConfiguration: String, Codable, CaseIterable, Identifiable {

@@ -83,11 +83,11 @@ struct NewProjectView: View {
     private func create() {
         creating = true
         error = nil
-        let projectName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let org = orgId.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             defer { creating = false }
             do {
+                let projectName = try Project.validatedName(name)
                 let executor = XForgeEnvironment.makeExecutor()
                 let project = try await executor.createProject(
                     named: projectName, organizationIdentifier: org)

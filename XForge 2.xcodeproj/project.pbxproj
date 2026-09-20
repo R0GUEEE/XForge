@@ -1,0 +1,926 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0243DC0CF863DE12FC67A186 /* Toolchain.swift in Sources */ = {isa = PBXBuildFile; fileRef = C26FB75C9E1D9EBE23BA371E /* Toolchain.swift */; };
+		06A54C4D41EC62CDB8260D0B /* XForgeReleases.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2BA797268C3624D267125D6 /* XForgeReleases.swift */; };
+		0840C1FEC183B8039B04E6FF /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FEE5BDC3AEAD90EF585179D7 /* WebKit.framework */; };
+		08E9218D185DDFC7016A7157 /* ProjectStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836030CE50393C71A440859D /* ProjectStore.swift */; };
+		0D19529491CC4EF5443E4E5A /* Signing.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA6B70177198D33682A82C1C /* Signing.swift */; };
+		0D1BF6BC64F89F4FE0D46BAB /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FC3CBCE5D2E69E5B397DB15C /* SystemConfiguration.framework */; };
+		0D490F78D91D70246EBE9DDF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 19BB7A81A58F8FD39AF815FB /* Assets.xcassets */; };
+		15A838B28323F44E8B690FE9 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = BAE9D293401889B33C6C2B69 /* ZIPFoundation */; };
+		16BC67197893AC304A483180 /* EmbeddedLinuxExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C0A753F30CA9C76D829712 /* EmbeddedLinuxExecutor.swift */; };
+		1FD977090D684F164E7C16B0 /* NewProjectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E50ECE06DF5FBE5B5DC6F2A5 /* NewProjectView.swift */; };
+		225DEE2C823F6FC8AFBB770B /* DependenciesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D8A030296EE1A74DFFD6F56 /* DependenciesView.swift */; };
+		2346BB0C42CB166209653888 /* IPABuilderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38CF468084730CCE5662CB24 /* IPABuilderTests.swift */; };
+		32EDC8348400E0B716897FC0 /* TerminalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 10D76D0A02A318E21B249321 /* TerminalView.swift */; };
+		342008F917EA77A02A564BF5 /* FileBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6315634F36296C85297AFFBF /* FileBrowserView.swift */; };
+		36A2F9A69FEC6E8835B1B262 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB64C3E45653AB1E424A8CDD /* SettingsView.swift */; };
+		400E1814A16C964FA4669264 /* XForgeEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADEB69B70ED9F4F0C0D32E5D /* XForgeEnvironment.swift */; };
+		457BEC289722C4BB5609EE0F /* alpine-minirootfs-3.23.3-aarch64.tar.xz in Resources */ = {isa = PBXBuildFile; fileRef = D3A0F286BC49006735835434 /* alpine-minirootfs-3.23.3-aarch64.tar.xz */; };
+		47F9CE11B07DCB2BAA77A6F6 /* BuildManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AE33A2C6BDB49AA60A37687 /* BuildManager.swift */; };
+		4FEC947EB47248D8F5A34310 /* DownloadsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1DA26BEB35567F5800E2BDC /* DownloadsView.swift */; };
+		52B7FD78A1B885664732C228 /* ManifestEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35F3DB723FDA3F1E1D8901EB /* ManifestEditorView.swift */; };
+		550696C57D2847B4CEF56F3F /* ImportProjectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D355795CB63A72B2270DDB3F /* ImportProjectView.swift */; };
+		5791FEC681E08A87F97F2B54 /* BuildPipelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7814F742C43DF06DFF79A3CE /* BuildPipelineView.swift */; };
+		58A4733938C962A12935A5A2 /* InstallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CBA168AC8DAEDC724196D4F /* InstallView.swift */; };
+		5B47EECC199475F0D9339DA7 /* ToolchainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 351D45C1CF5EBB265489F701 /* ToolchainManager.swift */; };
+		5F82238BF8DE02C93FD36F5F /* BuildPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716E03B4ADFCCC57A09812FB /* BuildPipeline.swift */; };
+		60AC7347445C05B3984CDA8F /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95F90146B5C657C78C1A958B /* RootTabView.swift */; };
+		6167A5A9643A13809A943EB5 /* ToolchainView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4238ABBDB48441D95A3E3CC9 /* ToolchainView.swift */; };
+		6AE34D717546868457867ECC /* ProjectsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7080FC5CDC44211B2B5FFA91 /* ProjectsTab.swift */; };
+		6D58B3DD492FCD5B2125F7B3 /* DirectorySize.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52CB355B6B4EF3A1E7ADBCFE /* DirectorySize.swift */; };
+		6F7998297422EF1E7E82D564 /* SystemInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D462B8476E9FA6F44AFB048 /* SystemInfo.swift */; };
+		719136FB0A0EC6B291D115C3 /* install-toolchain.sh in Resources */ = {isa = PBXBuildFile; fileRef = 7919B7EF48525712669F0E5E /* install-toolchain.sh */; };
+		7202A01C4F577E840AD606A1 /* XForgeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38F2B6D3F021C2EE9730D8EB /* XForgeApp.swift */; };
+		74697C954ABF983E34BB02EC /* InstalledApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0FCE9B9EBCA0AFAD7BFE911 /* InstalledApp.swift */; };
+		82D08BD3D49A1FD6CEBE15AA /* Project.swift in Sources */ = {isa = PBXBuildFile; fileRef = 57F70CBC7D83A1840C6FFD34 /* Project.swift */; };
+		835B7466CF72DDF7F9A95363 /* ISHAOKEmulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CF400F0389EA9A549FA5B85 /* ISHAOKEmulator.swift */; };
+		83A630BD69535C498FE5D27A /* SettingsTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FDD77EAD5F4AB2D1A1098D6 /* SettingsTab.swift */; };
+		865470A99911476DB670A200 /* BuildArtifact.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A679AB7406288F9ACE973A3 /* BuildArtifact.swift */; };
+		8A16D33F38ACEC1A631A9571 /* ToolchainTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C56AAF9D90C68DDC4E4550D /* ToolchainTab.swift */; };
+		8B574150E85233C6895B1CF1 /* SandboxBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D53663EE88C1FACCDE677D64 /* SandboxBrowserView.swift */; };
+		8BC763B56AC62D7ECF2CFDC4 /* AppPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A89B5C3220E256309B8D9CC /* AppPreferences.swift */; };
+		9513EC878292B0F1F82332EC /* BuildTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDB7DB4EEF1377B9060DCE72 /* BuildTab.swift */; };
+		953F5C1F1453F0D0F98BDD18 /* InfoEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D3D1E9CB014442F2EF04A2 /* InfoEditorView.swift */; };
+		9B6738A19A95E21551D952BC /* IPABuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 783D4BF0692469A6B5590987 /* IPABuilder.swift */; };
+		9BD3C2221DF1DE19D20EA29B /* DeviceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AC50E40D23A495797F53E13 /* DeviceService.swift */; };
+		A13B4995593BE1BEBFB8865E /* ContentUnavailableViewCompat.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41243316299EB1D91368FCE1 /* ContentUnavailableViewCompat.swift */; };
+		A9AE2EFC448D36C45B6CA9D5 /* SDKInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B8C1BCD4F6390D8E9CC62AA /* SDKInstaller.swift */; };
+		AB9BA151DED9D9E54A05F3C5 /* BuildHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60D91165CEC4456E6489E295 /* BuildHistoryStore.swift */; };
+		AC1490DE7F52F437D94A1DBA /* XKit in Frameworks */ = {isa = PBXBuildFile; productRef = 62918B32580B14649F3F9E27 /* XKit */; };
+		AEC44B07ED2958BA89BD4040 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 4062A2195EED5E31E80692C5 /* ZIPFoundation */; };
+		B7F81681E75C426D112C1DC0 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 451307BFF81C25633858B2F9 /* HistoryView.swift */; };
+		BD33E34154DA0EA7B331D9ED /* RootfsInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 571C2610A29BF20FF5E4B37F /* RootfsInstaller.swift */; };
+		CC64A66B359CC26D9F068253 /* ReleaseResolutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76F199836316AC3E09510C38 /* ReleaseResolutionTests.swift */; };
+		D0C39EB9E26A5A9F089E6128 /* EmbeddedLinuxVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DB27AFD6F5259CBCCEF2F31 /* EmbeddedLinuxVM.swift */; };
+		D1B714994BBD424C001E0E12 /* LinuxVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE70342F689FBE3D7BB0E4E5 /* LinuxVM.swift */; };
+		D830D5D515EE23580EC9DD4A /* SigningView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1AF1F8E8BEB85A0539F0194 /* SigningView.swift */; };
+		DFEE9051B6B18EC8BECA7E88 /* SigningService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4766786CA5E79B0ACBB5B604 /* SigningService.swift */; };
+		E39E6FD3008A377D165E1FE2 /* LinuxEmulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC25A8F91EBD85FB59F0ED34 /* LinuxEmulator.swift */; };
+		E49128AED44C0C9A7BD3088E /* ArtifactsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFB05FE647ACB46B7FDD0675 /* ArtifactsView.swift */; };
+		E93BFB8CEA2A5AF8C8E59A2F /* SignInstallTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = C05B474C3F789F44CC2A46DC /* SignInstallTab.swift */; };
+		EB7E6666CCB3FD89F46691A3 /* ProjectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E83A61873FD68AC6D995FB0 /* ProjectTests.swift */; };
+		EDA1A4846716ECE64D2833F0 /* .gitkeep in Resources */ = {isa = PBXBuildFile; fileRef = 604ABB507D30883AD43FA714 /* .gitkeep */; };
+		F44BD165AB1C3DE9C5773EBF /* AppInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0A88F4783D3E8D5498E10FB /* AppInfo.swift */; };
+		F55AC5A2784C4904B0E625E5 /* SourceBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20626EF71D348044C75D1DD3 /* SourceBrowserView.swift */; };
+		F6FE70EC2457AD3201F04B82 /* DownloadManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78FD1F602053D5372E99DCA8 /* DownloadManager.swift */; };
+		FA9E33E45FE912DAB05B595E /* ISHAOKBridge.c in Sources */ = {isa = PBXBuildFile; fileRef = AE5FC70A94F177352DD18B81 /* ISHAOKBridge.c */; };
+		FB41DD468FB143CFDC2DB716 /* ProjectDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A4DB2B771D2B4F56035FFB3 /* ProjectDetailView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		5C1A3A46D8ECF27770E0906E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FAC7B1990DE797AB5AC7F068 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = CE3419A3C3EF20E3B22A700D;
+			remoteInfo = XForge;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0DB27AFD6F5259CBCCEF2F31 /* EmbeddedLinuxVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddedLinuxVM.swift; sourceTree = "<group>"; };
+		0FDD77EAD5F4AB2D1A1098D6 /* SettingsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTab.swift; sourceTree = "<group>"; };
+		10D76D0A02A318E21B249321 /* TerminalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalView.swift; sourceTree = "<group>"; };
+		14C0A753F30CA9C76D829712 /* EmbeddedLinuxExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbeddedLinuxExecutor.swift; sourceTree = "<group>"; };
+		19BB7A81A58F8FD39AF815FB /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		1E83A61873FD68AC6D995FB0 /* ProjectTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectTests.swift; sourceTree = "<group>"; };
+		20626EF71D348044C75D1DD3 /* SourceBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SourceBrowserView.swift; sourceTree = "<group>"; };
+		2A4DB2B771D2B4F56035FFB3 /* ProjectDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectDetailView.swift; sourceTree = "<group>"; };
+		2D462B8476E9FA6F44AFB048 /* SystemInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemInfo.swift; sourceTree = "<group>"; };
+		2D8A030296EE1A74DFFD6F56 /* DependenciesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DependenciesView.swift; sourceTree = "<group>"; };
+		351D45C1CF5EBB265489F701 /* ToolchainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolchainManager.swift; sourceTree = "<group>"; };
+		35F3DB723FDA3F1E1D8901EB /* ManifestEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManifestEditorView.swift; sourceTree = "<group>"; };
+		38CF468084730CCE5662CB24 /* IPABuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPABuilderTests.swift; sourceTree = "<group>"; };
+		38F2B6D3F021C2EE9730D8EB /* XForgeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XForgeApp.swift; sourceTree = "<group>"; };
+		3A679AB7406288F9ACE973A3 /* BuildArtifact.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildArtifact.swift; sourceTree = "<group>"; };
+		3B10851D17E41E7FC83173C5 /* ISHAOKBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ISHAOKBridge.h; sourceTree = "<group>"; };
+		41243316299EB1D91368FCE1 /* ContentUnavailableViewCompat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentUnavailableViewCompat.swift; sourceTree = "<group>"; };
+		4238ABBDB48441D95A3E3CC9 /* ToolchainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolchainView.swift; sourceTree = "<group>"; };
+		451307BFF81C25633858B2F9 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		4766786CA5E79B0ACBB5B604 /* SigningService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigningService.swift; sourceTree = "<group>"; };
+		4CF400F0389EA9A549FA5B85 /* ISHAOKEmulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ISHAOKEmulator.swift; sourceTree = "<group>"; };
+		52CB355B6B4EF3A1E7ADBCFE /* DirectorySize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DirectorySize.swift; sourceTree = "<group>"; };
+		554178D41589EFC0F206B383 /* XForge-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "XForge-Bridging-Header.h"; sourceTree = "<group>"; };
+		571C2610A29BF20FF5E4B37F /* RootfsInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootfsInstaller.swift; sourceTree = "<group>"; };
+		57F70CBC7D83A1840C6FFD34 /* Project.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Project.swift; sourceTree = "<group>"; };
+		5A89B5C3220E256309B8D9CC /* AppPreferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppPreferences.swift; sourceTree = "<group>"; };
+		5AE33A2C6BDB49AA60A37687 /* BuildManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildManager.swift; sourceTree = "<group>"; };
+		604ABB507D30883AD43FA714 /* .gitkeep */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitkeep; sourceTree = "<group>"; };
+		60D91165CEC4456E6489E295 /* BuildHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildHistoryStore.swift; sourceTree = "<group>"; };
+		6315634F36296C85297AFFBF /* FileBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowserView.swift; sourceTree = "<group>"; };
+		7080FC5CDC44211B2B5FFA91 /* ProjectsTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectsTab.swift; sourceTree = "<group>"; };
+		716E03B4ADFCCC57A09812FB /* BuildPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildPipeline.swift; sourceTree = "<group>"; };
+		76F199836316AC3E09510C38 /* ReleaseResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseResolutionTests.swift; sourceTree = "<group>"; };
+		7814F742C43DF06DFF79A3CE /* BuildPipelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildPipelineView.swift; sourceTree = "<group>"; };
+		783D4BF0692469A6B5590987 /* IPABuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPABuilder.swift; sourceTree = "<group>"; };
+		78FD1F602053D5372E99DCA8 /* DownloadManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadManager.swift; sourceTree = "<group>"; };
+		7919B7EF48525712669F0E5E /* install-toolchain.sh */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "install-toolchain.sh"; sourceTree = "<group>"; };
+		7B0A6E02AE6007444C5DF831 /* XForge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = XForge.entitlements; sourceTree = "<group>"; };
+		7B8C1BCD4F6390D8E9CC62AA /* SDKInstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SDKInstaller.swift; sourceTree = "<group>"; };
+		836030CE50393C71A440859D /* ProjectStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectStore.swift; sourceTree = "<group>"; };
+		95F90146B5C657C78C1A958B /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		9AC50E40D23A495797F53E13 /* DeviceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceService.swift; sourceTree = "<group>"; };
+		9C56AAF9D90C68DDC4E4550D /* ToolchainTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolchainTab.swift; sourceTree = "<group>"; };
+		9CBA168AC8DAEDC724196D4F /* InstallView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallView.swift; sourceTree = "<group>"; };
+		9F2CC01AFD9BDB2EF80D7C9D /* XForge.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = XForge.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A8D3D1E9CB014442F2EF04A2 /* InfoEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InfoEditorView.swift; sourceTree = "<group>"; };
+		AA6B70177198D33682A82C1C /* Signing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Signing.swift; sourceTree = "<group>"; };
+		AB68BA823398AEACE905CADD /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		ADEB69B70ED9F4F0C0D32E5D /* XForgeEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XForgeEnvironment.swift; sourceTree = "<group>"; };
+		AE5FC70A94F177352DD18B81 /* ISHAOKBridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ISHAOKBridge.c; sourceTree = "<group>"; };
+		BFB05FE647ACB46B7FDD0675 /* ArtifactsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtifactsView.swift; sourceTree = "<group>"; };
+		C05B474C3F789F44CC2A46DC /* SignInstallTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignInstallTab.swift; sourceTree = "<group>"; };
+		C0A88F4783D3E8D5498E10FB /* AppInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppInfo.swift; sourceTree = "<group>"; };
+		C0FCE9B9EBCA0AFAD7BFE911 /* InstalledApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstalledApp.swift; sourceTree = "<group>"; };
+		C26FB75C9E1D9EBE23BA371E /* Toolchain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Toolchain.swift; sourceTree = "<group>"; };
+		C2BA797268C3624D267125D6 /* XForgeReleases.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XForgeReleases.swift; sourceTree = "<group>"; };
+		CB64C3E45653AB1E424A8CDD /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		CDB7DB4EEF1377B9060DCE72 /* BuildTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BuildTab.swift; sourceTree = "<group>"; };
+		CE314D52DC6C8CAF95CB5988 /* XForgeTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = XForgeTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D355795CB63A72B2270DDB3F /* ImportProjectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportProjectView.swift; sourceTree = "<group>"; };
+		D3A0F286BC49006735835434 /* alpine-minirootfs-3.23.3-aarch64.tar.xz */ = {isa = PBXFileReference; lastKnownFileType = file; path = "alpine-minirootfs-3.23.3-aarch64.tar.xz"; sourceTree = "<group>"; };
+		D53663EE88C1FACCDE677D64 /* SandboxBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SandboxBrowserView.swift; sourceTree = "<group>"; };
+		DE70342F689FBE3D7BB0E4E5 /* LinuxVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxVM.swift; sourceTree = "<group>"; };
+		E1DA26BEB35567F5800E2BDC /* DownloadsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DownloadsView.swift; sourceTree = "<group>"; };
+		E50ECE06DF5FBE5B5DC6F2A5 /* NewProjectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewProjectView.swift; sourceTree = "<group>"; };
+		F1AF1F8E8BEB85A0539F0194 /* SigningView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SigningView.swift; sourceTree = "<group>"; };
+		FC25A8F91EBD85FB59F0ED34 /* LinuxEmulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxEmulator.swift; sourceTree = "<group>"; };
+		FC3CBCE5D2E69E5B397DB15C /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
+		FEE5BDC3AEAD90EF585179D7 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		190A0076A2404858F7031837 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AEC44B07ED2958BA89BD4040 /* ZIPFoundation in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C7F1F1B2A8F2D728D1EB80E7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AC1490DE7F52F437D94A1DBA /* XKit in Frameworks */,
+				15A838B28323F44E8B690FE9 /* ZIPFoundation in Frameworks */,
+				0840C1FEC183B8039B04E6FF /* WebKit.framework in Frameworks */,
+				0D1BF6BC64F89F4FE0D46BAB /* SystemConfiguration.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		017D73E1B965F1CAEEA5D428 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				41243316299EB1D91368FCE1 /* ContentUnavailableViewCompat.swift */,
+				E50ECE06DF5FBE5B5DC6F2A5 /* NewProjectView.swift */,
+				95F90146B5C657C78C1A958B /* RootTabView.swift */,
+				759638B0C9146480E2208A19 /* Build */,
+				688D5DA2A2D4907A6E2FAACD /* Projects */,
+				8F2E8FBA5B03308E4D795D0B /* Settings */,
+				0DB610B88C8F822C02DC6871 /* SignInstall */,
+				2879BE59C9E902DBDD6C19C6 /* Toolchain */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		0DB610B88C8F822C02DC6871 /* SignInstall */ = {
+			isa = PBXGroup;
+			children = (
+				9CBA168AC8DAEDC724196D4F /* InstallView.swift */,
+				F1AF1F8E8BEB85A0539F0194 /* SigningView.swift */,
+				C05B474C3F789F44CC2A46DC /* SignInstallTab.swift */,
+			);
+			path = SignInstall;
+			sourceTree = "<group>";
+		};
+		1CB687A54EC35C46611A2294 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				9AC50E40D23A495797F53E13 /* DeviceService.swift */,
+				52CB355B6B4EF3A1E7ADBCFE /* DirectorySize.swift */,
+				78FD1F602053D5372E99DCA8 /* DownloadManager.swift */,
+				4766786CA5E79B0ACBB5B604 /* SigningService.swift */,
+				351D45C1CF5EBB265489F701 /* ToolchainManager.swift */,
+				C2BA797268C3624D267125D6 /* XForgeReleases.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		2583C122B0F6FD25F171A5E6 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				C0A88F4783D3E8D5498E10FB /* AppInfo.swift */,
+				5A89B5C3220E256309B8D9CC /* AppPreferences.swift */,
+				3A679AB7406288F9ACE973A3 /* BuildArtifact.swift */,
+				60D91165CEC4456E6489E295 /* BuildHistoryStore.swift */,
+				716E03B4ADFCCC57A09812FB /* BuildPipeline.swift */,
+				C0FCE9B9EBCA0AFAD7BFE911 /* InstalledApp.swift */,
+				57F70CBC7D83A1840C6FFD34 /* Project.swift */,
+				836030CE50393C71A440859D /* ProjectStore.swift */,
+				AA6B70177198D33682A82C1C /* Signing.swift */,
+				2D462B8476E9FA6F44AFB048 /* SystemInfo.swift */,
+				C26FB75C9E1D9EBE23BA371E /* Toolchain.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		2879BE59C9E902DBDD6C19C6 /* Toolchain */ = {
+			isa = PBXGroup;
+			children = (
+				10D76D0A02A318E21B249321 /* TerminalView.swift */,
+				9C56AAF9D90C68DDC4E4550D /* ToolchainTab.swift */,
+				4238ABBDB48441D95A3E3CC9 /* ToolchainView.swift */,
+			);
+			path = Toolchain;
+			sourceTree = "<group>";
+		};
+		4393EA0B206918EC97B4EBA6 /* AppTests */ = {
+			isa = PBXGroup;
+			children = (
+				38CF468084730CCE5662CB24 /* IPABuilderTests.swift */,
+				1E83A61873FD68AC6D995FB0 /* ProjectTests.swift */,
+				76F199836316AC3E09510C38 /* ReleaseResolutionTests.swift */,
+			);
+			path = AppTests;
+			sourceTree = "<group>";
+		};
+		43A8CE5FF8BB80D2FB7CAA9D /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				604ABB507D30883AD43FA714 /* .gitkeep */,
+				D3A0F286BC49006735835434 /* alpine-minirootfs-3.23.3-aarch64.tar.xz */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		4B27B45863B958B0FF3929AD /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				19BB7A81A58F8FD39AF815FB /* Assets.xcassets */,
+				AB68BA823398AEACE905CADD /* Info.plist */,
+				554178D41589EFC0F206B383 /* XForge-Bridging-Header.h */,
+				7B0A6E02AE6007444C5DF831 /* XForge.entitlements */,
+				43A8CE5FF8BB80D2FB7CAA9D /* Resources */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		5554BEA3701FEFEB87130682 /* EmbeddedVM */ = {
+			isa = PBXGroup;
+			children = (
+				0DB27AFD6F5259CBCCEF2F31 /* EmbeddedLinuxVM.swift */,
+				AE5FC70A94F177352DD18B81 /* ISHAOKBridge.c */,
+				3B10851D17E41E7FC83173C5 /* ISHAOKBridge.h */,
+				4CF400F0389EA9A549FA5B85 /* ISHAOKEmulator.swift */,
+				FC25A8F91EBD85FB59F0ED34 /* LinuxEmulator.swift */,
+				DE70342F689FBE3D7BB0E4E5 /* LinuxVM.swift */,
+				571C2610A29BF20FF5E4B37F /* RootfsInstaller.swift */,
+			);
+			path = EmbeddedVM;
+			sourceTree = "<group>";
+		};
+		622C3508983CE02B6F3AD457 /* Build */ = {
+			isa = PBXGroup;
+			children = (
+				5AE33A2C6BDB49AA60A37687 /* BuildManager.swift */,
+				14C0A753F30CA9C76D829712 /* EmbeddedLinuxExecutor.swift */,
+				783D4BF0692469A6B5590987 /* IPABuilder.swift */,
+				7B8C1BCD4F6390D8E9CC62AA /* SDKInstaller.swift */,
+				ADEB69B70ED9F4F0C0D32E5D /* XForgeEnvironment.swift */,
+			);
+			path = Build;
+			sourceTree = "<group>";
+		};
+		688D5DA2A2D4907A6E2FAACD /* Projects */ = {
+			isa = PBXGroup;
+			children = (
+				2D8A030296EE1A74DFFD6F56 /* DependenciesView.swift */,
+				6315634F36296C85297AFFBF /* FileBrowserView.swift */,
+				D355795CB63A72B2270DDB3F /* ImportProjectView.swift */,
+				A8D3D1E9CB014442F2EF04A2 /* InfoEditorView.swift */,
+				35F3DB723FDA3F1E1D8901EB /* ManifestEditorView.swift */,
+				2A4DB2B771D2B4F56035FFB3 /* ProjectDetailView.swift */,
+				7080FC5CDC44211B2B5FFA91 /* ProjectsTab.swift */,
+				20626EF71D348044C75D1DD3 /* SourceBrowserView.swift */,
+			);
+			path = Projects;
+			sourceTree = "<group>";
+		};
+		70DE2B5F03F470DE3FD52E79 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				FC3CBCE5D2E69E5B397DB15C /* SystemConfiguration.framework */,
+				FEE5BDC3AEAD90EF585179D7 /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		759638B0C9146480E2208A19 /* Build */ = {
+			isa = PBXGroup;
+			children = (
+				BFB05FE647ACB46B7FDD0675 /* ArtifactsView.swift */,
+				7814F742C43DF06DFF79A3CE /* BuildPipelineView.swift */,
+				CDB7DB4EEF1377B9060DCE72 /* BuildTab.swift */,
+			);
+			path = Build;
+			sourceTree = "<group>";
+		};
+		78B710F585DBCA4463BCA724 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				9F2CC01AFD9BDB2EF80D7C9D /* XForge.app */,
+				CE314D52DC6C8CAF95CB5988 /* XForgeTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		8F2E8FBA5B03308E4D795D0B /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				E1DA26BEB35567F5800E2BDC /* DownloadsView.swift */,
+				451307BFF81C25633858B2F9 /* HistoryView.swift */,
+				D53663EE88C1FACCDE677D64 /* SandboxBrowserView.swift */,
+				0FDD77EAD5F4AB2D1A1098D6 /* SettingsTab.swift */,
+				CB64C3E45653AB1E424A8CDD /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		B4DE8874BA7FA60977443E85 = {
+			isa = PBXGroup;
+			children = (
+				F31AA0D4DF60F3548EE594E6 /* App */,
+				4393EA0B206918EC97B4EBA6 /* AppTests */,
+				DC283C4BD6485A0585A2A838 /* EmbeddedLinux */,
+				4B27B45863B958B0FF3929AD /* Support */,
+				70DE2B5F03F470DE3FD52E79 /* Frameworks */,
+				78B710F585DBCA4463BCA724 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DC283C4BD6485A0585A2A838 /* EmbeddedLinux */ = {
+			isa = PBXGroup;
+			children = (
+				7919B7EF48525712669F0E5E /* install-toolchain.sh */,
+			);
+			path = EmbeddedLinux;
+			sourceTree = "<group>";
+		};
+		F31AA0D4DF60F3548EE594E6 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				38F2B6D3F021C2EE9730D8EB /* XForgeApp.swift */,
+				622C3508983CE02B6F3AD457 /* Build */,
+				5554BEA3701FEFEB87130682 /* EmbeddedVM */,
+				2583C122B0F6FD25F171A5E6 /* Models */,
+				1CB687A54EC35C46611A2294 /* Services */,
+				017D73E1B965F1CAEEA5D428 /* Views */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		24556F51D9FDE5DAC824879A /* XForgeTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 49108F8E8BD4F3FBD8F67350 /* Build configuration list for PBXNativeTarget "XForgeTests" */;
+			buildPhases = (
+				D571BCA02E877F677D0E712E /* Sources */,
+				190A0076A2404858F7031837 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				62D822372A3D15D20A36FD38 /* PBXTargetDependency */,
+			);
+			name = XForgeTests;
+			packageProductDependencies = (
+				4062A2195EED5E31E80692C5 /* ZIPFoundation */,
+			);
+			productName = XForgeTests;
+			productReference = CE314D52DC6C8CAF95CB5988 /* XForgeTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		CE3419A3C3EF20E3B22A700D /* XForge */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 77EE8B62E0BBEC7CF3F4BBE1 /* Build configuration list for PBXNativeTarget "XForge" */;
+			buildPhases = (
+				19DFE1AEFBA3A2913A547218 /* Sources */,
+				2BCFE8B7403AFAB39190E11E /* Resources */,
+				C7F1F1B2A8F2D728D1EB80E7 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = XForge;
+			packageProductDependencies = (
+				62918B32580B14649F3F9E27 /* XKit */,
+				BAE9D293401889B33C6C2B69 /* ZIPFoundation */,
+			);
+			productName = XForge;
+			productReference = 9F2CC01AFD9BDB2EF80D7C9D /* XForge.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		FAC7B1990DE797AB5AC7F068 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					24556F51D9FDE5DAC824879A = {
+						DevelopmentTeam = "$(XFORGE_DEVELOPMENT_TEAM)";
+					};
+					CE3419A3C3EF20E3B22A700D = {
+						DevelopmentTeam = "$(XFORGE_DEVELOPMENT_TEAM)";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 0BE79A115731F30B0A01DB74 /* Build configuration list for PBXProject "XForge 2" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = B4DE8874BA7FA60977443E85;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				0369D74864C31362B75C7BFC /* XCRemoteSwiftPackageReference "xtool" */,
+				4AC724701BBB9B82F9C61C66 /* XCRemoteSwiftPackageReference "ZIPFoundation" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 78B710F585DBCA4463BCA724 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				CE3419A3C3EF20E3B22A700D /* XForge */,
+				24556F51D9FDE5DAC824879A /* XForgeTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		2BCFE8B7403AFAB39190E11E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EDA1A4846716ECE64D2833F0 /* .gitkeep in Resources */,
+				0D490F78D91D70246EBE9DDF /* Assets.xcassets in Resources */,
+				457BEC289722C4BB5609EE0F /* alpine-minirootfs-3.23.3-aarch64.tar.xz in Resources */,
+				719136FB0A0EC6B291D115C3 /* install-toolchain.sh in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		19DFE1AEFBA3A2913A547218 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F44BD165AB1C3DE9C5773EBF /* AppInfo.swift in Sources */,
+				8BC763B56AC62D7ECF2CFDC4 /* AppPreferences.swift in Sources */,
+				E49128AED44C0C9A7BD3088E /* ArtifactsView.swift in Sources */,
+				865470A99911476DB670A200 /* BuildArtifact.swift in Sources */,
+				AB9BA151DED9D9E54A05F3C5 /* BuildHistoryStore.swift in Sources */,
+				47F9CE11B07DCB2BAA77A6F6 /* BuildManager.swift in Sources */,
+				5F82238BF8DE02C93FD36F5F /* BuildPipeline.swift in Sources */,
+				5791FEC681E08A87F97F2B54 /* BuildPipelineView.swift in Sources */,
+				9513EC878292B0F1F82332EC /* BuildTab.swift in Sources */,
+				A13B4995593BE1BEBFB8865E /* ContentUnavailableViewCompat.swift in Sources */,
+				225DEE2C823F6FC8AFBB770B /* DependenciesView.swift in Sources */,
+				9BD3C2221DF1DE19D20EA29B /* DeviceService.swift in Sources */,
+				6D58B3DD492FCD5B2125F7B3 /* DirectorySize.swift in Sources */,
+				F6FE70EC2457AD3201F04B82 /* DownloadManager.swift in Sources */,
+				4FEC947EB47248D8F5A34310 /* DownloadsView.swift in Sources */,
+				16BC67197893AC304A483180 /* EmbeddedLinuxExecutor.swift in Sources */,
+				D0C39EB9E26A5A9F089E6128 /* EmbeddedLinuxVM.swift in Sources */,
+				342008F917EA77A02A564BF5 /* FileBrowserView.swift in Sources */,
+				B7F81681E75C426D112C1DC0 /* HistoryView.swift in Sources */,
+				9B6738A19A95E21551D952BC /* IPABuilder.swift in Sources */,
+				FA9E33E45FE912DAB05B595E /* ISHAOKBridge.c in Sources */,
+				835B7466CF72DDF7F9A95363 /* ISHAOKEmulator.swift in Sources */,
+				550696C57D2847B4CEF56F3F /* ImportProjectView.swift in Sources */,
+				953F5C1F1453F0D0F98BDD18 /* InfoEditorView.swift in Sources */,
+				58A4733938C962A12935A5A2 /* InstallView.swift in Sources */,
+				74697C954ABF983E34BB02EC /* InstalledApp.swift in Sources */,
+				E39E6FD3008A377D165E1FE2 /* LinuxEmulator.swift in Sources */,
+				D1B714994BBD424C001E0E12 /* LinuxVM.swift in Sources */,
+				52B7FD78A1B885664732C228 /* ManifestEditorView.swift in Sources */,
+				1FD977090D684F164E7C16B0 /* NewProjectView.swift in Sources */,
+				82D08BD3D49A1FD6CEBE15AA /* Project.swift in Sources */,
+				FB41DD468FB143CFDC2DB716 /* ProjectDetailView.swift in Sources */,
+				08E9218D185DDFC7016A7157 /* ProjectStore.swift in Sources */,
+				6AE34D717546868457867ECC /* ProjectsTab.swift in Sources */,
+				60AC7347445C05B3984CDA8F /* RootTabView.swift in Sources */,
+				BD33E34154DA0EA7B331D9ED /* RootfsInstaller.swift in Sources */,
+				A9AE2EFC448D36C45B6CA9D5 /* SDKInstaller.swift in Sources */,
+				8B574150E85233C6895B1CF1 /* SandboxBrowserView.swift in Sources */,
+				83A630BD69535C498FE5D27A /* SettingsTab.swift in Sources */,
+				36A2F9A69FEC6E8835B1B262 /* SettingsView.swift in Sources */,
+				E93BFB8CEA2A5AF8C8E59A2F /* SignInstallTab.swift in Sources */,
+				0D19529491CC4EF5443E4E5A /* Signing.swift in Sources */,
+				DFEE9051B6B18EC8BECA7E88 /* SigningService.swift in Sources */,
+				D830D5D515EE23580EC9DD4A /* SigningView.swift in Sources */,
+				F55AC5A2784C4904B0E625E5 /* SourceBrowserView.swift in Sources */,
+				6F7998297422EF1E7E82D564 /* SystemInfo.swift in Sources */,
+				32EDC8348400E0B716897FC0 /* TerminalView.swift in Sources */,
+				0243DC0CF863DE12FC67A186 /* Toolchain.swift in Sources */,
+				5B47EECC199475F0D9339DA7 /* ToolchainManager.swift in Sources */,
+				8A16D33F38ACEC1A631A9571 /* ToolchainTab.swift in Sources */,
+				6167A5A9643A13809A943EB5 /* ToolchainView.swift in Sources */,
+				7202A01C4F577E840AD606A1 /* XForgeApp.swift in Sources */,
+				400E1814A16C964FA4669264 /* XForgeEnvironment.swift in Sources */,
+				06A54C4D41EC62CDB8260D0B /* XForgeReleases.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D571BCA02E877F677D0E712E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2346BB0C42CB166209653888 /* IPABuilderTests.swift in Sources */,
+				EB7E6666CCB3FD89F46691A3 /* ProjectTests.swift in Sources */,
+				CC64A66B359CC26D9F068253 /* ReleaseResolutionTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		62D822372A3D15D20A36FD38 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = CE3419A3C3EF20E3B22A700D /* XForge */;
+			targetProxy = 5C1A3A46D8ECF27770E0906E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		172011FF671949399637F872 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				ISH_AOK_LIB_DIR = "$(SRCROOT)/Vendor/ish-AOK-build/lib";
+				ISH_AOK_ROOT = "$(SRCROOT)/Vendor/ish-AOK";
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				XFORGE_BUILD_NUMBER = 3;
+				XFORGE_BUNDLE_ID = org.xforge.XForge;
+				XFORGE_DEVELOPMENT_TEAM = V5GXMU3HC2;
+				XFORGE_DISPLAY_NAME = XForge;
+				XFORGE_MARKETING_VERSION = 0.3.1;
+			};
+			name = Debug;
+		};
+		6397F2C45625FC70563F3085 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = "$(XFORGE_DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(XFORGE_BUNDLE_ID).Tests";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/XForge.app/XForge";
+			};
+			name = Debug;
+		};
+		95A29B5EA4F1B1C7D45CD06A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				ISH_AOK_LIB_DIR = "$(SRCROOT)/Vendor/ish-AOK-build/lib";
+				ISH_AOK_ROOT = "$(SRCROOT)/Vendor/ish-AOK";
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				XFORGE_BUILD_NUMBER = 3;
+				XFORGE_BUNDLE_ID = org.xforge.XForge;
+				XFORGE_DEVELOPMENT_TEAM = V5GXMU3HC2;
+				XFORGE_DISPLAY_NAME = XForge;
+				XFORGE_MARKETING_VERSION = 0.3.1;
+			};
+			name = Release;
+		};
+		B08F54F48C432CEEF5ACCE31 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Support/XForge.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "$(XFORGE_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = "$(XFORGE_DEVELOPMENT_TEAM)";
+				ENABLE_PREVIEWS = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/App/EmbeddedVM";
+				"HEADER_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(SRCROOT)/App/EmbeddedVM",
+					"$(ISH_AOK_ROOT)",
+					"$(ISH_AOK_ROOT)/deps/libarchive/libarchive",
+				);
+				INFOPLIST_FILE = Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(ISH_AOK_LIB_DIR)";
+				MARKETING_VERSION = "$(XFORGE_MARKETING_VERSION)";
+				"OTHER_CFLAGS[sdk=iphoneos*]" = (
+					"-DISH_GUEST_ARM64=1",
+					"-DISH_GUEST_I386=0",
+					"-DISH_GUEST_AMD64=0",
+					"-DISH_GUEST_RISCV64=0",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"-lish",
+					"-lish_emu",
+					"-lfakefs",
+					"-lxforge-fakefsimport",
+					"-larchive",
+					"-llzma",
+					"-lbz2",
+					"-lz",
+					"-liconv",
+					"-lsqlite3",
+				);
+				OTHER_SWIFT_FLAGS = "-Xcc -fmacro-backtrace-limit=0";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(XFORGE_BUNDLE_ID)";
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "Support/XForge-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		CA03CA2DCB673C00486EE5A7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = "$(XFORGE_DEVELOPMENT_TEAM)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(XFORGE_BUNDLE_ID).Tests";
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/XForge.app/XForge";
+			};
+			name = Release;
+		};
+		E12CEB76F80D4C99AEF49DFB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Support/XForge.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "$(XFORGE_BUILD_NUMBER)";
+				DEVELOPMENT_TEAM = "$(XFORGE_DEVELOPMENT_TEAM)";
+				ENABLE_PREVIEWS = YES;
+				HEADER_SEARCH_PATHS = "$(SRCROOT)/App/EmbeddedVM";
+				"HEADER_SEARCH_PATHS[sdk=iphoneos*]" = (
+					"$(SRCROOT)/App/EmbeddedVM",
+					"$(ISH_AOK_ROOT)",
+					"$(ISH_AOK_ROOT)/deps/libarchive/libarchive",
+				);
+				INFOPLIST_FILE = Support/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(ISH_AOK_LIB_DIR)";
+				MARKETING_VERSION = "$(XFORGE_MARKETING_VERSION)";
+				"OTHER_CFLAGS[sdk=iphoneos*]" = (
+					"-DISH_GUEST_ARM64=1",
+					"-DISH_GUEST_I386=0",
+					"-DISH_GUEST_AMD64=0",
+					"-DISH_GUEST_RISCV64=0",
+				);
+				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
+					"-lish",
+					"-lish_emu",
+					"-lfakefs",
+					"-lxforge-fakefsimport",
+					"-larchive",
+					"-llzma",
+					"-lbz2",
+					"-lz",
+					"-liconv",
+					"-lsqlite3",
+				);
+				OTHER_SWIFT_FLAGS = "-Xcc -fmacro-backtrace-limit=0";
+				PRODUCT_BUNDLE_IDENTIFIER = "$(XFORGE_BUNDLE_ID)";
+				SDKROOT = iphoneos;
+				SWIFT_OBJC_BRIDGING_HEADER = "Support/XForge-Bridging-Header.h";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0BE79A115731F30B0A01DB74 /* Build configuration list for PBXProject "XForge 2" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				172011FF671949399637F872 /* Debug */,
+				95A29B5EA4F1B1C7D45CD06A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		49108F8E8BD4F3FBD8F67350 /* Build configuration list for PBXNativeTarget "XForgeTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6397F2C45625FC70563F3085 /* Debug */,
+				CA03CA2DCB673C00486EE5A7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		77EE8B62E0BBEC7CF3F4BBE1 /* Build configuration list for PBXNativeTarget "XForge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E12CEB76F80D4C99AEF49DFB /* Debug */,
+				B08F54F48C432CEEF5ACCE31 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		0369D74864C31362B75C7BFC /* XCRemoteSwiftPackageReference "xtool" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/xtool-org/xtool";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.17.0;
+			};
+		};
+		4AC724701BBB9B82F9C61C66 /* XCRemoteSwiftPackageReference "ZIPFoundation" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/weichsel/ZIPFoundation";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.9.19;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4062A2195EED5E31E80692C5 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4AC724701BBB9B82F9C61C66 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+		62918B32580B14649F3F9E27 /* XKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 0369D74864C31362B75C7BFC /* XCRemoteSwiftPackageReference "xtool" */;
+			productName = XKit;
+		};
+		BAE9D293401889B33C6C2B69 /* ZIPFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4AC724701BBB9B82F9C61C66 /* XCRemoteSwiftPackageReference "ZIPFoundation" */;
+			productName = ZIPFoundation;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = FAC7B1990DE797AB5AC7F068 /* Project object */;
+}

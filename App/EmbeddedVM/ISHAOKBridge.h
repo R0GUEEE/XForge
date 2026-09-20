@@ -11,9 +11,9 @@
 //  Alpine aarch64 root filesystem from inside the app.
 //
 //  Everything here is a plain C ABI so Swift can call it through the bridging
-//  header. All calls must be made from one dedicated serial queue: iSH-AOK's
-//  `current` task pointer is thread-local, and both boot and command execution
-//  temporarily repoint it.
+//  header. All calls must be made from one dedicated permanent OS thread:
+//  iSH-AOK's `current` task pointer is thread-local, and a serial dispatch queue
+//  does not guarantee pthread affinity.
 //
 #ifndef XFORGE_ISHAOK_BRIDGE_H
 #define XFORGE_ISHAOK_BRIDGE_H
@@ -61,6 +61,11 @@ int xf_ish_import_rootfs(const char *archive_path, const char *dest_dir);
 /// realfs, so the app's own container is reachable from inside Linux. That is how
 /// the darwin Swift SDK and other large artifacts get in without pushing gigabytes
 /// through the shell pipe. Returns 0 on success or a negative errno.
+///
+/// XForge boot is deliberately headless: it does NOT exec `/sbin/init`. Doing so
+/// needs a console tty driver registered for `TTY_CONSOLE_MAJOR`, which only
+/// iSH-AOK's own app supplies (its `ios_console_driver`); without it the engine's
+/// `tty_device_open` hits `assert(driver != NULL)` and aborts the process.
 int xf_ish_boot(const char *root_dir, const char *host_dir);
 
 /// 1 once the guest is booted and commands can be run.
