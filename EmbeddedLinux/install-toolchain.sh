@@ -237,8 +237,7 @@ step_glibc() {
             return 1
         }
         incomplete=""
-        for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 libstdc++.so6 \
-                   libstdc++.so.6 \
+        for lib in libc.so.6 libm.so.6 libpthread.so.0 libdl.so.2 libstdc++.so libstdc++.so.6 \
                    libgcc_s.so.1 libz.so.1 libzstd.so.1 liblzma.so.5 libxml2.so.2 libcurl.so.4 \
                    libssl.so.3 libcrypto.so.3 libgnutls.so.30 libhogweed.so.6 \
                    libnettle.so.8 libgmp.so.10 libicuuc.so.74 liblber.so.2 \
