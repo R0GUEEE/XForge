@@ -149,7 +149,12 @@ final class ToolchainManager: ObservableObject {
                 message = "Alpine rootfs installed from the copy bundled in the app."
 
             case .swift, .xtool:
-                activity = "Provisioning \(component.rawValue) inside the embedded Linux…"
+                // The engine's command primitive returns output when the command
+                // finishes, so there is nothing to show line by line while it
+                // runs; say what is actually happening instead of spinning.
+                activity = "Provisioning \(component.rawValue) in the guest — this downloads "
+                    + "hundreds of megabytes and can take several minutes. Its output lands in "
+                    + "the Engine log when each step finishes."
                 XForgeLog.note("install: guest-side provisioning for \(component.rawValue)")
                 try await provisionGuest()
 
