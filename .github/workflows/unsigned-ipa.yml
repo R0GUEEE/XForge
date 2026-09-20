@@ -21,7 +21,7 @@ on:
         # first use anyway, and it is a large part of the bundle. Set 1 to ship
         # an app that can build with no network at all.
         default: "0"
-        options: ["0", auto, "1"]
+        options: ["0", "1"]
 
 permissions:
   contents: write
