@@ -89,6 +89,15 @@ libattr1
 libgmp10
 libnettle8t64
 libhogweed6t64
+libcurl4t64
+libcurl4
+libedit2
+libpython3.12t64
+libsqlite3-0
+libncurses6
+libncursesw6
+libtinfo6
+libz3-4
 EOF
 }
 
@@ -182,7 +191,7 @@ step_deps() {
     apk add --no-cache \
         bash curl wget tar xz zip unzip git ca-certificates \
         gcompat libc6-compat zlib-static openssl \
-        binutils zstd file gnupg
+        binutils zstd file gnupg tzdata
     log "base packages installed"
 }
 
@@ -237,21 +246,31 @@ step_swiftly() {
 }
 
 # swift and swiftc are glibc binaries too, and they live under the swiftly home
-# rather than on any PATH a `sh -c` command would search: these wrappers put
-# them there.
+# rather than on any PATH a `sh -c` command would search. The toolchain is looked
+# up directly first: swiftly's own shims only work in a shell that has sourced its
+# environment file, which is exactly what XForge's command runner is not.
 swift_wrapper() {
     name="$1"
     cat > "/usr/local/bin/$name" <<EOF
 #!/bin/sh
 . /usr/local/share/xforge/glibc.env
-. "\${SWIFTLY_HOME_DIR:-/root/.local/share/swiftly}/env.sh" >/dev/null 2>&1 || true
+home="\${SWIFTLY_HOME_DIR:-/root/.local/share/swiftly}"
+
+for candidate in "\$home"/toolchains/*/usr/bin/$name "\$home"/bin/$name; do
+    [ -x "\$candidate" ] || continue
+    exec "\$XFORGE_GLIBC_LD" --library-path "\$XFORGE_GLIBC_LIB" "\$candidate" "\$@"
+done
+
+. "\$home/env.sh" >/dev/null 2>&1 || true
 for dir in \${PATH}; do
     case "\$dir" in /usr/local/bin) continue;; esac
     if [ -x "\$dir/$name" ]; then
         exec "\$XFORGE_GLIBC_LD" --library-path "\$XFORGE_GLIBC_LIB" "\$dir/$name" "\$@"
     fi
 done
+
 echo "xforge: $name is not installed yet (run: swiftly install latest --use)" >&2
+echo "        looked in \$home/toolchains/*/usr/bin and \$home/bin" >&2
 exit 127
 EOF
     chmod +x "/usr/local/bin/$name"
@@ -278,20 +297,34 @@ step_swift() {
     # swiftly verifies the download's signature with gpg, and refuses without it
     # ("gpg is not installed ... To skip signature verification, specify
     # --no-verify"). Try to verify; fall back to skipping it, loudly.
+    # swiftly exits non-zero for its Ubuntu "these dependencies should be
+    # installed" advice even when the install worked, so the toolchain directory
+    # is what decides whether to retry -- not the exit status.
     if command -v gpg >/dev/null 2>&1; then
-        if ! swiftly install latest --use --assume-yes; then
-            echo "    signature verification failed; retrying without it"
-            swiftly install latest --use --assume-yes --no-verify
-        fi
+        swiftly install latest --use --assume-yes || true
     else
         echo "    gpg is not installed in the guest: skipping signature verification"
+        swiftly install latest --use --assume-yes --no-verify || true
+    fi
+    if [ -z "$(ls -A "$SWIFTLY_HOME_DIR/toolchains" 2>/dev/null)" ]; then
+        echo "    no toolchain after the first attempt; retrying without signature verification"
         swiftly install latest --use --assume-yes --no-verify
     fi
 
     # `swiftly init --skip-install` leaves it unlinked; make it manage the
     # toolchain we just installed.
     swiftly link >/dev/null 2>&1 || true
+
+    # Say what actually resolved. A guest whose swift cannot run is much easier to
+    # diagnose from these four lines than from a wrapper's refusal.
     log "swift wrapper installed at /usr/local/bin/swift"
+    echo "    toolchains: $(ls "$SWIFTLY_HOME_DIR/toolchains" 2>/dev/null | tr '\n' ' ')"
+    echo "    swiftly bin: $(ls "$SWIFTLY_HOME_DIR/bin" 2>/dev/null | tr '\n' ' ')"
+    if out="$(swift --version 2>&1)"; then
+        echo "    swift --version: $(printf '%s' "$out" | head -1)"
+    else
+        echo "    swift --version FAILED: $(printf '%s' "$out" | head -3 | tr '\n' ' ')"
+    fi
 }
 
 # Report what actually runs, and do not pretend. Each tool is checked through
