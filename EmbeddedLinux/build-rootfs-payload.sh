@@ -146,7 +146,7 @@ MOUNTS+=("$ROOTFS/dev/pts")
 # and the minirootfs ships no nameservers at all. Take the host's, and keep a
 # public resolver for hosts that have none of their own.
 if [ -s /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf; then
-    grep '^nameserver' /etc/resolv.conf | head -3 > "$ROOTFS/etc/resolv.conf"
+    grep '^nameserver' /etc/resolv.conf | sed -n '1,3p' > "$ROOTFS/etc/resolv.conf"
 else
     printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$ROOTFS/etc/resolv.conf"
 fi
@@ -180,9 +180,9 @@ done
 # text a device-side install would produce, and it goes into the manifest.
 log "Checking the provisioned rootfs from the outside"
 probe() { chroot "$ROOTFS" /bin/sh -c "export PATH=$GUEST_PATH HOME=/root; $1" 2>&1 || true; }
-SWIFT_VERSION="$(probe 'swift --version' | head -1)"
-XTOOL_VERSION="$(probe 'xtool --version' | head -1)"
-SWIFTLY_VERSION="$(probe 'swiftly --version' | head -1)"
+SWIFT_VERSION="$(probe 'swift --version' | sed -n 1p)"
+XTOOL_VERSION="$(probe 'xtool --version' | sed -n 1p)"
+SWIFTLY_VERSION="$(probe 'swiftly --version' | sed -n 1p)"
 APK_PROBE="$(probe 'apk info -e clang lld cmake ninja git && echo present')"
 GLIBC_LD="$(probe 'ls -l /lib/ld-linux-aarch64.so.1' | sed 's/.*-> //')"
 
@@ -247,7 +247,7 @@ for release in json.load(sys.stdin):
             swift sdk list
         " || die "installing the darwin SDK into the rootfs failed"
 
-        SDK_VERSION="$(probe 'swift sdk list' | grep -i darwin | head -1)"
+        SDK_VERSION="$(probe 'swift sdk list' | grep -i darwin | sed -n 1p)"
         [ -n "$SDK_VERSION" ] || die "swift sdk list does not mention darwin after installing it"
         note "darwin: $SDK_VERSION"
     fi
@@ -277,6 +277,9 @@ log "Recording the payload manifest at $MANIFEST_GUEST"
 log "Slimming the image"
 rm -rf "$ROOTFS"/var/cache/apk/* "$ROOTFS"/tmp/* "$ROOTFS"/root/.cache/* \
        "$ROOTFS"/var/cache/misc/* "$ROOTFS"/var/tmp/* "$ROOTFS"/run/* 2>/dev/null || true
+# gpg's home: swiftly verifies the toolchain's signature, and gpg-agent leaves
+# sockets behind that tar reports as "socket ignored" and that nothing needs.
+rm -rf "$ROOTFS"/root/.gnupg 2>/dev/null || true
 # The toolchain ships docs and static archives nothing here links against.
 rm -rf "$ROOTFS"/root/.local/share/swiftly/*/usr/share/man 2>/dev/null || true
 note "rootfs size on disk: $(du -sh "$ROOTFS" | cut -f1)"
@@ -290,23 +293,35 @@ unmount_all
 
 PAYLOAD="$OUT_DIR/$PAYLOAD_NAME"
 rm -f "$PAYLOAD"
-tar -czpf "$PAYLOAD" -C "$ROOTFS" .
-tar -tzf "$PAYLOAD" >/dev/null || die "the packed payload is not a readable .tar.gz"
+# gzip on purpose (the iOS-linked libarchive has zlib, xz support may try to
+# spawn an `xz` that does not exist in an app sandbox); pigz is the same stream
+# with threads, and saves minutes on a 6 GB rootfs.
+if command -v pigz >/dev/null 2>&1; then
+    note "compressing with pigz"
+    tar -cf - -C "$ROOTFS" . | pigz -6 > "$PAYLOAD"
+else
+    tar -czpf "$PAYLOAD" -C "$ROOTFS" .
+fi
 
-# The app imports this by name, so the contents are checked by name too: a
-# payload that lost its wrappers or its toolchain would otherwise only fail on
-# the device.
-for path in ./usr/local/bin/swift ./usr/local/bin/xtool ./usr/local/share/xforge/glibc.env; do
-    tar -tzf "$PAYLOAD" | grep -qx -- "$path" || die "the payload is missing $path"
-done
-tar -tzf "$PAYLOAD" | grep -qE "(^|/)opt/xtool/usr/bin/xtool$" || die "the payload has no unpacked xtool"
-tar -tzf "$PAYLOAD" | grep -qE "(^|/)swiftly/toolchains/" || die "the payload has no Swift toolchain"
-tar -tzf "$PAYLOAD" | grep -qE "(^|/)usr/local/share/xforge/payload-manifest.txt$" || die "the payload has no manifest"
+# The contents are checked by name — a payload that lost its wrappers or its
+# toolchain would otherwise only fail on a device. The listing is taken *once*:
+# decompressing a 1 GB archive for each of six checks cost five minutes, and
+# `tar -tzf | grep -q` is not safe under `set -o pipefail` — grep exits at the
+# first match, tar dies of SIGPIPE, and the pipeline reports failure for a
+# payload that is complete.
+CONTENTS="$WORK/payload-contents.txt"
+tar -tzf "$PAYLOAD" > "$CONTENTS" || die "the packed payload is not a readable .tar.gz"
+grep -qE "(^|/)usr/local/bin/swift$"    "$CONTENTS" || die "the payload is missing /usr/local/bin/swift"
+grep -qE "(^|/)usr/local/bin/xtool$"    "$CONTENTS" || die "the payload is missing /usr/local/bin/xtool"
+grep -qE "(^|/)usr/local/share/xforge/glibc.env$" "$CONTENTS" || die "the payload is missing the glibc layer"
+grep -qE "(^|/)opt/xtool/usr/bin/xtool$" "$CONTENTS" || die "the payload has no unpacked xtool"
+grep -qE "(^|/)swiftly/toolchains/"      "$CONTENTS" || die "the payload has no Swift toolchain"
+grep -qE "(^|/)usr/local/share/xforge/payload-manifest.txt$" "$CONTENTS" || die "the payload has no manifest"
 
 log "Done"
 note "payload: $PAYLOAD"
 note "size:    $(du -h "$PAYLOAD" | cut -f1)"
-note "entries: $(tar -tzf "$PAYLOAD" | wc -l)"
+note "entries: $(wc -l < "$CONTENTS")"
 echo
 cat "$ROOTFS$MANIFEST_GUEST"
 

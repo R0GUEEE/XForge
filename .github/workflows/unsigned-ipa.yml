@@ -52,6 +52,9 @@ jobs:
           path: dist/rootfs
           key: xforge-payload-${{ steps.key.outputs.key }}
 
+      - name: Install pigz (parallel gzip for the 6 GB rootfs)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq pigz
+
       - name: Build the provisioned rootfs
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
