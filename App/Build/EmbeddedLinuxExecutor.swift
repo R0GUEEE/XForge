@@ -71,8 +71,9 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
             guard status == 0 else { throw BuildError.stepFailed("swift sdk install", status) }
         case .hostedRemote:
             // Resolve the published asset, stage it on the host and install it in
-            // the guest (see SDKInstaller).
-            try await SDKInstaller.install(vm: vm)
+            // the guest (see SDKInstaller). No progress sink here: a build drives
+            // this, and the pipeline view has its own console.
+            try await SDKInstaller.install(vm: vm) { _, _ in }
         }
     }
 
