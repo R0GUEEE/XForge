@@ -4,6 +4,13 @@ All notable changes to **XForge** are documented here.
 
 ## Terminal tab — and components installed by command
 
+### Fixed
+- **Superseding unsigned-IPA dispatches no longer cancel a packaged IPA while it is
+  being published.** The payload job still supersedes older dispatches before the
+  expensive macOS work starts, the macOS build job stays serialized, and a
+  follow-up publish workflow uploads the completed artifact after the build
+  workflow succeeds.
+
 ### Changed
 - **The Sign & Install tab is now the Terminal.** Tab 3 is a full-screen terminal
   into the embedded Alpine system, laid out like iSH-AOK's: the screen *is* the

@@ -1,0 +1,123 @@
+name: Publish unsigned XForge IPA
+
+on:
+  workflow_run:
+    workflows:
+      - Build unsigned XForge IPA
+    types:
+      - completed
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: >-
+      ${{
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'workflow_dispatch'
+      }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: xforge-${{ github.event.workflow_run.run_number }}
+      cancel-in-progress: false
+    steps:
+      - name: Fetch release notes from the triggering commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api \
+            "repos/${{ github.repository }}/contents/CHANGELOG.md" \
+            -f ref="${{ github.event.workflow_run.head_sha }}" \
+            --jq '.content' | base64 --decode > CHANGELOG.md
+
+      - name: Download packaged IPA artifact
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh run download "${{ github.event.workflow_run.id }}" \
+            --name XForge-unsigned-ipa \
+            --dir dist
+          ipa="$(find dist -name 'XForge-0.5.0-unsigned.ipa' -print -quit)"
+          test -n "$ipa"
+          echo "ipa=$ipa" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update the release
+        id: release
+        uses: actions/github-script@v7
+        env:
+          TAG_NAME: xforge-${{ github.event.workflow_run.run_number }}
+        with:
+          script: |
+            const fs = require('fs');
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const tag = process.env.TAG_NAME;
+            const name = 'XForge 0.5.0 — provisioned Alpine terminal';
+            const body = fs.readFileSync('CHANGELOG.md', 'utf8');
+            const target_commitish = context.payload.workflow_run.head_sha;
+
+            let existing = null;
+            try {
+              existing = (
+                await github.rest.repos.getReleaseByTag({
+                  owner,
+                  repo,
+                  tag,
+                })
+              ).data;
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+
+              const releases = await github.paginate(github.rest.repos.listReleases, {
+                owner,
+                repo,
+                per_page: 100,
+              });
+              existing = releases.find((candidate) => candidate.tag_name === tag) ?? null;
+            }
+
+            if (existing) {
+              core.info(`Updating existing release ${existing.id} for ${tag}.`);
+              await github.rest.repos.updateRelease({
+                owner,
+                repo,
+                release_id: existing.id,
+                name,
+                body,
+                draft: false,
+                prerelease: false,
+              });
+            } else {
+              core.info(`Creating release for ${tag}.`);
+              await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                target_commitish,
+                name,
+                body,
+                draft: false,
+                prerelease: false,
+                generate_release_notes: false,
+              });
+            }
+
+            core.setOutput('tag', tag);
+
+      - name: Upload IPA asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ steps.release.outputs.tag }}" \
+            "${{ steps.artifact.outputs.ipa }}#XForge-0.5.0-unsigned.ipa" \
+            --clobber
