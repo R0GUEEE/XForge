@@ -354,6 +354,11 @@ log "Converting to fakefs"
 rm -rf "$OUT_ROOTFS"
 STAGED_TAR="$WORK/$ROOTFS_NAME.tar.gz"
 tar -czf "$STAGED_TAR" -C "$DATA" .
+# Report what is being converted. The conversion is where a mistake in the
+# ordering shows up (the engine reads meta.db, not the directory), so the tree's
+# own numbers are worth having in the log next to the result.
+note "tree: $(du -sh "$DATA" | cut -f1), $(find "$DATA" -mindepth 1 | wc -l) entries"
+note "staged: $(du -h "$STAGED_TAR" | cut -f1)"
 "$FAKEFSIFY" "$STAGED_TAR" "$OUT_ROOTFS"
 rm -f "$STAGED_TAR"
 
@@ -365,14 +370,26 @@ note "meta: $(du -h "$OUT_ROOTFS/meta.db" | cut -f1)"
 # The glibc layer must be *indexed*, not merely present. This is the check that
 # would have caught installing it after conversion: the files existed on disk and
 # the guest could not see them at all.
+#
+# `CAST(path AS TEXT)` is not decoration. fakefs stores paths as BLOB, and a
+# LIKE against a BLOB only works through SQLite's implicit coercion — which is
+# version-dependent, so the same query that matched every row locally matched
+# zero rows on the runner's older SQLite. Comparing as text removes the
+# ambiguity instead of relying on it.
 if [ "${XFORGE_SKIP_GLIBC:-0}" != "1" ]; then
     if command -v sqlite3 >/dev/null 2>&1; then
         indexed="$(sqlite3 "$OUT_ROOTFS/meta.db" \
-            "SELECT COUNT(*) FROM paths WHERE path LIKE '%aarch64-linux-gnu%';" 2>/dev/null || echo 0)"
+            "SELECT COUNT(*) FROM paths WHERE CAST(path AS TEXT) LIKE '%aarch64-linux-gnu%';" \
+            2>/dev/null || echo 0)"
+        total="$(sqlite3 "$OUT_ROOTFS/meta.db" \
+            "SELECT COUNT(*) FROM paths;" 2>/dev/null || echo 0)"
         [ "${indexed:-0}" -gt 0 ] || die \
-            "the glibc layer is not indexed in meta.db ($indexed paths) — the guest
-       would not see it. It must be installed before the fakefs conversion."
-        note "glibc paths indexed in meta.db: $indexed"
+            "the glibc layer is not indexed in meta.db ($indexed of ${total:-0} paths)
+       — the guest would not see it. It must be installed before the fakefs
+       conversion, not copied in afterwards."
+        note "glibc paths indexed in meta.db: $indexed of $total"
+    else
+        note "sqlite3 not available — skipping the glibc indexing check"
     fi
 fi
 
