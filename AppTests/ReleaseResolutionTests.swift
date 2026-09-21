@@ -130,6 +130,80 @@ final class StubLinuxVM: LinuxVM {
 
     func copyOut(guestPath: String, to hostURL: URL) async throws {}
     func copyIn(hostURL: URL, to guestPath: String) async throws {}
+
+    // MARK: - Interactive shell
+
+    /// A fake shell that records what is sent to it and can be made to emit
+    /// output, so the terminal's behaviour is testable without a guest.
+    func startInteractiveShell(
+        onOutput: @Sendable @escaping (String) -> Void,
+        onExit: @escaping @MainActor () -> Void
+    ) async throws -> any InteractiveShellSession {
+        let shell = StubShellSession(onOutput: onOutput, onExit: onExit)
+        startedShells.append(shell)
+        return shell
+    }
+
+    private(set) var startedShells: [StubShellSession] = []
+}
+
+/// Records what the terminal writes to a shell, and can emit output back.
+@MainActor
+final class StubShellSession: InteractiveShellSession {
+    let guestInput = "/host/.xforge-transfer/stdin-stub"
+    let guestOutput = "/host/.xforge-transfer/stdout-stub"
+    let pid: Int32 = 4242
+    private(set) var isRunning = false
+    /// Everything written to the shell's stdin, in order.
+    private(set) var received: [String] = []
+    private(set) var interrupts = 0
+    private(set) var stopped = false
+
+    private let onOutput: @Sendable (String) -> Void
+    private let onExit: @MainActor () -> Void
+
+    init(onOutput: @escaping @Sendable (String) -> Void,
+         onExit: @escaping @MainActor () -> Void) {
+        self.onOutput = onOutput
+        self.onExit = onExit
+        self.isRunning = true
+    }
+
+    @discardableResult
+    func send(_ text: String) -> Bool {
+        guard isRunning else { return false }
+        received.append(text)
+        return true
+    }
+
+    func interruptForeground() async { interrupts += 1 }
+
+    @discardableResult
+    func sendControl(_ scalar: UInt8) -> Bool {
+        guard isRunning else { return false }
+        received.append(String(UnicodeScalar(scalar)))
+        return true
+    }
+
+    func stop() {
+        isRunning = false
+        stopped = true
+    }
+
+    /// Simulate the shell producing output.
+    func emit(_ text: String) { onOutput(text) }
+
+    /// Simulate the shell exiting on its own.
+    func simulateExit() {
+        isRunning = false
+        onExit()
+    }
+
+    // `attach` is part of the protocol but meaningless for the fake: it is
+    // already "attached".
+    func attach(process: any DetachedProcess, onExit: @escaping @MainActor () -> Void) {}
+
+    func markStopped() { isRunning = false }
 }
 
 @MainActor

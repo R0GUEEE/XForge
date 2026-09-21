@@ -58,7 +58,12 @@ final class TerminalSession: ObservableObject {
     private var bootTask: Task<Void, Never>?
     private var didAttemptBoot = false
 
-    init() {
+    /// How the session obtains a guest. Injectable so the terminal's logic can be
+    /// tested against a stub instead of a real emulator.
+    private let makeVM: @MainActor () -> any LinuxVM
+
+    init(makeVM: @escaping @MainActor () -> any LinuxVM = { XForgeEnvironment.makeVM() }) {
+        self.makeVM = makeVM
         let saved = Self.read(Self.transcriptURL)
         if let saved, !saved.isEmpty {
             if !saved.hasSuffix("\n") { buffer.feed(saved + "\n") }
@@ -94,7 +99,7 @@ final class TerminalSession: ObservableObject {
         let task = Task { [weak self] in
             guard let self else { return }
             do {
-                let vm = XForgeEnvironment.makeVM()
+                let vm = self.makeVM()
                 await vm.prepareRootfs()
                 try await vm.boot()
                 let session = try await vm.startInteractiveShell(
