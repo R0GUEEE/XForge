@@ -59,6 +59,23 @@ int xf_ish_run(const char *command, const char *shell, int timeout_ms,
     return xf_sim_unsupported();
 }
 
+int xf_ish_run_detached(const char *command, const char *shell, const char *stdin_path) {
+    (void) command; (void) shell; (void) stdin_path;
+    return xf_sim_unsupported();
+}
+
+int xf_ish_process_alive(int pid) {
+    // No guest in the simulator, so nothing is running — which is also the right
+    // answer for a caller polling a pid that does not exist.
+    (void) pid;
+    return 0;
+}
+
+int xf_ish_kill_process(int pid, int signal) {
+    (void) pid; (void) signal;
+    return xf_sim_unsupported();
+}
+
 void xf_guest_result_free(xf_guest_result *result) {
     if (result != NULL) memset(result, 0, sizeof(*result));
 }
