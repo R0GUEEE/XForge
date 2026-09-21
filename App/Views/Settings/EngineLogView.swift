@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// The engine log: iSH-AOK's own kernel messages plus XForge's install
+/// The engine log: the engine's own kernel messages plus XForge's install
 /// breadcrumbs, in one file, oldest first.
 ///
 /// This is the thing to share when the app dies without saying why. The engine's

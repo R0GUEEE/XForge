@@ -5,7 +5,7 @@ import Foundation
 /// The engine hands the guest the host's sockets, but **name resolution happens
 /// inside the guest**: musl (and busybox's `wget`, and `apk`) read
 /// `/etc/resolv.conf`, and the Alpine minirootfs XForge bundles ships no
-/// nameservers at all. iSH-AOK's own app writes that file from the device's DNS
+/// nameservers at all. ish-arm64's own app writes that file from the device's DNS
 /// on every boot for exactly this reason; without the same step the guest
 /// resolves nothing — `apk add`, and therefore all of
 /// `install-toolchain.sh`, fails with `DNS: transient error`.

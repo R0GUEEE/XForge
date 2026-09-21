@@ -14,7 +14,7 @@ enum XForgeEnvironment {
         documentDirectory.appendingPathComponent("embedded-linux", isDirectory: true)
     }
 
-    /// Installed iSH-AOK `fakefs` root filesystems. The bundled Alpine rootfs is
+    /// Installed ish-arm64 `fakefs` root filesystems. The bundled Alpine rootfs is
     /// imported here at launch and reused afterwards (the first boot imports it
     /// as a fallback).
     static var rootsDirectory: URL {
@@ -74,7 +74,7 @@ enum XForgeEnvironment {
 
     /// The single embedded Linux VM for the whole app.
     ///
-    /// iSH-AOK can only boot one guest per process, so every screen (Terminal,
+    /// ish-arm64 can only boot one guest per process, so every screen (Terminal,
     /// Toolchain, Build) must share this instance rather than creating its own.
     private static var sharedVM: LinuxVM?
 
@@ -96,9 +96,10 @@ enum XForgeEnvironment {
     }
 
     /// The in-process Linux emulator that runs the embedded Alpine guest.
-    /// iSH-AOK runs a real aarch64 Linux guest in-process; its "gadget JIT"
-    /// needs no JIT entitlement, so it works in a sideloaded app.
+    /// ish-arm64 runs a real aarch64 Linux guest in-process; its threaded-code
+    /// interpreter dispatches guest instructions to pre-compiled "gadgets", so it
+    /// needs no JIT entitlement and works in a sideloaded app.
     static func makeEmulator() -> LinuxEmulator {
-        ISHAOKEmulator(rootsDirectory: rootsDirectory, hostDirectory: hostShareDirectory)
+        ISHEmulator(rootsDirectory: rootsDirectory, hostDirectory: hostShareDirectory)
     }
 }

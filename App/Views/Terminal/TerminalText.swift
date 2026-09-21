@@ -85,7 +85,7 @@ struct TerminalStyle: Equatable {
         return background.color
     }
 
-    /// Slightly warm off-white — the same default iSH-AOK's terminal uses.
+    /// Slightly warm off-white — the same default the iSH terminal uses.
     static let defaultForeground = TerminalColor.rgb(0xE6, 0xE9, 0xE6)
 }
 

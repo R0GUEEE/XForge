@@ -13,7 +13,7 @@ All notable changes to **XForge** are documented here.
 
 ### Changed
 - **The Sign & Install tab is now the Terminal.** Tab 3 is a full-screen terminal
-  into the embedded Alpine system, laid out like iSH-AOK's: the screen *is* the
+  into the embedded Alpine system, laid out like the engine's: the screen *is* the
   terminal, with a key bar of the characters a phone keyboard cannot type (Tab,
   Ctrl, Esc, arrows, `- . / : ! |`, paste, hide keyboard) between it and the
   keyboard. Output goes through a small screen model, so SGR colour, the
@@ -75,7 +75,7 @@ All notable changes to **XForge** are documented here.
   the app version is 0.5.0 (8).
 
 ### Fixed
-- **No guest command's output is sent to `/dev/null` any more.** iSH-AOK's arm64
+- **No guest command's output is sent to `/dev/null` any more.** the engine's arm64
   engine SIGKILLs a forked guest program whose stdout/stderr points at `/dev/null`,
   which made `apk info -e …`, `swift --version` and `xtool --version` die — that is
   what left a fully provisioned rootfs looking "not provisioned", and what a fresh
@@ -177,7 +177,7 @@ Three fixes, all from the engine log of a real device install attempt.
   the guest, and the bundled Alpine minirootfs ships no `/etc/resolv.conf` at all,
   so nothing could resolve: `apk add` — the very first thing provisioning runs —
   answered "DNS: transient error" for every repository. The boot sequence now
-  writes the file from the device's servers (iSH-AOK's own app does the same, for
+  writes the file from the device's servers (ish-arm64's own app does the same, for
   the same reason), with public resolvers as the fallback. Guests that never
   resolve are a guest that cannot install anything.
   Verified on the host harness: before, `wget` answered
@@ -199,7 +199,7 @@ Three fixes, all from the engine log of a real device install attempt.
   "it keeps crashing when I try to install the SDKs / Linux": every one of those
   actions boots the guest, and boot aborted the process. `fs/mount.c` already ships
   a static table of the engine's filesystems and allows only three more (the
-  headroom exists for the iSH-AOK app's own two); the bridge registered eight of
+  headroom exists for the ish-arm64 app's own two); the bridge registered eight of
   them a second time, so the eighth registration hit `fs_register()`'s
   `assert(!"reached filesystem limit")` — `abort()`, with the message going to
   stderr, i.e. nowhere in an iOS app. The bridge no longer registers anything (the
@@ -255,34 +255,34 @@ Three fixes, all from the engine log of a real device install attempt.
 ### Removed
 - The hand-maintained `Support/Info.plist` (superseded by `project.yml`).
 
-## [0.3.0] — 2026-09-19 — Native Linux via iSH-AOK
+## [0.3.0] — 2026-09-19 — Native Linux via ish-arm64
 
 ### Added
-- **iSH-AOK is now the embedded Linux engine.** XForge vendors iSH-AOK
-  (`Vendor/ish-AOK`) and links its core static libraries (`libish`, `libish_emu`,
-  `libfakefs`) built for iOS. iSH-AOK runs a real aarch64 Linux guest in-process and
+- **ish-arm64 is now the embedded Linux engine.** XForge vendors ish-arm64
+  (`Vendor/ish-arm64`) and links its core static libraries (`libish`, `libish_emu`,
+  `libfakefs`) built for iOS. ish-arm64 runs a real aarch64 Linux guest in-process and
   its "gadget JIT" needs no JIT entitlement, so it works in a sideloaded app.
 - **The Alpine aarch64 rootfs is bundled in the app.** `EmbeddedLinux/fetch-rootfs.sh`
-  downloads `alpine-minirootfs-3.23.3-aarch64.tar.xz` from iSH-AOK; it ships as an app
-  resource and is imported into iSH-AOK's `fakefs` format on first boot — nothing is
+  downloads `alpine-minirootfs-3.23.3-aarch64.tar.xz` from ish-arm64; it ships as an app
+  resource and is imported into the engine's `fakefs` format on first boot — nothing is
   downloaded after install.
-- `App/EmbeddedVM/ISHAOKBridge.{h,c}` — plain-C shim over the engine (boot + headless
-  command execution), `ISHAOKEmulator.swift`, and `RootfsInstaller.swift`.
+- `App/EmbeddedVM/ISHBridge.{h,c}` — plain-C shim over the engine (boot + headless
+  command execution), `ISHEmulator.swift`, and `RootfsInstaller.swift`.
 - `EmbeddedLinux/build-ish-aok-core.sh` — builds the iOS engine libraries.
 - CI now checks out the engine submodule, fetches the rootfs, and verifies it is present
   in the built `.app`.
 
 ### Changed
 - `LinuxEmulator` is now a command-execution engine (`runCommand`) instead of a byte
-  pipe, matching iSH-AOK's `run_guest_command_capture_shell` primitive.
-- `XForgeEnvironment.makeEmulator()` returns `ISHAOKEmulator`; `embeddedRoot` gained a
+  pipe, matching the engine's guest command runner primitive.
+- `XForgeEnvironment.makeEmulator()` returns `ISHEmulator`; `embeddedRoot` gained a
   `roots/` directory for installed `fakefs` filesystems.
-- Project version 0.3.0; kernel memory entitlements added to match iSH-AOK's own build.
+- Project version 0.3.0; kernel memory entitlements added to match the engine's own build.
 
 ### Removed
 - The experimental QEMU emulator scaffolding (`build-emulator.yml`,
   `validate-emulator.yml`) and the apk-based `build-rootfs.sh`, all superseded by
-  iSH-AOK.
+  ish-arm64.
 
 ## [0.2.0] — 2026-09-01 — Feature Release
 

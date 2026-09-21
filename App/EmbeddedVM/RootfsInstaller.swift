@@ -1,12 +1,87 @@
 import Foundation
 
+/// Reports the progress of a rootfs import.
+///
+/// `fakefs_import` calls back once per archive entry — thousands of times — from
+/// its own thread, so this must be cheap to call and must do its own hop to the
+/// main actor rather than making the importer wait on one.
+///
+/// Deliberately a plain `@unchecked Sendable` type and NOT a `@MainActor` one:
+/// the callback arrives from inside a `@Sendable` C closure, and a main-actor
+/// type cannot be referenced from one at all under Swift 6's strict concurrency
+/// (that is a compile error, not a warning).
+final class RootfsImportProgress: @unchecked Sendable {
+    /// One update per this much progress. The raw callback fires per entry, so
+    /// unthrottled it would publish tens of thousands of updates and swamp the
+    /// main queue while the import is trying to read gigabytes.
+    private static let step = 0.005
+
+    private let lock = NSLock()
+    private var lastPublished: Double = -1
+    private let onUpdate: @Sendable (Double, String?) -> Void
+
+    init(onUpdate: @escaping @Sendable (Double, String?) -> Void) {
+        self.onUpdate = onUpdate
+    }
+
+    /// Called from the importing thread. `fraction` is clamped to 0...1.
+    func report(fraction: Double, message: String?) {
+        let clamped = fraction.isFinite ? min(max(fraction, 0), 1) : 0
+        lock.lock()
+        // Always let the final update through, so the row can reach 100%.
+        let isLast = clamped >= 1
+        if !isLast && clamped - lastPublished < Self.step {
+            lock.unlock()
+            return
+        }
+        lastPublished = clamped
+        lock.unlock()
+        onUpdate(clamped, message)
+    }
+}
+
+/// Boxes the progress reporter for the C callback's `void *` cookie.
+///
+/// The reporter is held here rather than passed directly so the callback can
+/// recover it with an unmanaged pointer, and so the lifetime is explicit at the
+/// call site (the C side only borrows it for the duration of the import).
+final class ProgressBox {
+    let progress: RootfsImportProgress?
+
+    init(_ progress: RootfsImportProgress?) {
+        self.progress = progress
+    }
+
+    var pointer: UnsafeMutableRawPointer? {
+        progress == nil ? nil : Unmanaged.passUnretained(self).toOpaque()
+    }
+}
+
+/// C trampoline for `fakefs_import`'s progress callback.
+private func xfImportProgressCallback(
+    cookie: UnsafeMutableRawPointer?,
+    fraction: Double,
+    message: UnsafePointer<CChar>?
+) -> Int32 {
+    guard let cookie else { return 0 }
+    let box = Unmanaged<ProgressBox>.fromOpaque(cookie).takeUnretainedValue()
+    guard let progress = box.progress else { return 0 }
+    progress.report(fraction: fraction, message: message.map { String(cString: $0) })
+    return 0
+}
+
 /// Installs the bundled Alpine aarch64 root filesystem into the app container
 /// ahead of first use — at launch, with the first boot as the fallback.
 ///
 /// The archive ships *inside the app* (see `project.yml` and
 /// `EmbeddedLinux/fetch-rootfs.sh`), so nothing is downloaded after install. On
-/// first use it is imported into iSH-AOK's `fakefs` format — a `data/` tree plus
-/// a `meta.db` SQLite database — and every later launch reuses that root.
+/// first use it is imported into the engine's `fakefs` format — a `data/` tree
+/// plus a `meta.db` SQLite database — and every later launch reuses that root.
+///
+/// The import is the slow part of a first launch (the payload is hundreds of
+/// megabytes), so `install(archive:into:progress:)` reports it: `fakefs_import`
+/// calls back once per archive entry, and `RootfsImportProgress` throttles that
+/// into something a progress row can follow.
 enum RootfsInstaller {
     /// Base name of the bundled archive. This is built from Alpine's minirootfs
     /// with XForge's guest build dependencies and toolchain installed.
@@ -59,7 +134,8 @@ enum RootfsInstaller {
     /// Returns the ready-to-boot fakefs root, importing from the bundled archive
     /// the first time.
     @discardableResult
-    static func installIfNeeded(into rootsDirectory: URL) throws -> URL {
+    static func installIfNeeded(into rootsDirectory: URL,
+                                progress: RootfsImportProgress? = nil) throws -> URL {
         let root = installedRoot(in: rootsDirectory)
         if isInstalled(in: rootsDirectory) {
             removeLegacyRoots(in: rootsDirectory, fileManager: .default)
@@ -74,13 +150,17 @@ enum RootfsInstaller {
         }
 
         XForgeLog.note("rootfs: importing the bundled \(archive.lastPathComponent)")
-        return try install(archive: archive, into: rootsDirectory)
+        return try install(archive: archive, into: rootsDirectory, progress: progress)
     }
 
     /// Import a user-selected rootfs archive. The existing root is retained until
     /// the new archive has completely imported and passed fakefs validation.
+    ///
+    /// `progress` is called from the importing thread with a 0..1 fraction and
+    /// the archive entry being unpacked, and may be called very often.
     @discardableResult
-    static func install(archive: URL, into rootsDirectory: URL) throws -> URL {
+    static func install(archive: URL, into rootsDirectory: URL,
+                        progress: RootfsImportProgress? = nil) throws -> URL {
         let fm = FileManager.default
         let root = installedRoot(in: rootsDirectory)
         guard archive.pathExtension.lowercased() == "gz" else {
@@ -94,11 +174,13 @@ enum RootfsInstaller {
         let staging = rootsDirectory.appendingPathComponent(".import-\(UUID().uuidString)", isDirectory: true)
         try? fm.removeItem(at: staging)
 
+        let box = ProgressBox(progress)
         let rc = archive.path.withCString { archivePath in
             staging.path.withCString { destPath in
-                xf_ish_import_rootfs(archivePath, destPath)
+                xf_ish_import_rootfs(archivePath, destPath, xfImportProgressCallback, box.pointer)
             }
         }
+        withExtendedLifetime(box) {}
         guard rc == 0 else {
             try? fm.removeItem(at: staging)
             let detail = String(cString: xf_ish_last_error())

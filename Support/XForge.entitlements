@@ -6,9 +6,9 @@
   These are the only ones the app asks for, and they are here on purpose:
 
   * com.apple.developer.kernel.extended-virtual-addressing — the embedded
-    iSH-AOK guest is a whole 64-bit Linux userland living in this process. It
+    ish-arm64 guest is a whole 64-bit Linux userland living in this process. It
     maps a large sparse guest address space, and without this entitlement the
-    mapping fails and the guest cannot boot. iSH-AOK's own iOS build declares
+    mapping fails and the guest cannot boot. ish-arm64's own iOS build declares
     the same key.
 
   * com.apple.developer.kernel.increased-memory-limit — the guest holds a Linux

@@ -73,7 +73,7 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
     /// checks make a stale or partially restored installation fail clearly.
     ///
     /// Every probe here is a separate guest process, and their output goes to a
-    /// *file*, never `/dev/null`: iSH-AOK's arm64 engine kills a forked guest
+    /// *file*, never `/dev/null`: ish-arm64's engine kills a forked guest
     /// program whose stdout/stderr is `/dev/null` (found with the engine-smoke
     /// harness — `swift --version >/dev/null 2>&1` died where the unredirected
     /// form ran fine). A probe killed that way reports "not provisioned" on a

@@ -7,6 +7,10 @@ name: Build unsigned XForge IPA
 # (a build environment, not a general-purpose distro), so it is slimmed before
 # packing. The Darwin SDK remains an on-demand guest component (a 200 MB asset
 # most builds fetch from the guest instead of shipping in every IPA).
+#
+# The engine itself is OpenMinis/ish-arm64 (Vendor/ish-arm64, a submodule): a
+# native aarch64 guest backend, so the Alpine rootfs runs as a same-architecture
+# guest instead of being cross-translated from x86.
 
 on:
   workflow_dispatch:
@@ -48,6 +52,7 @@ jobs:
           bash -n EmbeddedLinux/build-rootfs-payload.sh
           shellcheck -S error \
             EmbeddedLinux/build-rootfs-payload.sh \
+            EmbeddedLinux/build-ish-core.sh \
             EmbeddedLinux/fetch-rootfs.sh \
             EmbeddedLinux/install-toolchain.sh \
             EmbeddedLinux/payload-key.sh
@@ -124,23 +129,26 @@ jobs:
           name: xforge-provisioned-alpine-rootfs
           path: dist/rootfs
 
-      - name: Check out the iSH-AOK engine (submodule)
+      - name: Check out the ish-arm64 engine (submodule)
         run: |
           set -euo pipefail
-          git submodule update --init --depth 1 Vendor/ish-AOK
-          git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue
+          git submodule update --init --depth 1 Vendor/ish-arm64
+          # libarchive is what unpacks the rootfs archive, in the app and in the
+          # engine's own fakefs tools. libapps/linux are not needed: XForge
+          # embeds no native host shells, and uses the ish kernel, not Linux.
+          git -C Vendor/ish-arm64 submodule update --init --depth 1 deps/libarchive
 
       - name: Install build tools
         run: |
-          # xcodegen generates the Xcode project; meson/ninja build iSH-AOK's
+          # xcodegen generates the Xcode project; meson/ninja build the engine's
           # core; llvm/lld provide the cross-linker its i386 VDSO needs (Apple's
           # clang cannot do that link). libarchive is deliberately not installed
           # here: the app links the copy built from the vendored submodule
           # (deps/libarchive.xcodeproj), not a Homebrew package.
           brew install xcodegen meson ninja llvm lld
 
-      - name: Build the embedded iSH-AOK core (iOS arm64)
-        run: bash EmbeddedLinux/build-ish-aok-core.sh
+      - name: Build the embedded ish-arm64 core (iOS arm64)
+        run: bash EmbeddedLinux/build-ish-core.sh
 
       - name: Generate Xcode project
         run: xcodegen generate --spec project.yml

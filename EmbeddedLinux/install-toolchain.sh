@@ -48,7 +48,7 @@ log() { echo "==> $*"; }
 # ---------------------------------------------------------------------------
 # Output sinks
 #
-# Never send a *guest process*'s output to /dev/null here. iSH-AOK's arm64
+# Never send a *guest process*'s output to /dev/null here. the engine's arm64
 # engine has been observed to SIGKILL a forked guest program whose stdout/stderr
 # points at /dev/null — `swift --version >/dev/null 2>&1` died where the same
 # command without the redirect ran fine, and `apk info -e … >/dev/null` died

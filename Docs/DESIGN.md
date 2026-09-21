@@ -39,7 +39,7 @@ https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/alpine-mini
   arm64 Linux. It downloads that exact archive, installs the project build
   dependencies, Swift, and xtool, then bundles the provisioned archive into
   `XForge.app`.
-- On first boot the archive is imported into iSH-AOK's `fakefs` format (a `data/` tree
+- On first boot the archive is imported into the engine's `fakefs` format (a `data/` tree
   plus a `meta.db` SQLite database) inside the app container; every later launch reuses
   it. See `App/EmbeddedVM/RootfsInstaller.swift`.
 - Because Swift and xtool are glibc binaries, payload provisioning installs the
@@ -76,7 +76,7 @@ XForge.app
 │   Embedded Linux VM               — runs the compile sandbox
 │
 └─ Embedded Linux userspace (aarch64, inside the VM)  ────────────────────────
-    Alpine/iSH-AOK-style rootfs
+    Alpine/ish-arm64-style rootfs
     ├─ Swift aarch64 Linux toolchain
     ├─ darwin Swift SDK (fetched on demand)
     └─ xtool (aarch64)  →  `xtool new` / `xtool dev build -s -i`
@@ -95,15 +95,24 @@ protocol BuildExecutor {
 - `EmbeddedLinuxExecutor`: drives the embedded VM via the `LinuxVM` bridge (below).
 - `RemoteExecutor` (future): same interface over SSH/WebSocket to a build server.
 
-## 4b. The Linux engine is **iSH-AOK** (in-process, no subprocesses)
+## 4b. The Linux engine is **ish-arm64** (in-process, no subprocesses)
 
 **iOS cannot spawn subprocesses** (no `fork`/`exec`/`posix_spawn` in the app sandbox),
 so the embedded Linux cannot run as a child process. It runs **in-process** as a
-library. XForge uses [iSH-AOK](https://github.com/emkey1/ish-AOK) for this:
-it is a real Linux kernel + aarch64 emulator whose "gadget JIT" needs **no JIT
-entitlement**, so it works in a sideloaded app. iSH-AOK is vendored as the
-`Vendor/ish-AOK` git submodule and built for iOS by
-`EmbeddedLinux/build-ish-aok-core.sh`.
+library. XForge uses [ish-arm64](https://github.com/OpenMinis/ish-arm64) for this:
+it is a real Linux kernel + aarch64 emulator whose threaded-code interpreter
+dispatches each guest instruction to a pre-compiled "gadget" function. It emits
+**no machine code** and needs no executable memory, so it requires **no JIT
+entitlement** and works in a sideloaded app. ish-arm64 is vendored as the
+`Vendor/ish-arm64` git submodule and built for iOS by
+`EmbeddedLinux/build-ish-core.sh`.
+
+That build requires **clang**: the aarch64 gadget sources alias registers with
+`.req` (`_cpu .req x1`, `_pc .req x28`, …) and then use those names as operands,
+which only clang's integrated assembler accepts — GNU `as` rejects every such
+instruction. This is why the engine is built on a macOS runner rather than on
+Linux, and why `build-ish-core.sh` probes for that capability up front instead
+of failing with a wall of assembler errors.
 
 ```
 BuildExecutor (EmbeddedLinuxExecutor)
@@ -113,25 +122,25 @@ LinuxVM  (EmbeddedLinuxVM)      ← command/file bridge, runs on MainActor
       │  run / copyIn / copyOut
       ▼
 LinuxEmulator (protocol)        ← in-process execution engine
-   └─ ISHAOKEmulator            ← drives the embedded iSH-AOK core
-      │  one dedicated serial queue (iSH-AOK's `current` is thread-local)
+   └─ ISHEmulator            ← drives the embedded ish-arm64 core
+      │  one dedicated serial queue (the engine's `current` is thread-local)
       ▼
-ISHAOKBridge.c                  ← plain-C shim (bridging header → Swift)
+ISHBridge.c                  ← plain-C shim (bridging header → Swift)
       │
       ▼
-libish + libish_emu + libfakefs + fakefs_import   (built from Vendor/ish-AOK)
+libish + libish_emu + libfakefs + fakefs_import   (built from Vendor/ish-arm64)
 ```
 
-- iSH-AOK's primitive is one-shot command capture
+- the engine's primitive is one-shot command capture
   (`run_guest_command_capture_shell`), so `LinuxVM.run` executes a command and
   forwards its merged stdout+stderr; `copyIn`/`copyOut` still move files via
   base64 over the guest shell.
-- **Boot** (`ISHAOKBridge.c`) mirrors iSH-AOK's own app: mount the imported
+- **Boot** (`ISHBridge.c`) mirrors ish-arm64's own app: mount the imported
   rootfs with `mount_root`, create init with `become_first_process`, then mount
   `/proc`, `/sys`, `/dev/pts`. It does *not* run `/sbin/init` — XForge runs build
   commands as fresh children of init, which is all the headless runner needs.
 - The engine is built for the iOS **device** (arm64) only. Simulator builds (used
-  by unit tests) compile a stub in `ISHAOKBridge.c` instead, so `make test` needs
+  by unit tests) compile a stub in `ISHBridge.c` instead, so `make test` needs
   neither the submodule nor the core libraries.
 
 ## 5. Delivery / sideload pipeline
@@ -152,13 +161,13 @@ path, with a fast remote path available later.
 ## 7. Repo layout
 
 ```
-.github/workflows/unsigned-ipa.yml   # CI: build the iSH-AOK core + unsigned XForge.ipa
+.github/workflows/unsigned-ipa.yml   # CI: build the ish-arm64 core + unsigned XForge.ipa
 project.yml                          # XcodeGen definition
 App/                                 # SwiftUI app sources (native shell)
-App/EmbeddedVM/                      # LinuxVM bridge, ISHAOKEmulator, C bridge, rootfs import
+App/EmbeddedVM/                      # LinuxVM bridge, ISHEmulator, C bridge, rootfs import
 Support/                             # Info.plist, entitlements, Resources/ (bundled rootfs)
-Vendor/ish-AOK/                      # git submodule: the embedded Linux engine
-Vendor/ish-AOK-build/                # core static libs (built, gitignored)
+Vendor/ish-arm64/                      # git submodule: the embedded Linux engine
+Vendor/ish-arm64-build/                # core static libs (built, gitignored)
 EmbeddedLinux/                       # fetch-rootfs.sh, build-ish-aok-core.sh, install-toolchain.sh
 Docs/                                # this design doc + tutorials
 ```

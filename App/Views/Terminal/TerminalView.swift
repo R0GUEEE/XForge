@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 
 /// The Terminal tab: a shell into the embedded Alpine Linux.
 ///
-/// The layout follows iSH-AOK's terminal — the screen is the terminal, with a
+/// The layout follows the iSH terminal — the screen is the terminal, with a
 /// key bar of the characters a phone keyboard does not have (Tab, Ctrl, Esc,
 /// arrows, `- . / : ! |`, paste) sitting between it and the keyboard.
 struct TerminalView: View {
@@ -285,7 +285,7 @@ private struct TerminalLineView: View {
     }
 }
 
-/// iSH-AOK's extra-keys bar: the characters a phone keyboard cannot produce,
+/// the iSH terminal's extra-keys bar: the characters a phone keyboard cannot produce,
 /// between the terminal and the keyboard.
 private struct TerminalKeyBar: View {
     @ObservedObject var session: TerminalSession

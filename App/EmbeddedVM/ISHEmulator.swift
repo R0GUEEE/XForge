@@ -3,7 +3,7 @@ import Foundation
 /// A serial executor backed by one permanent OS thread.
 ///
 /// A DispatchQueue is not sufficient here: it preserves ordering but may move
-/// work between pthreads. iSH-AOK stores its active guest process in thread-local
+/// work between pthreads. ish-arm64 stores its active guest process in thread-local
 /// storage, so importing, booting, and every command must run on the exact same
 /// pthread for the lifetime of the guest.
 private final class GuestThreadExecutor: @unchecked Sendable {
@@ -41,18 +41,19 @@ private final class GuestThreadExecutor: @unchecked Sendable {
     }
 }
 
-/// `LinuxEmulator` backed by the embedded iSH-AOK engine.
+/// `LinuxEmulator` backed by the embedded ish-arm64 engine.
 ///
-/// iSH-AOK runs a real Linux guest in-process (its aarch64 "gadget JIT" needs no
-/// JIT entitlement, so it works in a sideloaded app). The root filesystem is the
-/// Alpine aarch64 minirootfs bundled in the app; on first boot it is imported
-/// into iSH-AOK's `fakefs` format, then mounted as `/`.
+/// ish-arm64 runs a real Linux guest in-process: its aarch64 backend dispatches
+/// guest instructions to pre-compiled "gadget" functions rather than emitting
+/// machine code, so it needs no JIT entitlement and works in a sideloaded app.
+/// The root filesystem is the Alpine aarch64 minirootfs bundled in the app; on
+/// first boot it is imported into the engine's `fakefs` format, then mounted as `/`.
 ///
-/// Threading: iSH-AOK keeps its current guest task in a thread-local, so boot and
+/// Threading: ish-arm64 keeps its current guest task in a thread-local, so boot and
 /// every command run serialized on one dedicated queue.
 @MainActor
-final class ISHAOKEmulator: LinuxEmulator {
-    let name = "iSH-AOK (arm64 guest)"
+final class ISHEmulator: LinuxEmulator {
+    let name = "ish-arm64 (arm64 guest)"
     private(set) var isRunning = false
 
     private let rootsDirectory: URL
@@ -71,10 +72,11 @@ final class ISHAOKEmulator: LinuxEmulator {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             guestThread.submit {
                 do {
-                    // Capture the engine's own log before it can write anything:
-                    // its kernel messages (including the one `die()` prints on
-                    // its way to `abort()`) go to fd 555 and are otherwise
-                    // discarded by an iOS app.
+                    // Capture XForge's own breadcrumbs before the engine can
+                    // write anything. The engine's kernel messages go through
+                    // its build-time log handler (nslog, so they reach the
+                    // device console); this file is the boot/import/command
+                    // trace that makes a bug report readable.
                     XForgeLog.prepare()
                     XForgeLog.note("emulator: boot requested (rootfs \(roots.lastPathComponent))")
 

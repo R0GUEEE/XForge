@@ -18,9 +18,9 @@ rootfs:
 payload:
 	@bash EmbeddedLinux/build-rootfs-payload.sh
 
-## Build the embedded iSH-AOK Linux engine into Vendor/ish-AOK-build/lib.
+## Build the embedded ish-arm64 Linux engine into Vendor/ish-arm64-build/lib.
 ish-core:
-	@bash EmbeddedLinux/build-ish-aok-core.sh
+	@bash EmbeddedLinux/build-ish-core.sh
 
 ## Regenerate the app icon + accent colour asset catalog (needs Pillow)
 icon:

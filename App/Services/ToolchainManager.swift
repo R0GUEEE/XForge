@@ -5,7 +5,7 @@ import Combine
 ///
 /// The pieces live in two places, and this type is careful to check the right one:
 ///
-/// - **Alpine rootfs** — bundled inside the app and imported into iSH-AOK's fakefs
+/// - **Alpine rootfs** — bundled inside the app and imported into the engine's fakefs
 ///   on first boot. Nothing is downloaded; "installing" it just performs the import.
 /// - **Swift / xtool / darwin SDK** — inside the guest Linux, reached over the VM
 ///   bridge. Installing them means running commands *in the guest*; this type
@@ -40,7 +40,7 @@ final class ToolchainManager: ObservableObject {
         }
 
         /// Every component is stored in the embedded Alpine guest. The rootfs is
-        /// imported into iSH-AOK fakefs; Swift, xtool, and SDKs install below it.
+        /// imported into ish-arm64 fakefs; Swift, xtool, and SDKs install below it.
         var livesInGuest: Bool { true }
     }
 
@@ -62,7 +62,7 @@ final class ToolchainManager: ObservableObject {
 
     func isInstalled(_ component: Component) -> Bool { installed.contains(component) }
 
-    /// Exposed for the import UI: iSH-AOK cannot replace a mounted rootfs.
+    /// Exposed for the import UI: ish-arm64 cannot replace a mounted rootfs.
     var isGuestBooted: Bool { vm.isBooted }
 
     // MARK: - Status
@@ -173,7 +173,7 @@ final class ToolchainManager: ObservableObject {
     }
 
     /// Replace the bundled rootfs with an Alpine `.tar.gz` chosen from Files.
-    /// iSH-AOK cannot switch roots after it has booted, so this is intentionally
+    /// ish-arm64 cannot switch roots after it has booted, so this is intentionally
     /// limited to a fresh app launch.
     func importRootfs(from archive: URL) async {
         guard !vm.isBooted else {

@@ -3,7 +3,7 @@
 # build-rootfs-payload.sh — turn the plain Alpine minirootfs into a *provisioned*
 # one, so an app built with it ships with the whole toolchain already installed.
 #
-# The app bundles an Alpine aarch64 root filesystem and imports it into iSH-AOK's
+# The app bundles an Alpine aarch64 root filesystem and imports it into the engine's
 # `fakefs` format on first launch. With the plain minirootfs the user still has to
 # run EmbeddedLinux/install-toolchain.sh on the device afterwards: hundreds of
 # megabytes of downloads, an apk build environment, a glibc compatibility layer

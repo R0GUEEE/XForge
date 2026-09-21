@@ -6,14 +6,14 @@
 //
 //  The app's install paths (the bundled Alpine rootfs, and every guest-side
 //  tool) all funnel through the same three bridge calls: import a rootfs into
-//  iSH-AOK's fakefs, boot the guest, run a command. When that goes wrong on a
+//  the engine's fakefs, boot the guest, run a command. When that goes wrong on a
 //  device the only symptom is "the app crashed", and the device cannot be
 //  attached to a debugger from here — so this harness drives *the same*
-//  ISHAOKBridge.c, in *the same* order, on a real machine where the failure is
+//  ISHBridge.c, in *the same* order, on a real machine where the failure is
 //  visible.
 //
 //  Build: see .github/workflows/engine-smoke.yml (adds an `engine_smoke`
-//  target to iSH-AOK's meson build, so the bridge is compiled with exactly the
+//  target to the engine's meson build, so the bridge is compiled with exactly the
 //  engine's own flags and guest-arch defines).
 //
 //  Usage: engine-smoke <rootfs.tar.xz> [workdir]
@@ -31,7 +31,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "ISHAOKBridge.h"
+#include "ISHBridge.h"
 
 static int failures = 0;
 
@@ -46,8 +46,24 @@ static void say(const char *fmt, ...) {
 
 // Announce a step before running it: if the process dies inside the step, the
 // breadcrumb is already on the wire and nothing follows it.
-static void step(const char *what) {
-    say("[smoke] >>> %s", what);
+// Progress for the rootfs import. The engine calls this once per archive entry
+// (thousands of times), and the elapsed time is useful in a smoke log because
+// the import is the slowest part of a first launch. Printed at 10% steps so the
+// output stays readable and the reader can see it moving. Returning 0 means
+// "keep going" — the engine's callback can cancel the import. 
+static int smoke_import_progress(void *cookie, double fraction, const char *message) {
+    (void) cookie;
+    (void) message;
+    static int last_bucket = -1;
+    int bucket = (int) (fraction * 10.0);
+    if (bucket > last_bucket) {
+        last_bucket = bucket;
+        say("[smoke] import %3d%%", bucket * 10);
+    }
+    return 0;
+}
+
+static void step(const char *what) {    say("[smoke] >>> %s", what);
 }
 
 static void result(const char *what, int ok) {
@@ -226,7 +242,7 @@ int main(int argc, char **argv) {
     // This is exactly what ToolchainManager.install(.rootfs) does through
     // RootfsInstaller.installIfNeeded().
     step("import the bundled rootfs (fakefs_import)");
-    int rc = xf_ish_import_rootfs(archive, root);
+    int rc = xf_ish_import_rootfs(archive, root, smoke_import_progress, NULL);
     {
         const char *err = xf_ish_last_error();
         say("[smoke] import returned %d%s%s", rc,

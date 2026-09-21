@@ -1,5 +1,5 @@
-[submodule "Vendor/ish-AOK"]
-	path = Vendor/ish-AOK
-	url = https://github.com/emkey1/ish-AOK.git
-	branch = working
+[submodule "Vendor/ish-arm64"]
+	path = Vendor/ish-arm64
+	url = https://github.com/OpenMinis/ish-arm64.git
+	branch = master
 	shallow = true

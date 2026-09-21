@@ -18,7 +18,7 @@ private final class OutputBox: @unchecked Sendable {
     }
 }
 
-/// Concrete `LinuxVM` that drives an in-process `LinuxEmulator` (iSH-AOK).
+/// Concrete `LinuxVM` that drives an in-process `LinuxEmulator` (ish-arm64).
 ///
 /// iOS cannot spawn subprocesses, so the guest runs inside the app and this type
 /// provides the command/file bridge to it.
@@ -175,7 +175,7 @@ final class EmbeddedLinuxVM: LinuxVM {
 
         let status = (try? await runLoginStreamingAfterBoot(
             // The file can be a dangling symlink into /run in newer roots, so
-            // replace it rather than writing through it (same reason iSH-AOK's
+            // replace it rather than writing through it (same reason the engine's
             // app unlinks first).
             "rm -f /etc/resolv.conf && cp -f /host/\(Self.transferDir)/resolv.conf /etc/resolv.conf && cat /etc/resolv.conf",
             environment: nil

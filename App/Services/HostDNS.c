@@ -17,12 +17,12 @@
 //     unavailable at compile time.
 //   - libresolv's res_ninit() would be next, but it is not usable from an app.
 //   - What *is* available is libSystem's dnsinfo SPI:
-//     dns_configuration_copy(), which is exactly what iSH-AOK's own app uses
+//     dns_configuration_copy(), which is exactly what ish-arm64's own app uses
 //     for this same job. It is resolved with dlsym rather than linked, so the
 //     app carries no reference to a private symbol; if it ever disappears,
 //     this returns 0 and the caller falls back to public resolvers.
 //
-//  The struct layouts below must match the SPI's. They are the ones iSH-AOK
+//  The struct layouts below must match the SPI's. They are the ones ish-arm64
 //  ships (app/AppDelegate.m), including the #pragma pack(4).
 //
 #include "HostDNS.h"
