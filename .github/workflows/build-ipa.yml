@@ -39,6 +39,9 @@ jobs:
       APP_PATH: build/XForge.xcarchive/Products/Applications/XForge.app
       ENGINE_ROOT: Vendor/ish-arm64
       ENGINE_LIB_DIR: Vendor/ish-arm64-build/lib
+      # Must match XFORGE_MARKETING_VERSION in project.yml; asserted below so a
+      # version bump cannot silently produce a mislabelled release.
+      EXPECTED_VERSION: "0.5.0"
       # The pinned rootfs. Changing this tag is how the bundled Alpine root is
       # upgraded; `make rootfs` (or the `rootfs` workflow) builds and publishes
       # a new one. The sha256 is asserted below, so a tag that is moved — or an
@@ -163,20 +166,27 @@ jobs:
           test -d "$APP_PATH"
           test -x "$APP_PATH/XForge"
 
-          # The engine is statically linked, so verify from the binary rather
-          # than assuming. `lipo` proves the slice; the symbol scan proves the
-          # linker did not drop the emulator.
+          # Architecture, from the binary itself rather than from the build log.
           binary_info="$(lipo -info "$APP_PATH/XForge")"
           case "$binary_info" in
             *arm64*) ;;
             *) echo "::error::the app binary is not arm64: $binary_info"; exit 1 ;;
           esac
-          nm -a "$APP_PATH/XForge" > /tmp/app-symbols.txt 2>/dev/null || true
-          grep -qi 'asbestos\|guest_arm64' /tmp/app-symbols.txt \
-            || { echo '::error::no engine symbols in the app binary'; exit 1; }
+          # NOTE: do not try to prove the engine is linked by scanning the app
+          # binary for its symbols. Xcode's Release configuration strips, and on
+          # a stripped binary `nm` reports "no symbols" and finds nothing — so a
+          # symbol check fails for a perfectly good build. The engine's presence
+          # is proven where it can be observed instead: the engine libraries are
+          # asserted after they are built, and the guest is exercised by the
+          # smoke harness. What is worth checking here is that the app is
+          # self-consistent — the rootfs it needs is inside it.
+          size_mb=$(( $(stat -f%z "$APP_PATH/XForge") / 1048576 ))
+          echo "app binary: ${binary_info#*: } (${size_mb} MB)"
+          test "$size_mb" -gt 1 \
+            || { echo '::error::the app binary is implausibly small'; exit 1; }
 
-          # The rootfs must be inside the app, and must be the fakefs ZIP the
-          # app knows how to unpack.
+          # The rootfs must be inside the app, and must be the fakefs ZIP the app
+          # knows how to unpack.
           ROOTFS="$APP_PATH/alpine-rootfs.zip"
           test -f "$ROOTFS" \
             || { echo '::error::the app does not bundle alpine-rootfs.zip'; exit 1; }
@@ -196,7 +206,7 @@ jobs:
           test -f "$PLIST"
           test -f "$APP_PATH/Assets.car"
           get() { /usr/libexec/PlistBuddy -c "Print :$1" "$PLIST"; }
-          test "$(get CFBundleShortVersionString)" = "$(xcodebuild -project XForge.xcodeproj -scheme XForge -showBuildSettings 2>/dev/null | awk '/MARKETING_VERSION/ {print $3; exit}')"
+          test "$(get CFBundleShortVersionString)" = "${{ env.EXPECTED_VERSION }}"
           test "$(get CFBundleIdentifier)" = "com.r0gueee.xforge"
           test "$(get CFBundleDisplayName)" = "XForge"
           /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon" "$PLIST" >/dev/null
@@ -224,9 +234,9 @@ jobs:
           {
             echo '### Built app'
             echo
-            echo "- engine: ish-arm64 (statically linked)"
-            echo "- binary: ${binary_info#*: }"
+            echo "- binary: ${binary_info#*: } (${size_mb} MB)"
             echo "- bundled rootfs: $ROOTFS_TAG ($(du -h "$ROOTFS" | cut -f1))"
+            echo "- version: $(get CFBundleShortVersionString)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Package the unsigned IPA
