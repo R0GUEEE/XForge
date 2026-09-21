@@ -120,7 +120,7 @@ jobs:
           set -euo pipefail
           archive="$(find dist/rootfs -maxdepth 1 -name '*-provisioned.tar.gz' -print -quit)"
           test -n "$archive"
-          XFORGE_ROOTFS=payload XFORGE_ROOTFS_ARCHIVE="$archive" \
+          XFORGE_ROOTFS=payload XFORGE_REQUIRE_XTOOL=0 XFORGE_ROOTFS_ARCHIVE="$archive" \
             bash EmbeddedLinux/fetch-rootfs.sh
           # XcodeGen resolves resources when it generates the project. Regenerate
           # after replacing the small source archive with the provisioned payload.

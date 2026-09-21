@@ -26,6 +26,7 @@
 #     XFORGE_ROOTFS_ARCHIVE  path to an already-built archive (usually what the
 #                            CI job just produced); skips every download.
 #     ROOTFS_URL / ROOTFS_SHA256  custom plain-rootfs source and checksum.
+#     XFORGE_REQUIRE_XTOOL  1 to reject payloads without xtool (default: 0).
 #     XFORGE_PAYLOAD_URL     explicit provisioned archive URL (implies payload).
 #     XFORGE_PAYLOAD_TAG_PREFIX  release series holding payloads
 #                            (default: xforge-payload-)
@@ -50,6 +51,7 @@ PLAIN_SHA256="${ROOTFS_SHA256:-}"
 PAYLOAD_NAME="$BASE_NAME-provisioned.tar.gz"
 PAYLOAD_TAG_PREFIX="${XFORGE_PAYLOAD_TAG_PREFIX:-xforge-payload-}"
 REPOSITORY="${XFORGE_REPOSITORY:-R0GUEEE/XForge}"
+REQUIRE_XTOOL="${XFORGE_REQUIRE_XTOOL:-0}"
 
 MODE="${XFORGE_ROOTFS:-auto}"
 [ -n "${XFORGE_ROOTFS_ARCHIVE:-}" ] && MODE=payload
@@ -96,7 +98,9 @@ verify_payload() {
     verify_archive "$archive"
     member="$(tar -tzf "$archive" | grep -E "/usr/local/share/xforge/payload-manifest\.txt$" | head -1 || true)"
     [ -n "$member" ] || die "$(basename "$archive") has no payload manifest — it was not built by build-rootfs-payload.sh"
-    for path in usr/local/bin/swift usr/local/bin/xtool usr/local/share/xforge/glibc.env; do
+    required_paths="usr/local/bin/swift usr/local/share/xforge/glibc.env"
+    [ "$REQUIRE_XTOOL" = "0" ] || required_paths="$required_paths usr/local/bin/xtool"
+    for path in $required_paths; do
         tar -tzf "$archive" | grep -qE "(^|/)$path$" || die "$(basename "$archive") is missing $path"
     done
     tar -tzf "$archive" | grep -qE "(^|/)swiftly/toolchains/" || die "$(basename "$archive") has no Swift toolchain"
