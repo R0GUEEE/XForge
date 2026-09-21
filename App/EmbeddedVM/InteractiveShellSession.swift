@@ -21,7 +21,8 @@ import Foundation
 /// rather than stopping the guest, and the session says so instead of pretending.
 @MainActor
 protocol InteractiveShellSession: AnyObject {
-    /// Guest path of the file the host appends keystrokes to.
+    /// Guest path of the regular input file the host appends keystrokes to; the
+    /// guest's `tail -f` turns it into the shell's stdin stream.
     var guestInput: String { get }
     /// Guest path of the file the shell's output is written to.
     var guestOutput: String { get }

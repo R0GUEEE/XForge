@@ -129,12 +129,19 @@ enum SystemComponents {
         try await vm.copyIn(hostURL: script, to: guestInstallerScript)
     }
 
-    /// Copy an `Xcode.xip` chosen in Files into the guest's own filesystem and
-    /// return the path the guest should install from.
-    ///
-    /// This is a real copy, not a mount: the guest is an emulated Linux with its
-    /// own (fakefs) storage, and `xtool sdk install` has to be able to read the
-    /// file afterwards without the app being involved.
+    /// Copy the bundled zsign installer into the guest.
+    static func ensureZsignInstaller(in vm: LinuxVM) async throws {
+        guard let script = Bundle.main.url(forResource: "install-zsign",
+                                           withExtension: "sh") else {
+            throw SystemComponentsError.zsignInstallerMissing
+        }
+        try await vm.run("mkdir -p /root/xforge", environment: nil) { _ in }
+        try await vm.copyIn(hostURL: script, to: "/root/xforge/install-zsign.sh")
+        let status = try await vm.run("chmod +x /root/xforge/install-zsign.sh", environment: nil) { _ in }
+        guard status == 0 else { throw SystemComponentsError.zsignInstallerMissing }
+    }
+
+    /// Copy the chosen `.xip` into the guest's own filesystem and return the path the guest should install from.
     static func stageXIP(_ source: URL, in vm: LinuxVM, report: @escaping (String) -> Void) async throws -> String {
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
@@ -182,6 +189,7 @@ enum SystemComponents {
 
 enum SystemComponentsError: LocalizedError {
     case installerScriptMissing
+    case zsignInstallerMissing
     case notEnoughSpace(needed: Int64, free: Int64)
     case copyFailed(String)
 
@@ -189,6 +197,8 @@ enum SystemComponentsError: LocalizedError {
         switch self {
         case .installerScriptMissing:
             return "install-toolchain.sh is not bundled in the app."
+        case .zsignInstallerMissing:
+            return "The guest zsign installer is not bundled in the app."
         case .notEnoughSpace(let needed, let free):
             let formatter = ByteCountFormatter()
             return "Not enough free space: this needs about "

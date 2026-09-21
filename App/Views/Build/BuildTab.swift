@@ -40,7 +40,7 @@ struct BuildTab: View {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         NavigationLink {
-                            SigningView(signing: signing)
+                            SigningView(signing: signing, device: device)
                         } label: {
                             Label("Signing", systemImage: "key.fill")
                         }

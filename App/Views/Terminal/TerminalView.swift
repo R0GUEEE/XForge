@@ -12,6 +12,7 @@ struct TerminalView: View {
     @EnvironmentObject private var session: TerminalSession
 
     @State private var fontSize: Double = 12
+    @State private var showGuestFiles = false
     @State private var showEngineLog = false
     @State private var importingXIP = false
     @FocusState private var inputFocused: Bool
@@ -28,7 +29,7 @@ struct TerminalView: View {
             inputRow
             TerminalKeyBar(session: session,
                            configuration: keyConfiguration,
-                           onFiles: { session.enqueue("ls -la") },
+                           onFiles: { showGuestFiles = true },
                            onComponents: { component in install(component) },
                            onHideKeyboard: { inputFocused = false },
                            onConfigure: { showKeyConfiguration = true })
@@ -51,6 +52,9 @@ struct TerminalView: View {
         }
         .sheet(isPresented: $showEngineLog) {
             NavigationStack { EngineLogView() }
+        }
+        .sheet(isPresented: $showGuestFiles) {
+            GuestFileBrowserView()
         }
         .sheet(isPresented: $showKeyConfiguration) {
             TerminalKeyConfigurationView()

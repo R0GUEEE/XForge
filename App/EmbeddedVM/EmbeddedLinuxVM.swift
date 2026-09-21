@@ -332,21 +332,12 @@ final class EmbeddedLinuxVM: LinuxVM {
         let inputURL = transfer.appendingPathComponent("stdin-\(tag)")
         let outputURL = transfer.appendingPathComponent("stdout-\(tag)")
 
-        // The input is a FIFO, not a regular file. A regular file is wrong in a
-        // way that is easy to miss: a shell reading one hits end-of-input as soon
-        // as it reaches the current end and *exits*, so the terminal's shell would
-        // die at startup and every later write would go nowhere. A FIFO delivers a
-        // stream instead — the shell blocks waiting for input and keeps running.
-        //
-        // It is created empty (a FIFO must not have a writer yet) and the host
-        // opens the write end once, in `attach`, holding it for the session's
-        // life: closing between writes would look like end-of-input.
-        unlink(inputURL.path)
-        if mkfifo(inputURL.path, 0o600) != 0 {
-            throw LinuxVMError.notImplemented(
-                "could not create the terminal's input FIFO: \(String(cString: strerror(errno)))")
-        }
-        // The output is an ordinary file the tailer follows, so it just has to exist.
+        // The input is a regular file followed by `tail -f` inside the guest.
+        // A shell reading the regular file directly would hit EOF and exit; the
+        // tail process keeps the pipe open and turns later appends into a live
+        // stream. This avoids opening a FIFO from the iOS host (which can block
+        // until a guest reader appears) while preserving the same stdin behavior.
+        FileManager.default.createFile(atPath: inputURL.path, contents: nil)
         FileManager.default.createFile(atPath: outputURL.path, contents: nil)
 
         let guestInput = "\(Self.guestShare)/\(Self.transferDir)/\(inputURL.lastPathComponent)"
@@ -360,32 +351,19 @@ final class EmbeddedLinuxVM: LinuxVM {
             onOutput: onOutput
         )
 
-        // The shell's stdin is the host's FIFO, and its output goes to a file the
-        // host follows:
-        //   /bin/sh  < /host/.xforge-transfer/stdin-…       → a stream from the host
-        //            > /host/.xforge-transfer/stdout-… 2>&1 → a file the host tails
+        // The shell's stdin is fed by `tail -f` over a pipe, and its output goes
+        // to a file the host follows:
+        //   tail -f <input file> | /bin/sh  → a persistent stdin stream
+        //                         > output   → a file the host tails
         //
-        // Note the shell is started DETACHED. `runCapturedAfterBoot` would block
-        // the engine's one guest thread until the shell exited — which never
-        // happens — so every other command in the app (a build, a component
-        // install, the boot check) would starve behind it forever.
-        // NOT `-i`. `-i` asks for *interactive* mode, which makes the shell try to
-        // claim a controlling terminal for job control — there is none here (the
-        // session's stdin is a file, not a tty), so it printed
-        // "sh: can't access tty; job control turned off" on every start.
-        //
-        // `-i` was never what made this work: the shell reads the host's file and
-        // prompts because that is what a shell with a readable stdin does, as the
-        // redirect below already arranges. Dropping it removes the complaint and
-        // changes nothing else — the shell is still persistent, still accepts
-        // input at any time, and still prints its own `$` prompt.
-        //
-        // Job control genuinely is unavailable, and this design does not pretend
-        // otherwise: there is no tty, so `Ctrl-Z`/`fg`/`bg` have nothing to act
-        // on. Ctrl-C is delivered as a real signal instead (see
-        // `InteractiveShellSession.interruptForeground`).
+        // A regular file cannot be redirected directly to sh: it reaches EOF and
+        // exits. `tail -f` keeps the pipe's write end alive and turns later host
+        // appends into input bytes without requiring the iOS host to open a FIFO.
+        // The shell has no `-i`, because that flag asks it to claim a controlling
+        // tty and produces the user's "can't access tty" warning; stdin itself
+        // still works without it.
         let command = """
-        exec /bin/sh < \(GuestShell.quote(guestInput)) > \(GuestShell.quote(guestOutput)) 2>&1
+        tail -f \(GuestShell.quote(guestInput)) | /bin/sh > \(GuestShell.quote(guestOutput)) 2>&1
         """
 
         let process = try await emulator.startDetached(command, shell: "/bin/sh", stdinPath: nil)

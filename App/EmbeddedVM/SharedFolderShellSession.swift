@@ -14,13 +14,6 @@ final class SharedFolderShellSession: InteractiveShellSession {
     private let outputURL: URL
     private let tailer: FileTailer
     private var process: (any DetachedProcess)?
-    /// The write end of the input FIFO, held open for the session's life.
-    ///
-    /// Opening and closing per write would be wrong twice over: each close is an
-    /// EOF the shell would act on, and reopening a FIFO blocks until a reader
-    /// appears. One handle, opened once, is what makes the input a continuous
-    /// stream rather than a series of complete (and therefore terminating) files.
-    private var inputHandle: FileHandle?
 
     let guestInput: String
     let guestOutput: String
@@ -42,14 +35,13 @@ final class SharedFolderShellSession: InteractiveShellSession {
         self.process = process
         self.pid = process.pid
         self.isRunning = true
-        // Start reading the output file only now: before this point the shell has
-        // not been told to write to it, so there is nothing to miss.
+        // Output is safe to tail immediately; the guest opens the output path as
+        // soon as its detached command starts.
         tailer.start()
 
-        // Open the write end and keep it. The shell is already blocked reading the
-        // FIFO, so this does not block, and holding it open is what stops the
-        // shell seeing an end-of-input after every command.
-        inputHandle = FileHandle(forWritingAtPath: inputURL.path)
+        // A regular host file is appended to per write. Inside the guest, `tail -f`
+        // is the long-lived writer-facing bridge that feeds those appends into the
+        // shell's stdin stream.
 
         // Watch for the shell ending by itself (`exit`, or a crash). Polling the
         // guest process is the only way to learn this — there is no host-side
@@ -75,12 +67,11 @@ final class SharedFolderShellSession: InteractiveShellSession {
     func send(_ text: String) -> Bool {
         guard isRunning else { return false }
         guard let data = text.data(using: .utf8) else { return false }
-        guard let inputHandle else { return false }
         do {
-            // Written to the held-open FIFO. A FIFO has no offset, so there is
-            // nothing to seek and no risk of the guest's read position drifting
-            // away from ours.
-            try inputHandle.write(contentsOf: data)
+            let handle = try FileHandle(forWritingTo: inputURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
             return true
         } catch {
             return false
@@ -106,10 +97,7 @@ final class SharedFolderShellSession: InteractiveShellSession {
     func stop() {
         isRunning = false
         tailer.stop()
-        // Closing the write end is what tells the shell its input has ended, so it
-        // is part of stopping rather than an afterthought.
-        try? inputHandle?.close()
-        inputHandle = nil
+        process = nil
         // Stop the guest shell too, or it outlives the screen that was driving it.
         if let process {
             Task { [process] in

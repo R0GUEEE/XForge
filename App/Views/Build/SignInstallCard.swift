@@ -10,7 +10,7 @@ struct SignInstallCard: View {
             Text("Sign & Install").font(.headline)
                 .padding(.bottom, 8)
 
-            NavigationLink { SigningView(signing: signing) } label: {
+            NavigationLink { SigningView(signing: signing, device: device) } label: {
                 row(title: "Signing",
                     detail: "Sign the built app with a certificate",
                     icon: "key.fill")

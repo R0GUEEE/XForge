@@ -46,8 +46,12 @@ targets:
       - path: Support/Resources
         buildPhase: resources
         optional: true
-      # In-guest provisioning script, run by ToolchainManager.
+      # In-guest provisioning scripts. The terminal can run the toolchain
+      # installer and the Build tab can install zsign into the guest before
+      # configuring/signing an IPA.
       - path: EmbeddedLinux/install-toolchain.sh
+        buildPhase: resources
+      - path: EmbeddedLinux/install-zsign.sh
         buildPhase: resources
     dependencies:
       - package: xtool
