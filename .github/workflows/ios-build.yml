@@ -259,7 +259,8 @@ jobs:
         if: hashFiles('App/EmbeddedVM/ISHAOKBridge.c') != ''
         run: |
           set -e
-          git submodule update --init --depth 1 Vendor/ish-AOK
+          git submodule update --init --depth 1 Vendor/ish-AOK \
+            || git submodule update --init Vendor/ish-AOK
           # Only what the core actually links: the archive reader (rootfs import)
           # and smallclue (the built-in toolbox). The heavy native-program
           # submodules stay out of the checkout.
