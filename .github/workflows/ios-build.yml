@@ -263,7 +263,8 @@ jobs:
           # Only what the core actually links: the archive reader (rootfs import)
           # and smallclue (the built-in toolbox). The heavy native-program
           # submodules stay out of the checkout.
-          git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue
+          git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue \
+            || git -C Vendor/ish-AOK submodule update --init deps/libarchive deps/smallclue
 
       - name: Build vendored iSH-AOK core
         if: hashFiles('App/EmbeddedVM/ISHAOKBridge.c') != ''
