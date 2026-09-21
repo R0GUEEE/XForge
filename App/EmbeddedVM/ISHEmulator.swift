@@ -229,9 +229,9 @@ private final class GuestProcess: DetachedProcess, @unchecked Sendable {
     }
 
     var isRunning: Bool {
-        // A status read that has to block on the guest thread would be useless
-        // from a view, so this is answered from the last observation. `waitForExit`
-        // and `signal` refresh it.
+        // Asks the guest, which means hopping onto its thread — so this is
+        // `async` rather than a plain property, and it does not block: the hop is
+        // a queued job that completes immediately, not a wait on the process.
         get async { await checkAlive() }
     }
 

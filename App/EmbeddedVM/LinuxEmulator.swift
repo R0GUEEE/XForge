@@ -74,8 +74,12 @@ protocol LinuxEmulator: AnyObject {
 protocol DetachedProcess: AnyObject {
     /// Guest pid, for logging and for `kill`.
     var pid: Int32 { get }
-    /// False once it has exited.
-    var isRunning: Bool { get }
+    /// Whether it is still running.
+    ///
+    /// `async`, because answering it means asking the guest — every engine call
+    /// has to hop onto the one thread the engine allows, so this cannot be a
+    /// synchronous property even though it reads like one.
+    var isRunning: Bool { get async }
     /// Send a real guest signal. `SIGINT` (2) interrupts the foreground program,
     /// `SIGTERM` (15) asks it to stop, `SIGKILL` (9) cannot be caught.
     func signal(_ number: Int32) async
