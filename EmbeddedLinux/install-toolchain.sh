@@ -398,10 +398,25 @@ step_xtool() {
     if [ -x /opt/xtool/usr/bin/xtool ]; then
         log "xtool already unpacked at /opt/xtool"
     else
+        xtool_asset=""
+        for candidate in "$ARCH" "$UBUNTU_ARCH"; do
+            [ -n "$candidate" ] || continue
+            [ "$candidate" = "$xtool_asset" ] && continue
+            if curl -fsIL --retry 3 \
+                "https://github.com/xtool-org/xtool/releases/latest/download/xtool-$candidate.AppImage" \
+                >"$SILENT" 2>&1; then
+                xtool_asset="$candidate"
+                break
+            fi
+        done
+        [ -n "$xtool_asset" ] || {
+            echo "could not resolve an xtool AppImage for architecture '$ARCH' (also tried '$UBUNTU_ARCH')" >&2
+            exit 1
+        }
         # Exactly the release asset xtool documents, unpacked once instead of
         # every run (APPIMAGE_EXTRACT_AND_RUN extracts ~50 MB per invocation).
         curl -fL --retry 3 \
-            "https://github.com/xtool-org/xtool/releases/latest/download/xtool-$ARCH.AppImage" \
+            "https://github.com/xtool-org/xtool/releases/latest/download/xtool-$xtool_asset.AppImage" \
             -o /tmp/xtool.AppImage
         chmod +x /tmp/xtool.AppImage
         ( cd /opt && rm -rf squashfs-root && /tmp/xtool.AppImage --appimage-extract >"$SILENT" 2>&1 )
