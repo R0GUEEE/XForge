@@ -46,7 +46,7 @@ jobs:
       # upgraded; `make rootfs` (or the `rootfs` workflow) builds and publishes
       # a new one. The sha256 is asserted below, so a tag that is moved — or an
       # upload that was truncated — fails the build instead of shipping silently.
-      ROOTFS_TAG: rootfs-v1
+      ROOTFS_TAG: rootfs-v2
       ROOTFS_ASSET: alpine-rootfs.zip
     steps:
       - name: Check out the repository
@@ -86,6 +86,24 @@ jobs:
           # SQLite sidecars are transient; the builder excludes them, and a
           # regression there would put a stale WAL into every install.
           ! grep -qE '\.db-(wal|shm)$' /tmp/rootfs-entries.txt
+
+          # The glibc compatibility layer must be in the root *and indexed in
+          # meta.db*: it is installed before the fakefs conversion precisely so
+          # the engine can resolve it. Checking the ZIP listing alone would pass
+          # for a root where the files exist on disk but the database has no rows
+          # for them, which the guest reads as "not there at all".
+          grep -q '^alpine-rootfs/data/opt/glibc/usr/lib/aarch64-linux-gnu/ld-linux-aarch64\.so\.1$' \
+            /tmp/rootfs-entries.txt \
+            || { echo '::error::the rootfs has no glibc layer'; exit 1; }
+          grep -q '^alpine-rootfs/data/usr/local/share/xforge/glibc\.env$' \
+            /tmp/rootfs-entries.txt \
+            || { echo '::error::the rootfs has no glibc.env marker'; exit 1; }
+          unzip -p "$ROOTFS_ASSET" alpine-rootfs/meta.db > /tmp/rootfs-meta.db
+          indexed="$(sqlite3 /tmp/rootfs-meta.db \
+            "SELECT COUNT(*) FROM paths WHERE CAST(path AS TEXT) LIKE '%aarch64-linux-gnu%';")"
+          [ "${indexed:-0}" -gt 0 ] \
+            || { echo "::error::the glibc layer is not indexed in meta.db ($indexed paths)"; exit 1; }
+          echo "glibc layers paths indexed: $indexed"
 
           echo "rootfs: $(du -h "$ROOTFS_ASSET" | cut -f1), $(wc -l < /tmp/rootfs-entries.txt) entries"
 
