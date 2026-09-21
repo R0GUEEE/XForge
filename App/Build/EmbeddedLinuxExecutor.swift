@@ -32,13 +32,13 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                     await vm.prepareRootfs()
                     try await vm.boot()
 
-                    // The bundled root is intentionally plain Alpine. Do not turn
-                    // opening the Build tab into a multi-gigabyte package install:
-                    // users opt into Swift and xtool from the Toolchain screen.
-                    continuation.yield(.plan("Checking the user-installed build toolchain…"))
+                    // The release payload is provisioned before it is bundled.
+                    // Opening Build only verifies the guest; it must never run an
+                    // installer against either the host or the guest at runtime.
+                    continuation.yield(.plan("Checking the bundled Alpine build toolchain…"))
                     guard try await buildEnvironmentIsReady() else {
                         continuation.yield(.failed(
-                            "Swift and xtool are not installed. Open Toolchain and install them before building."
+                            "The bundled Alpine build toolchain is incomplete. Reinstall this XForge release."
                         ))
                         continuation.finish()
                         return

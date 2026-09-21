@@ -40,8 +40,9 @@ final class ToolchainManager: ObservableObject {
             }
         }
 
-        /// Whether the component lives inside the guest Linux (vs. on the host).
-        var livesInGuest: Bool { self != .rootfs }
+        /// Every component is stored in the embedded Alpine guest. The rootfs is
+        /// imported into iSH-AOK fakefs; Swift, xtool, and SDKs install below it.
+        var livesInGuest: Bool { true }
     }
 
     /// The steps `install-toolchain.sh` runs, in order. Installing the Swift

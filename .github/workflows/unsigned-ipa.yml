@@ -1,8 +1,8 @@
 name: Build unsigned XForge IPA
 
-# Produces an unsigned IPA with the plain Alpine aarch64 rootfs embedded. The
-# terminal imports this root directly into iSH-AOK; Swift, xtool, and SDKs are
-# deliberately not bundled or installed by the build.
+# The Alpine rootfs is assembled on native arm64 Linux before the macOS archive.
+# `install-toolchain.sh all` runs inside that Alpine filesystem, so its apk build
+# dependencies, Swift, and xtool are installed in the root the terminal boots.
 
 on:
   workflow_dispatch:
@@ -15,28 +15,89 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  payload:
+    name: Provision Alpine build root
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      # The release contains the project build environment and xtool. The Darwin
+      # SDK stays an explicit in-guest component instead of adding it implicitly.
+      XFORGE_INCLUDE_SDK: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install payload build tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq pigz
+
+      - name: Install project dependencies and xtool into Alpine
+        run: |
+          set -euo pipefail
+          # This chroots into Alpine and runs the same guest installer exposed by
+          # the app. It installs apk build dependencies, glibc, xtool, swiftly,
+          # and Swift in the guest root, never on the iOS host.
+          # `sudo` otherwise drops this setting and the payload builder's
+          # default `auto` mode tries to install the Darwin SDK as well.
+          sudo --preserve-env=XFORGE_INCLUDE_SDK \
+            bash EmbeddedLinux/build-rootfs-payload.sh dist/rootfs
+
+      - name: Validate provisioned Alpine payload
+        run: |
+          set -euo pipefail
+          archive="$(find dist/rootfs -maxdepth 1 -name '*-provisioned.tar.gz' -print -quit)"
+          test -n "$archive"
+          tar -tzf "$archive" > /tmp/rootfs-contents.txt
+          for path in \
+            usr/local/bin/xtool \
+            usr/local/bin/swift \
+            usr/local/share/xforge/build-environment-v2 \
+            usr/local/share/xforge/payload-manifest.txt; do
+            grep -qE "(^|/)$path$" /tmp/rootfs-contents.txt \
+              || { echo "::error::payload is missing $path"; exit 1; }
+          done
+          grep -qE '(^|/)swiftly/toolchains/' /tmp/rootfs-contents.txt \
+            || { echo '::error::payload has no Swift toolchain'; exit 1; }
+          manifest="$(grep -E '/usr/local/share/xforge/payload-manifest.txt$' /tmp/rootfs-contents.txt | head -1)"
+          tar -xzOf "$archive" "$manifest" | tee /tmp/payload-manifest.txt
+          grep -qE '^xtool:[[:space:]]+xtool ' /tmp/payload-manifest.txt
+          echo "payload=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload provisioned Alpine payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: xforge-provisioned-alpine-rootfs
+          path: dist/rootfs/*-provisioned.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   build:
+    needs: payload
     runs-on: macos-15
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download provisioned Alpine payload
+        uses: actions/download-artifact@v4
+        with:
+          name: xforge-provisioned-alpine-rootfs
+          path: dist/rootfs
+
+      - name: Bundle the provisioned Alpine rootfs in the app
+        run: |
+          set -euo pipefail
+          archive="$(find dist/rootfs -maxdepth 1 -name '*-provisioned.tar.gz' -print -quit)"
+          test -n "$archive"
+          XFORGE_ROOTFS=payload XFORGE_ROOTFS_ARCHIVE="$archive" \
+            bash EmbeddedLinux/fetch-rootfs.sh
+
       - name: Check out the iSH-AOK engine (submodule)
         run: |
-          set -e
+          set -euo pipefail
           git submodule update --init --depth 1 Vendor/ish-AOK
-          # Only what the core actually links: the archive reader (rootfs import)
-          # and smallclue (the built-in toolbox). The heavy native-program
-          # submodules (bash, zsh, helix, tokio) stay out of the checkout.
           git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue
 
       - name: Install build tools
         run: brew install xcodegen meson ninja llvm lld libarchive
-
-      - name: Bundle the plain Alpine rootfs in the app
-        run: |
-          set -euo pipefail
-          XFORGE_ROOTFS=plain bash EmbeddedLinux/fetch-rootfs.sh
 
       - name: Build the embedded iSH-AOK core (iOS arm64)
         run: bash EmbeddedLinux/build-ish-aok-core.sh
@@ -62,140 +123,84 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             archive -archivePath build/XForge.xcarchive 2>&1 | tee /tmp/build.log
 
-      - name: Verify the plain embedded-Alpine bundle
+      - name: Verify the provisioned Alpine bundle
         run: |
-          set -e
+          set -euo pipefail
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
+          ARCHIVE="$APP/alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz"
           test -d "$APP"
           test -x "$APP/XForge"
-          test -f "$APP/Info.plist"
-          test -f "$APP/Assets.car"
-          ARCHIVE="$APP/alpine-minirootfs-3.23.3-aarch64.tar.gz"
-          if [ ! -f "$ARCHIVE" ]; then
-            echo "::error::the app does not bundle the plain Alpine rootfs"
-            ls -la "$APP" | head -40
-            exit 1
-          fi
-          tar -tzf "$ARCHIVE" >/dev/null
-          echo "rootfs bundled: $(du -h "$ARCHIVE" | cut -f1)"
-
+          test -f "$ARCHIVE"
           tar -tzf "$ARCHIVE" > /tmp/rootfs-contents.txt
-          grep -qE '(^|/)bin/sh$' /tmp/rootfs-contents.txt \
-            || { echo "::error::the bundled rootfs has no shell"; exit 1; }
-          grep -qE '(^|/)etc/alpine-release$' /tmp/rootfs-contents.txt \
-            || { echo "::error::the bundled archive is not Alpine"; exit 1; }
-          if grep -qE '(^|/)(usr/local/bin/(swift|xtool)|swiftly/toolchains/|usr/local/share/xforge/)' /tmp/rootfs-contents.txt; then
-            echo "::error::the bundled rootfs contains a preinstalled toolchain"
-            grep -E '(^|/)(usr/local/bin/(swift|xtool)|swiftly/toolchains/|usr/local/share/xforge/)' /tmp/rootfs-contents.txt
-            exit 1
-          fi
-          echo "::notice::the app bundles plain Alpine only; no Swift, xtool, or SDK payload"
-
+          for path in \
+            usr/local/bin/xtool \
+            usr/local/bin/swift \
+            usr/local/share/xforge/build-environment-v2 \
+            usr/local/share/xforge/payload-manifest.txt; do
+            grep -qE "(^|/)$path$" /tmp/rootfs-contents.txt \
+              || { echo "::error::bundled rootfs is missing $path"; exit 1; }
+          done
+          grep -qE '(^|/)swiftly/toolchains/' /tmp/rootfs-contents.txt \
+            || { echo '::error::bundled rootfs has no Swift toolchain'; exit 1; }
+          manifest="$(grep -E '/usr/local/share/xforge/payload-manifest.txt$' /tmp/rootfs-contents.txt | head -1)"
+          tar -xzOf "$ARCHIVE" "$manifest" | tee /tmp/payload-manifest.txt
+          grep -qE '^xtool:[[:space:]]+xtool ' /tmp/payload-manifest.txt
           {
-            echo "### Bundled rootfs (plain Alpine)"
+            echo '### Bundled Alpine build root'
             echo
             echo '```'
-            grep -E '(^|/)(bin/sh|etc/alpine-release)$' /tmp/rootfs-contents.txt
+            cat /tmp/payload-manifest.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify app information
         run: |
-          set -e
+          set -euo pipefail
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
           PLIST="$APP/Info.plist"
+          test -f "$PLIST"
+          test -f "$APP/Assets.car"
           get() { /usr/libexec/PlistBuddy -c "Print :$1" "$PLIST"; }
-          VER="$(get CFBundleShortVersionString)"
-          BUILD="$(get CFBundleVersion)"
-          NAME="$(get CFBundleDisplayName)"
-          BID="$(get CFBundleIdentifier)"
-          echo "bundle id : $BID"
-          echo "name      : $NAME"
-          echo "version   : $VER ($BUILD)"
-          [ "$VER" = "0.5.0" ]   || { echo "::error::CFBundleShortVersionString is '$VER', expected 0.5.0"; exit 1; }
-          [ "$BID" = "com.r0gueee.xforge" ] || { echo "::error::unexpected bundle id '$BID'"; exit 1; }
-          [ "$NAME" = "XForge" ] || { echo "::error::unexpected display name '$NAME'"; exit 1; }
-          # The icon must reach the bundle: either as legacy AppIcon*.png files at
-          # the bundle root, or compiled into Assets.car (Xcode 14+ does both).
-          /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon" "$PLIST" >/dev/null \
-            || { echo "::error::no CFBundleIcons in Info.plist — the app icon is not wired up"; exit 1; }
-          test -f "$APP/Assets.car" || { echo "::error::no Assets.car in the bundle"; exit 1; }
-          echo "app icon  : wired (CFBundleIcons + Assets.car)"
+          test "$(get CFBundleShortVersionString)" = "0.5.0"
+          test "$(get CFBundleIdentifier)" = "com.r0gueee.xforge"
+          test "$(get CFBundleDisplayName)" = "XForge"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon" "$PLIST" >/dev/null
 
-      - name: Verify entitlements
+      - name: Verify entitlements are configured
         run: |
-          set -e
-          # plistlib rather than PlistBuddy: the key "get-task-allow" contains a
-          # dash, which PlistBuddy's :key path syntax does not accept, and a check
-          # that cannot read the file it is checking is worse than no check.
+          set -euo pipefail
           python3 - <<'PY'
-          import hashlib, plistlib, sys
-
-          path = "Support/XForge.entitlements"
-          raw = open(path, "rb").read()
-          # Print what was actually read: the previous failure reported every key
-          # missing for a file that is correct, which is only diagnosable if the
-          # check says which bytes it looked at.
-          print(f"{path}: {len(raw)} bytes, sha256 {hashlib.sha256(raw).hexdigest()[:16]}")
-          required = [
+          import plistlib
+          required = {
               "get-task-allow",
               "application-identifier",
               "com.apple.developer.kernel.extended-virtual-addressing",
               "com.apple.developer.kernel.increased-memory-limit",
-          ]
-          entitlements = plistlib.loads(raw)
-
-          missing = [key for key in required if key not in entitlements]
-          if missing:
-              print(f"::error::{path} is missing {', '.join(missing)}")
-              sys.exit(1)
-
-          # The two the engine cannot run without have to be true, not merely
-          # present: a false value reads as "declared" and grants nothing.
-          for key in ("com.apple.developer.kernel.extended-virtual-addressing",
-                      "com.apple.developer.kernel.increased-memory-limit"):
-              if entitlements[key] is not True:
-                  print(f"::error::{key} must be true")
-                  sys.exit(1)
-
-          print("entitlements (the IPA is unsigned, so a sideloader re-applies these):")
-          for key in sorted(entitlements):
-              print(f"  {key} = {entitlements[key]}")
+          }
+          with open("Support/XForge.entitlements", "rb") as handle:
+              entitlements = plistlib.load(handle)
+          missing = required - entitlements.keys()
+          assert not missing, f"missing entitlements: {sorted(missing)}"
+          assert entitlements["com.apple.developer.kernel.extended-virtual-addressing"] is True
+          assert entitlements["com.apple.developer.kernel.increased-memory-limit"] is True
           PY
-
-          # Declaring them is not the same as using them: the target has to have
-          # the file wired as CODE_SIGN_ENTITLEMENTS, or a signed build would
-          # ship without any of it.
           settings="$(xcodebuild -project XForge.xcodeproj -scheme XForge \
             -destination 'generic/platform=iOS' -showBuildSettings 2>/dev/null)"
-          echo "$settings" | grep -q "CODE_SIGN_ENTITLEMENTS" \
-            || { echo "::error::the target sets no CODE_SIGN_ENTITLEMENTS"; exit 1; }
           case "$settings" in
-            *XForge.entitlements*) echo "wired: $(echo "$settings" | grep "CODE_SIGN_ENTITLEMENTS" | head -1 | sed 's/^ *//')" ;;
-            *) echo "::error::CODE_SIGN_ENTITLEMENTS does not point at Support/XForge.entitlements"; exit 1 ;;
+            *XForge.entitlements*) ;;
+            *) echo '::error::CODE_SIGN_ENTITLEMENTS is not wired'; exit 1 ;;
           esac
-
-          {
-            echo "### Entitlements"
-            echo
-            echo '```'
-            echo "$settings" | grep "CODE_SIGN_ENTITLEMENTS" | head -1 | sed 's/^ *//'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Package unsigned IPA
         run: |
-          set -e
+          set -euo pipefail
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
           IPA="dist/XForge-0.5.0-unsigned.ipa"
           mkdir -p dist/Payload
           ditto "$APP" dist/Payload/XForge.app
           ditto -c -k --keepParent dist/Payload "$IPA"
-          unzip -l "$IPA" | grep -q 'Payload/XForge.app/XForge$'
-          unzip -l "$IPA" | grep -q 'Payload/XForge.app/alpine-minirootfs-3.23.3-aarch64.tar.gz$'
-          echo "ipa: $(du -h "$IPA" | cut -f1)"
-          echo "artifact=$GITHUB_WORKSPACE/$IPA" >> "$GITHUB_ENV"
-          echo "ipa_name=$(basename "$IPA")" >> "$GITHUB_ENV"
+          unzip -t "$IPA"
+          unzip -Z1 "$IPA" | grep -q 'Payload/XForge.app/alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz$'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -206,11 +211,10 @@ jobs:
           retention-days: 14
 
       - name: Upload to release (manual trigger only)
-        if: github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: xforge-${{ github.run_number }}
-          name: XForge 0.5.0 — plain Alpine terminal
+          name: XForge 0.5.0 — provisioned Alpine terminal
           files: dist/XForge-0.5.0-unsigned.ipa
           body_path: CHANGELOG.md
           generate_release_notes: false

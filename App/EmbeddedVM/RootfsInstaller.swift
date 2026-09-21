@@ -8,15 +8,16 @@ import Foundation
 /// first use it is imported into iSH-AOK's `fakefs` format — a `data/` tree plus
 /// a `meta.db` SQLite database — and every later launch reuses that root.
 enum RootfsInstaller {
-    /// Base name of the bundled archive (the exact file the user pointed at).
-    static let archiveName = "alpine-minirootfs-3.23.3-aarch64"
+    /// Base name of the bundled archive. This is built from Alpine's minirootfs
+    /// with XForge's guest build dependencies and toolchain installed.
+    static let archiveName = "alpine-minirootfs-3.23.3-aarch64-provisioned"
     static let archiveExtension = "tar.gz"
     /// Directory name of the installed root inside `<Documents>/embedded-linux/roots`.
     static let rootName = "alpine"
 
-    /// XForge always boots the plain Alpine userspace that ships in the app.
-    /// Toolchains are optional, user-initiated guest installs; accepting a
-    /// provisioned archive here would silently change the Terminal's base system.
+    /// XForge boots the provisioned Alpine userspace shipped in the app. The
+    /// payload is imported directly into the embedded terminal's fakefs, so
+    /// installed components never target the iOS host filesystem.
     static let bundledArchiveNames = [
         archiveName,
     ]

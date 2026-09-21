@@ -26,8 +26,8 @@ struct ToolchainView: View {
             } header: {
                 Text("Interactive Shell")
             } footer: {
-                Text("A real shell into the bundled plain Alpine aarch64 Linux. Swift, "
-                     + "xtool, and SDKs remain absent until you explicitly install them.")
+                Text("A real shell into the bundled Alpine aarch64 Linux. Its build "
+                     + "dependencies, Swift, and xtool are installed in that guest root.")
             }
 
             Section {
@@ -81,7 +81,7 @@ struct ToolchainView: View {
             } header: {
                 Text("Offline Imports")
             } footer: {
-                Text("Choose an Alpine aarch64 .tar.gz minirootfs. It replaces the imported root only after validation. Quit and reopen XForge first if Linux is running.")
+                Text("Choose an Alpine aarch64 .tar.gz minirootfs. A custom import replaces the provisioned root, so it may not include XForge's bundled build tools. Quit and reopen XForge first if Linux is running.")
             }
 
             if let message = toolchain.message {

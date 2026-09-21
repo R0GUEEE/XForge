@@ -72,10 +72,10 @@ final class ReleaseResolutionTests: XCTestCase {
         XCTAssertEqual(XForgeReleases.repository, "R0GUEEE/XForge")
     }
 
-    func testOnlyThePlainAlpineArchiveIsEligibleForBoot() {
+    func testOnlyTheProvisionedAlpineArchiveIsEligibleForBoot() {
         XCTAssertEqual(
             RootfsInstaller.bundledArchiveNames,
-            ["alpine-minirootfs-3.23.3-aarch64"]
+            ["alpine-minirootfs-3.23.3-aarch64-provisioned"]
         )
     }
 }
@@ -157,7 +157,7 @@ final class ToolchainManagerTests: XCTestCase {
             XCTAssertFalse(component.blurb.isEmpty)
             XCTAssertFalse(component.icon.isEmpty)
         }
-        XCTAssertFalse(ToolchainManager.Component.rootfs.livesInGuest)
+        XCTAssertTrue(ToolchainManager.Component.rootfs.livesInGuest)
         XCTAssertTrue(ToolchainManager.Component.swift.livesInGuest)
         XCTAssertTrue(ToolchainManager.Component.sdk.livesInGuest)
     }

@@ -24,14 +24,15 @@ named `darwin`. All three heavyweight pieces are self-contained Linux artifacts:
 | Piece | Source | Notes |
 |---|---|---|
 | Linux engine | iSH-AOK (`Vendor/ish-AOK` submodule), built for iOS | runs in-process, no JIT entitlement |
-| Alpine aarch64 rootfs | `alpine-minirootfs-3.23.3-aarch64.tar.gz` | **bundled in the app**, imported directly by the terminal on first boot |
-| Swift aarch64 Linux toolchain | swift.org, via `swiftly` | optional, user-installed in Alpine |
+| Provisioned Alpine aarch64 rootfs | `alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz` | **bundled in the app**, imported directly by the terminal on first boot |
+| Swift aarch64 Linux toolchain | swift.org, via `swiftly` | installed in the bundled Alpine guest |
 | `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | optional, user-installed in Alpine |
-| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | optional, user-installed in Alpine |
+| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | installed in the bundled Alpine guest |
 
-The IPA build intentionally packages only the plain Alpine minirootfs. Opening the
-terminal imports and boots that root without downloading or installing build tools.
-Swift, xtool, and the darwin SDK are explicit actions on the Toolchain screen.
+The IPA build provisions Alpine on a native arm64 Linux runner before packaging it.
+That guest root includes the Alpine build dependencies, Swift, and `xtool`; the
+embedded terminal imports it directly without downloading tools to the iOS host.
+The Darwin SDK remains an explicit in-guest install.
 
 ## Repo layout
 
@@ -100,10 +101,10 @@ make gen && open XForge.xcodeproj
 `make bootstrap` runs three steps:
 
 1. `git submodule update --init --depth 1 Vendor/ish-AOK` — the engine sources.
-2. `EmbeddedLinux/fetch-rootfs.sh` — puts the Alpine aarch64 rootfs into
-   `Support/Resources/` so it is bundled into `XForge.app`. Use
-   `XFORGE_ROOTFS=plain` to select the small minirootfs and leave toolchains
-   for explicit installation in the guest.
+2. `EmbeddedLinux/fetch-rootfs.sh` — puts the provisioned Alpine aarch64 rootfs
+   into `Support/Resources/` so it is bundled into `XForge.app`. The release
+   workflow creates this payload first; use `XFORGE_ROOTFS=plain` only for a
+   deliberately minimal development image.
 3. `EmbeddedLinux/build-ish-aok-core.sh` — builds the engine's static libraries into
    `Vendor/ish-AOK-build/lib` for the linker.
 
@@ -115,10 +116,11 @@ Or build the unsigned IPA for sideloading via GitHub Actions
 
 ## On-device build pipeline
 
-1. **Embedded Linux** — iSH-AOK boots the bundled plain Alpine aarch64 rootfs (imported
+1. **Embedded Linux** — iSH-AOK boots the bundled provisioned Alpine aarch64 rootfs (imported
    into its `fakefs` format on first terminal use).
-2. **Toolchain** — `EmbeddedLinux/install-toolchain.sh` installs Swift + xtool only when
-   the user requests it; the darwin SDK is likewise an explicit in-guest install.
+2. **Toolchain** — the payload build runs `EmbeddedLinux/install-toolchain.sh` inside
+   Alpine before packaging, installing project dependencies, Swift, and xtool in the guest;
+   the darwin SDK is likewise an explicit in-guest install.
 3. **Build** — `xtool dev build -s -i` runs in the guest; the `.ipa` is copied back out.
 4. **Signing** — free Apple ID via XKit; hand the `.ipa` to SideStore for install.
 
@@ -126,8 +128,8 @@ Or build the unsigned IPA for sideloading via GitHub Actions
 
 - [x] Embedded Linux engine: iSH-AOK built for iOS, running in-process
 - [x] Alpine aarch64 rootfs bundled in the app and imported on first boot
-- [x] Plain Alpine rootfs — bundled without Swift, xtool, or a darwin SDK; the
-      optional in-guest installer is available from Toolchain
+- [x] Provisioned Alpine rootfs — bundled with project dependencies, Swift, and xtool
+      inside the guest; the optional in-guest Darwin SDK installer remains available
 - [ ] XKit signing (free Apple ID) wired into the export flow
 - [ ] Hand-off of built `.ipa` to SideStore/AltStore for install
 - [ ] `RemoteExecutor` (build server) for fast compilation of real apps
