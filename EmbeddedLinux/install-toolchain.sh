@@ -365,19 +365,28 @@ step_deps() {
         python3 sqlite-dev
     "
 
+    log "Refreshing Alpine package indexes"
+    apk update
+
     missing=""
     for package in $packages; do
         apk info -e "$package" >"$SILENT" 2>&1 || missing="$missing $package"
     done
 
     if [ -n "$missing" ]; then
-        log "Installing missing Alpine build dependencies:$missing"
-        apk add --no-cache $missing
+        total=$(printf '%s\n' "$missing" | xargs -n1 | sed '/^[[:space:]]*$/d' | wc -l | tr -d ' ')
+        current=0
+        for package in $missing; do
+            current=$((current + 1))
+            log "Installing missing Alpine build dependency $current/$total: $package"
+            apk add --no-cache "$package"
+        done
+        update-ca-certificates >/dev/null 2>&1 || true
+        log "Alpine build dependencies installed"
     else
         log "Alpine build dependencies already installed"
     fi
 }
-
 xtool_wrapper() {
     cat > /usr/local/bin/xtool <<'EOF'
 #!/bin/sh
