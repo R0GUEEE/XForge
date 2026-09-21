@@ -2,10 +2,12 @@ import SwiftUI
 
 /// Guest-backed provisioning controls.
 ///
-/// The app never downloads build tooling into a host-side cache. Each action below
-/// delegates to `ToolchainManager`, which runs the downloader and installer in the
-/// embedded Alpine filesystem.
+/// The app never downloads build tooling into a host-side cache: every component
+/// is installed by a command inside the embedded Alpine filesystem, and those
+/// commands run in the Terminal tab so their output is visible. This screen
+/// shows what is present and hands the command over.
 struct DownloadsView: View {
+    @EnvironmentObject private var terminal: TerminalSession
     @StateObject private var toolchain = ToolchainManager()
 
     var body: some View {
@@ -14,45 +16,31 @@ struct DownloadsView: View {
                 LinuxProvisioningRow(
                     component: .swift,
                     installed: toolchain.isInstalled(.swift),
-                    isInstalling: toolchain.isInstalling == .swift,
                     isBusy: toolchain.isInstalling != nil
                 ) {
-                    Task { await toolchain.install(.swift) }
+                    install(SystemComponents.swiftInstallCommand, "Swift toolchain")
                 }
 
                 LinuxProvisioningRow(
                     component: .xtool,
                     installed: toolchain.isInstalled(.xtool),
-                    isInstalling: toolchain.isInstalling == .xtool,
                     isBusy: toolchain.isInstalling != nil
                 ) {
-                    Task { await toolchain.install(.xtool) }
+                    install(SystemComponents.xtoolInstallCommand, "xtool")
                 }
 
                 LinuxProvisioningRow(
                     component: .sdk,
                     installed: toolchain.isInstalled(.sdk),
-                    isInstalling: toolchain.isInstalling == .sdk,
                     isBusy: toolchain.isInstalling != nil
                 ) {
-                    Task { await toolchain.install(.sdk) }
+                    installPrebuiltSDK()
                 }
             } header: {
                 Text("Alpine Toolchain")
             } footer: {
-                Text("Swift, xtool, and the Darwin SDK are downloaded, unpacked, and installed inside the embedded Alpine filesystem. The iOS app only displays progress.")
-            }
-
-            if let progressLabel = toolchain.progressLabel {
-                Section("Guest Activity") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ProgressView(value: toolchain.progress)
-                            .progressViewStyle(.linear)
-                        Text(progressLabel)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                Text("Each install is an ordinary Linux command run inside the "
+                     + "embedded Alpine filesystem, shown in the Terminal tab.")
             }
 
             if let message = toolchain.message {
@@ -64,13 +52,11 @@ struct DownloadsView: View {
             }
 
             Section {
-                NavigationLink {
-                    TerminalView()
-                } label: {
-                    Label("Open Alpine Terminal", systemImage: "terminal")
-                }
-            } footer: {
-                Text("Use the terminal to inspect the installed tools with swift --version, xtool --version, and swift sdk list.")
+                Text("The Alpine terminal is the Terminal tab, where these installs "
+                     + "run: use it to inspect them with swift --version, "
+                     + "xtool --version and swift sdk list.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             }
         }
         .navigationTitle("Linux Toolchain")
@@ -78,12 +64,44 @@ struct DownloadsView: View {
             await toolchain.refresh(probeGuest: true)
         }
     }
+
+    /// Boot the guest, make sure the provisioning script is in it, and hand the
+    /// command to the shared terminal.
+    private func install(_ command: String, _ what: String) {
+        Task {
+            do {
+                let vm = XForgeEnvironment.makeVM()
+                await vm.prepareRootfs()
+                try await vm.boot()
+                try await SystemComponents.ensureInstallerScript(in: vm)
+                terminal.enqueue(command, label: "Settings")
+                toolchain.message = "\(what): running in the Terminal tab."
+            } catch {
+                toolchain.message = error.localizedDescription
+            }
+        }
+    }
+
+    private func installPrebuiltSDK() {
+        Task {
+            do {
+                let url = try await XForgeReleases.darwinSDKURL()
+                let vm = XForgeEnvironment.makeVM()
+                await vm.prepareRootfs()
+                try await vm.boot()
+                terminal.enqueue(SystemComponents.darwinSDKDownloadCommand(from: url),
+                                 label: "Settings")
+                toolchain.message = "Darwin SDK: downloading and installing in the Terminal tab."
+            } catch {
+                toolchain.message = error.localizedDescription
+            }
+        }
+    }
 }
 
 private struct LinuxProvisioningRow: View {
     let component: ToolchainManager.Component
     let installed: Bool
-    let isInstalling: Bool
     let isBusy: Bool
     let install: () -> Void
 
@@ -107,10 +125,7 @@ private struct LinuxProvisioningRow: View {
 
             Spacer()
 
-            if isInstalling {
-                ProgressView()
-                    .controlSize(.small)
-            } else if !installed {
+            if !installed {
                 Button("Install", action: install)
                     .buttonStyle(.bordered)
                     .disabled(isBusy)

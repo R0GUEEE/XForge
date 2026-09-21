@@ -192,21 +192,30 @@ final class ToolchainManagerTests: XCTestCase {
         XCTAssertTrue(missing.localizedDescription.contains("darwin.artifactbundle.zip"))
     }
 
-    func testXcodeImportUsesCurrentXtoolInstallFlow() async throws {
+    func testXcodeImportStagesTheXIPInTheGuestAndHandsBackTheInstallCommand() async throws {
         let xip = FileManager.default.temporaryDirectory
             .appendingPathComponent("xforge-sdk-test-\(UUID().uuidString).xip")
         try Data().write(to: xip)
         defer { try? FileManager.default.removeItem(at: xip) }
 
         let vm = StubLinuxVM()
-        vm.succeeding = ["xtool sdk install", "swift sdk list"]
+        vm.succeeding = ["mkdir -p", "wc -c"]
         let manager = ToolchainManager(vm: vm)
 
-        await manager.installSDKFromXcode(xip: xip)
+        let command = try await manager.installSDKFromXcode(xip: xip)
 
-        XCTAssertTrue(vm.ranCommands.contains { $0.contains("xtool sdk install") })
-        XCTAssertFalse(vm.ranCommands.contains { $0.contains("xtool sdk build") })
-        XCTAssertTrue(vm.ranCommands.contains { $0.contains("swift sdk list") })
+        // The xip goes into the guest's own storage, and xtool is pointed at that
+        // path: current xtool installs an Xcode.xip directly, so there is no
+        // host-side unpack step and no obsolete artifactbundle hand-off.
+        XCTAssertTrue(vm.ranCommands.contains { $0.contains("mkdir -p '/root/xforge/xip'") },
+                      "the guest storage directory should be created: \(vm.ranCommands)")
+        XCTAssertTrue(command.contains("xtool sdk install"),
+                      "the guest should install the xip with xtool: \(command)")
+        XCTAssertFalse(command.contains("xtool sdk build"))
+        XCTAssertTrue(command.contains("/root/xforge/xip/"),
+                      "the command must point at the guest's own copy: \(command)")
+        XCTAssertTrue(command.contains("swift sdk list"),
+                      "the install should verify itself: \(command)")
     }
 
     func testBuildBootstrapDoesNotProvisionAMissingToolchain() async throws {

@@ -2,6 +2,37 @@
 
 All notable changes to **XForge** are documented here.
 
+## Terminal tab — and components installed by command
+
+### Changed
+- **The Sign & Install tab is now the Terminal.** Tab 3 is a full-screen terminal
+  into the embedded Alpine system, laid out like iSH-AOK's: the screen *is* the
+  terminal, with a key bar of the characters a phone keyboard cannot type (Tab,
+  Ctrl, Esc, arrows, `- . / : ! |`, paste, hide keyboard) between it and the
+  keyboard. Output goes through a small screen model, so SGR colour, the
+  carriage-return progress bars `curl` and `apk` draw, and `clear` behave like a
+  terminal rather than a log.
+- **Sign & Install moved into the Build tab**, next to the artifact it acts on: a
+  Sign & Install card under the pipeline, and the same two destinations in the
+  Build toolbar.
+- **System components are managed by commands, run in that terminal.** The
+  Toolchain screen (and Settings → Linux Toolchain) no longer installs anything
+  behind its own progress bar; it puts your files where the guest can read them
+  and hands over the command, so you can watch it and answer it:
+  - **Darwin SDK from your own `Xcode.xip`** — the file is copied into the guest's
+    own storage (`/root/xforge/xip/…`) and installed there with
+    `xtool sdk install "path/to/xip"`;
+  - **the Swift toolchain** — the command swift.org documents, run in the guest
+    (`curl -O https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz`,
+    `tar zxf`, `./swiftly init --quiet-shell-followup`, `env.sh`, `hash -r`), plus
+    the glibc layer the guest needs to run what it installs;
+  - **xtool** with its provisioning step, and the **prebuilt darwin bundle** by
+    downloading and installing it inside the guest.
+- The Terminal's Components menu — in the toolbar and on the wrench key of its
+  key bar — runs those same commands, so nothing depends on remembering a path.
+- A command handed over by another screen is queued, echoed in the terminal with
+  the screen that asked for it, and runs as soon as the current one finishes.
+
 ## Alpine 3.24.2 root refresh
 
 - Replaced the bundled Alpine 3.23.3 base with the official Alpine 3.24.2

@@ -5,12 +5,16 @@ struct RootTabView: View {
     @StateObject private var signing = XKitSigningService()
     @StateObject private var device = XKitDeviceService()
     @StateObject private var preferences = AppPreferences()
+    /// One terminal for the whole app: the Toolchain screen and the terminal
+    /// itself hand commands to the same session, so what a component install is
+    /// doing is visible where it runs.
+    @StateObject private var terminal = TerminalSession()
     @State private var selection: AppTab = .projects
 
     enum AppTab: Hashable {
         case projects
         case build
-        case signInstall
+        case terminal
         case toolchain
         case settings
     }
@@ -23,20 +27,23 @@ struct RootTabView: View {
                 .tabItem { Label("Projects", systemImage: "folder") }
                 .tag(AppTab.projects)
 
-            BuildTab()
+            BuildTab(signing: signing, device: device)
                 .environmentObject(store)
                 .tabItem { Label("Build", systemImage: "hammer") }
                 .tag(AppTab.build)
 
-            SignInstallTab(signing: signing, device: device)
-                .tabItem { Label("Sign & Install", systemImage: "key.fill") }
-                .tag(AppTab.signInstall)
+            TerminalTab()
+                .environmentObject(terminal)
+                .tabItem { Label("Terminal", systemImage: "terminal.fill") }
+                .tag(AppTab.terminal)
 
             ToolchainTab()
+                .environmentObject(terminal)
                 .tabItem { Label("Toolchain", systemImage: "wrench.and.screwdriver") }
                 .tag(AppTab.toolchain)
 
             SettingsTab(preferences: preferences)
+                .environmentObject(terminal)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppTab.settings)
         }

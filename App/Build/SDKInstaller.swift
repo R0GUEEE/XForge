@@ -109,3 +109,26 @@ enum SDKInstaller {
         XForgeLog.note("sdk: installed and verified in the guest rootfs")
     }
 }
+
+/// Thread-safe string accumulator for output delivered from a `@Sendable` callback.
+final class OutputCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var text = ""
+
+    func append(_ chunk: String) {
+        lock.lock()
+        text += chunk
+        lock.unlock()
+    }
+
+    var value: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return text
+    }
+
+    /// Last few lines — what an error message should show.
+    var tail: String {
+        value.split(separator: "\n").suffix(6).joined(separator: "\n")
+    }
+}

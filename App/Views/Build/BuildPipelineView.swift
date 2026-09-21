@@ -5,10 +5,14 @@ import SwiftUI
 /// artifact) with live state and a streaming console.
 struct BuildPipelineView: View {
     let project: Project
+    @ObservedObject var signing: XKitSigningService
+    @ObservedObject var device: XKitDeviceService
     @StateObject private var manager: BuildManager
 
-    init(project: Project) {
+    init(project: Project, signing: XKitSigningService, device: XKitDeviceService) {
         self.project = project
+        self.signing = signing
+        self.device = device
         _manager = StateObject(wrappedValue: BuildManager(project: project))
     }
 
@@ -18,6 +22,8 @@ struct BuildPipelineView: View {
                 header
                 stepsCard
                 consoleCard
+                artifactCard
+                SignInstallCard(signing: signing, device: device)
             }
             .padding()
         }
@@ -100,6 +106,23 @@ struct BuildPipelineView: View {
                 }
             }
         }
+        .padding()
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var artifactCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Artifacts").font(.headline)
+            NavigationLink {
+                ArtifactsView()
+            } label: {
+                Label("Built IPAs", systemImage: "shippingbox")
+            }
+            Text("Signed by SideStore, AltStore or Xcode after export.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(Color(.secondarySystemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 12))

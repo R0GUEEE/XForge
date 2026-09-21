@@ -1,8 +1,12 @@
 import SwiftUI
 
-/// Tab 2 — build a selected project with the on-device pipeline.
+/// Tab 2 — build a selected project with the on-device pipeline, then sign and
+/// install it. Sign & Install used to be its own tab; it lives here now, next to
+/// the artifact it acts on.
 struct BuildTab: View {
     @EnvironmentObject private var store: ProjectStore
+    @ObservedObject var signing: XKitSigningService
+    @ObservedObject var device: XKitDeviceService
     @State private var selection: Project?
 
     private var selectedProject: Project? {
@@ -21,7 +25,7 @@ struct BuildTab: View {
                     )
                 } else {
                     let project = selectedProject ?? store.projects[0]
-                    BuildPipelineView(project: project)
+                    BuildPipelineView(project: project, signing: signing, device: device)
                         .id(project.id)
                 }
             }
@@ -34,10 +38,25 @@ struct BuildTab: View {
             }
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    NavigationLink {
-                        ArtifactsView()
+                    Menu {
+                        NavigationLink {
+                            SigningView(signing: signing)
+                        } label: {
+                            Label("Signing", systemImage: "key.fill")
+                        }
+                        NavigationLink {
+                            InstallView(device: device)
+                        } label: {
+                            Label("Export & Install", systemImage: "iphone.and.arrow.forward")
+                        }
+                        Divider()
+                        NavigationLink {
+                            ArtifactsView()
+                        } label: {
+                            Label("Built IPAs", systemImage: "shippingbox")
+                        }
                     } label: {
-                        Label("Artifacts", systemImage: "shippingbox")
+                        Label("Sign & Install", systemImage: "key.fill")
                     }
                 }
                 ToolbarItem(placement: .principal) {

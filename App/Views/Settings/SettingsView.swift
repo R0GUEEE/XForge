@@ -3,6 +3,7 @@ import SwiftUI
 @MainActor
 struct SettingsView: View {
     @ObservedObject var preferences: AppPreferences
+    @EnvironmentObject private var terminal: TerminalSession
     @StateObject private var toolchain = ToolchainManager()
     /// On-disk sizes, filled off the main actor — never computed during `body`.
     @State private var sizes: [ToolchainManager.Component: Int64] = [:]
@@ -95,7 +96,7 @@ struct SettingsView: View {
                     progress: toolchain.isInstalling == component ? toolchain.progress : nil,
                     progressLabel: toolchain.isInstalling == component ? toolchain.progressLabel : nil
                 ) {
-                    Task { await toolchain.install(component) }
+                    install(component)
                 }
             }
             StorageRow(title: "Build artifacts",
@@ -104,9 +105,41 @@ struct SettingsView: View {
         } header: {
             Text("Storage & Toolchain")
         } footer: {
-            Text("The Alpine rootfs is bundled and installs offline. The Swift toolchain, "
-                 + "xtool and the darwin SDK are provisioned inside the embedded Linux — "
-                 + "tap Install on the Toolchain screen to see progress.")
+            Text("The Alpine rootfs is bundled and installs offline. Swift, xtool and "
+                 + "the darwin SDK are installed by commands inside the embedded Linux: "
+                 + "Install hands the command to the Terminal tab, where you can watch it.")
+        }
+    }
+
+    /// Hand a component's install command to the Terminal, after making sure the
+    /// guest is running and the provisioning script is in it.
+    private func install(_ component: ToolchainManager.Component) {
+        Task {
+            do {
+                let vm = XForgeEnvironment.makeVM()
+                await vm.prepareRootfs()
+                try await vm.boot()
+                switch component {
+                case .rootfs:
+                    toolchain.message = "The Alpine rootfs is bundled in the app and "
+                        + "already installed in the guest filesystem."
+                case .swift:
+                    try await SystemComponents.ensureInstallerScript(in: vm)
+                    terminal.enqueue(SystemComponents.swiftInstallCommand, label: "Settings")
+                    toolchain.message = "Swift toolchain: installing in the Terminal tab."
+                case .xtool:
+                    try await SystemComponents.ensureInstallerScript(in: vm)
+                    terminal.enqueue(SystemComponents.xtoolInstallCommand, label: "Settings")
+                    toolchain.message = "xtool: installing in the Terminal tab."
+                case .sdk:
+                    let url = try await XForgeReleases.darwinSDKURL()
+                    terminal.enqueue(SystemComponents.darwinSDKDownloadCommand(from: url),
+                                     label: "Settings")
+                    toolchain.message = "Darwin SDK: downloading and installing in the Terminal tab."
+                }
+            } catch {
+                toolchain.message = error.localizedDescription
+            }
         }
     }
 

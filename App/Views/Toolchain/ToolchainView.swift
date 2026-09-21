@@ -3,33 +3,27 @@ import UniformTypeIdentifiers
 
 /// Manage the on-device build infrastructure.
 ///
-/// The Alpine rootfs is bundled in the app (installing it is a local import, no
-/// network); the Swift toolchain, xtool and the darwin SDK live inside the guest
-/// Linux and are provisioned by `EmbeddedLinux/install-toolchain.sh`, which the
-/// same screen also runs by hand — it is copied to `/root/install-toolchain.sh`,
-/// so the Terminal can drive it too.
+/// Every component lives in the embedded Alpine system, and every one of them is
+/// installed *by running a command inside it*. That is what this screen sets up:
+/// it puts the user's files where the guest can reach them and hands the right
+/// command to the Terminal, where the install runs and reports what it is doing.
+///
+///  - **Alpine rootfs** — bundled in the app; "installing" it is a local import.
+///  - **Swift / xtool** — the commands swift.org and xtool document, run in the
+///    guest (see `SystemComponents`).
+///  - **Darwin SDK** — either your own `Xcode.xip`, copied into the guest's
+///    storage and installed there with `xtool sdk install`, or XForge's prebuilt
+///    bundle, downloaded and installed inside the guest.
 struct ToolchainView: View {
+    @EnvironmentObject private var terminal: TerminalSession
     @StateObject private var toolchain = ToolchainManager()
-    @State private var importingXcode = false
+    @State private var importingXIP = false
     @State private var importingRootfs = false
-    @State private var importingSDKArchive = false
+    @State private var confirmingDownload = false
+    @State private var preparing: String?
 
     var body: some View {
         Form {
-            Section {
-                NavigationLink {
-                    TerminalView()
-                } label: {
-                    Label("Terminal", systemImage: "terminal")
-                        .font(.headline)
-                }
-            } header: {
-                Text("Interactive Shell")
-            } footer: {
-                Text("A real shell into the bundled Alpine aarch64 Linux. Its build "
-                     + "dependencies, Swift, and xtool are installed in that guest root.")
-            }
-
             Section {
                 ForEach(ToolchainManager.Component.allCases) { component in
                     row(component)
@@ -37,8 +31,8 @@ struct ToolchainView: View {
             } header: {
                 Text("Components")
             } footer: {
-                Text("Green = present. Guest components (Swift, xtool, the SDK) are "
-                     + "verified inside the embedded Linux — tap Check to probe it.")
+                Text("Installs run in the Terminal tab, so you can watch them — and "
+                     + "answer anything they ask — while they work.")
             }
 
             Section {
@@ -47,41 +41,57 @@ struct ToolchainView: View {
                 } label: {
                     Label("Check the embedded Linux", systemImage: "arrow.clockwise")
                 }
-                .disabled(toolchain.isInstalling != nil || toolchain.activity != nil)
+                .disabled(toolchain.activity != nil || preparing != nil)
+            } footer: {
+                Text("Green = present. Guest components are verified inside the "
+                     + "embedded Linux, which this boots if it is not running.")
+            }
 
+            Section {
                 Button {
-                    importingXcode = true
+                    importingXIP = true
                 } label: {
                     Label("Install the Darwin SDK from an Xcode.xip…",
                           systemImage: "doc.badge.plus")
                 }
-                .disabled(toolchain.isInstalling != nil)
-
                 Button {
-                    importingSDKArchive = true
+                    confirmingDownload = true
                 } label: {
-                    Label("Install the Darwin SDK from an archive…",
-                          systemImage: "archivebox")
+                    Label("Install the prebuilt Darwin SDK…", systemImage: "arrow.down.circle")
                 }
-                .disabled(toolchain.isInstalling != nil)
+            } header: {
+                Text("Darwin SDK")
             } footer: {
-                Text("The Darwin SDK is normally downloaded prebuilt (about 457 MB). Building "
-                     + "it from your own Xcode.xip runs `xtool sdk install` inside the guest "
-                     + "instead — it needs xtool and Swift there, and room for the "
-                     + "extracted Xcode.")
+                Text("With an Xcode.xip: the file is copied into the Alpine system's own "
+                     + "storage and then installed there with "
+                     + "`xtool sdk install \"path/to/xip\"`. Without one, XForge's "
+                     + "prebuilt darwin.artifactbundle is fetched and installed inside "
+                     + "the guest instead.")
             }
 
             Section {
                 Button {
                     importingRootfs = true
                 } label: {
-                    Label("Import an Alpine rootfs archive…", systemImage: "shippingbox.and.arrow.backward")
+                    Label("Import an Alpine rootfs archive…",
+                          systemImage: "shippingbox.and.arrow.backward")
                 }
                 .disabled(toolchain.isInstalling != nil || toolchain.isGuestBooted)
             } header: {
                 Text("Offline Imports")
             } footer: {
-                Text("Choose an Alpine aarch64 .tar.gz minirootfs. A custom import replaces the provisioned root, so it may not include XForge's bundled build tools. Quit and reopen XForge first if Linux is running.")
+                Text("Choose an Alpine aarch64 .tar.gz minirootfs. A custom import "
+                     + "replaces the provisioned root, so it may not include XForge's "
+                     + "bundled build tools. Quit and reopen XForge first if Linux is running.")
+            }
+
+            if let activity = toolchain.activity ?? preparing {
+                Section {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text(activity).font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
             }
 
             if let message = toolchain.message {
@@ -115,123 +125,164 @@ struct ToolchainView: View {
         .navigationTitle("Toolchain")
         .task { await toolchain.refresh() }
         .fileImporter(
-            isPresented: $importingXcode,
+            isPresented: $importingXIP,
             allowedContentTypes: [UTType(filenameExtension: "xip") ?? .data],
             allowsMultipleSelection: false
         ) { result in
             guard case .success(let urls) = result, let url = urls.first else { return }
-            Task { await toolchain.installSDKFromXcode(xip: url) }
+            Task { await installFromXIP(url) }
         }
         .fileImporter(
             isPresented: $importingRootfs,
-            allowedContentTypes: [UTType(filenameExtension: "gz") ?? .data],
+            allowedContentTypes: [.archive, .gzip, .data],
             allowsMultipleSelection: false
         ) { result in
             guard case .success(let urls) = result, let url = urls.first else { return }
             Task { await toolchain.importRootfs(from: url) }
         }
-        .fileImporter(
-            isPresented: $importingSDKArchive,
-            allowedContentTypes: [.zip],
-            allowsMultipleSelection: false
-        ) { result in
-            guard case .success(let urls) = result, let url = urls.first else { return }
-            Task { await toolchain.installSDKFromArchive(zip: url) }
+        .confirmationDialog("Install the prebuilt Darwin SDK?",
+                            isPresented: $confirmingDownload) {
+            Button("Download and install in the Terminal") {
+                Task { await installPrebuiltSDK() }
+            }
+        } message: {
+            Text("About 457 MB is downloaded inside the guest and installed there. "
+                 + "It runs in the Terminal tab.")
         }
     }
 
+    // MARK: - Rows
+
+    @ViewBuilder
     private func row(_ component: ToolchainManager.Component) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top) {
+            HStack(spacing: 10) {
                 Image(systemName: component.icon)
-                    .foregroundStyle(toolchain.isInstalled(component) ? .green : .secondary)
-                    .frame(width: 24)
+                    .foregroundStyle(.tint)
+                    .frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(component.rawValue).font(.headline)
+                    Text(component.rawValue).font(.subheadline.weight(.semibold))
                     Text(component.blurb).font(.caption).foregroundStyle(.secondary)
-                    statusLine(component)
                 }
                 Spacer()
-                if !toolchain.isInstalled(component) {
-                    Button {
-                        Task { await toolchain.install(component) }
-                    } label: {
-                        if toolchain.isInstalling == component {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label("Install", systemImage: "arrow.down.circle")
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(toolchain.isInstalling != nil)
-                }
+                statusBadge(component)
             }
 
-            // The bar for whichever component is installing right now, under the
-            // row it belongs to, with what it is doing at that moment.
-            if toolchain.isInstalling == component, let label = toolchain.progressLabel {
-                VStack(alignment: .leading, spacing: 3) {
-                    ProgressView(value: toolchain.progress)
-                        .progressViewStyle(.linear)
-                    HStack(spacing: 4) {
-                        Text("\(Int(toolchain.progress * 100))%")
-                        Text(label)
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                ForEach(actions(for: component), id: \.title) { action in
+                    Button(action.title) { action.run() }
+                        .font(.footnote)
+                        .disabled(toolchain.isInstalling != nil || preparing != nil)
                 }
-                .padding(.leading, 30)
-                .transition(.opacity)
             }
+            .padding(.leading, 32)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private struct RowAction {
+        let title: String
+        let run: () -> Void
+    }
+
+    private func actions(for component: ToolchainManager.Component) -> [RowAction] {
+        switch component {
+        case .rootfs:
+            // The bundled rootfs installs itself; a custom archive is the
+            // "Offline Imports" section below.
+            return []
+        case .swift:
+            return [RowAction(title: "Install in Terminal") {
+                installInTerminal(.swift)
+            }]
+        case .xtool:
+            return [RowAction(title: "Install in Terminal") {
+                installInTerminal(.xtool)
+            }]
+        case .sdk:
+            return [
+                RowAction(title: "From an Xcode.xip…") { importingXIP = true },
+                RowAction(title: "Prebuilt download…") { confirmingDownload = true },
+            ]
         }
     }
 
     @ViewBuilder
-    private func statusLine(_ component: ToolchainManager.Component) -> some View {
+    private func statusBadge(_ component: ToolchainManager.Component) -> some View {
         if toolchain.isInstalled(component) {
             Label("Installed", systemImage: "checkmark")
-                .font(.caption).foregroundStyle(.green)
+                .labelStyle(.iconOnly)
+                .font(.footnote.bold())
+                .foregroundStyle(.green)
         } else if component.livesInGuest && !toolchain.guestChecked {
-            Text("Not checked").font(.caption).foregroundStyle(.secondary)
+            Text("?").font(.footnote.bold()).foregroundStyle(.secondary)
         } else {
-            Text("Not installed").font(.caption).foregroundStyle(.orange)
-        }
-
-        // What the guest's own verification said about each tool, so "installed"
-        // and "runs" are never confused for each other.
-        ForEach(verdictRows(for: component), id: \.self) { line in
-            Label(line.text, systemImage: line.icon)
-                .font(.caption)
-                .foregroundStyle(line.color)
+            Image(systemName: "circle.dashed")
+                .font(.footnote.bold())
+                .foregroundStyle(.orange)
         }
     }
 
-    private struct VerdictLine: Hashable {
-        let text: String
-        let icon: String
-        let color: Color
-    }
+    // MARK: - Actions
 
-    private func verdictRows(for component: ToolchainManager.Component) -> [VerdictLine] {
-        let names: [String]
-        switch component {
-        case .swift: names = ["swift", "swiftly"]
-        case .xtool: names = ["xtool"]
-        default: names = []
-        }
-        return names.compactMap { name in
-            guard let verdict = toolchain.toolVerdicts[name] else { return nil }
-            switch verdict {
-            case .ok(let detail):
-                return VerdictLine(text: "\(name): \(detail)", icon: "checkmark.seal",
-                                   color: .green)
-            case .broken(let detail):
-                return VerdictLine(text: "\(name) is installed but does not run here (\(detail))",
-                                   icon: "exclamationmark.triangle", color: .orange)
-            case .missing:
-                return VerdictLine(text: "\(name): not installed", icon: "xmark.circle",
-                                   color: .orange)
+    /// Prepare the guest and hand the component's install command to the Terminal.
+    private func installInTerminal(_ component: SystemComponents.Component) {
+        Task {
+            preparing = "Preparing the guest for \(component.title)…"
+            defer { preparing = nil }
+            do {
+                let vm = XForgeEnvironment.makeVM()
+                await vm.prepareRootfs()
+                try await vm.boot()
+                try await SystemComponents.ensureInstallerScript(in: vm)
+                terminal.enqueue(command(for: component), label: "Toolchain")
+                toolchain.message = "\(component.title): running in the Terminal tab."
+            } catch {
+                toolchain.message = error.localizedDescription
             }
+        }
+    }
+
+    private func command(for component: SystemComponents.Component) -> String {
+        switch component {
+        case .glibc:
+            return SystemComponents.scriptCommand(.glibc)
+        case .xtool:
+            return SystemComponents.xtoolInstallCommand
+        case .swift:
+            return SystemComponents.swiftInstallCommand
+        case .darwinSDK:
+            // Always driven by a file or a download, never by a bare tap.
+            return SystemComponents.scriptCommand(.xtool)
+        }
+    }
+
+    /// Copy the user's Xcode.xip into the guest's storage, then install it there.
+    private func installFromXIP(_ url: URL) async {
+        preparing = "Copying \(url.lastPathComponent) into the guest…"
+        defer { preparing = nil }
+        do {
+            let command = try await toolchain.installSDKFromXcode(xip: url)
+            terminal.enqueue(command, label: "Toolchain")
+        } catch {
+            toolchain.message = error.localizedDescription
+        }
+    }
+
+    /// Download XForge's prebuilt Darwin SDK bundle inside the guest and install it.
+    private func installPrebuiltSDK() async {
+        preparing = "Resolving the latest Darwin SDK release…"
+        defer { preparing = nil }
+        do {
+            let url = try await XForgeReleases.darwinSDKURL()
+            let vm = XForgeEnvironment.makeVM()
+            await vm.prepareRootfs()
+            try await vm.boot()
+            terminal.enqueue(SystemComponents.darwinSDKDownloadCommand(from: url),
+                             label: "Toolchain")
+            toolchain.message = "Downloading and installing the Darwin SDK in the Terminal tab."
+        } catch {
+            toolchain.message = error.localizedDescription
         }
     }
 }
