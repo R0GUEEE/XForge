@@ -72,13 +72,17 @@ final class ReleaseResolutionTests: XCTestCase {
         XCTAssertEqual(XForgeReleases.repository, "R0GUEEE/XForge")
     }
 
-    func testOnlyTheProvisionedAlpineArchiveIsEligibleForBoot() {
-        XCTAssertEqual(
-            RootfsInstaller.bundledArchiveNames,
-            ["alpine-minirootfs-3.24.2-aarch64-provisioned"]
-        )
-        XCTAssertEqual(RootfsInstaller.rootName, "alpine-3.24.2")
-        XCTAssertEqual(RootfsInstaller.legacyRootNames, ["alpine"])
+    func testOnlyTheBundledAlpineRootfsIsEligibleForBoot() {
+        // The bundled root is a ZIP of an already-converted fakefs, not a tarball
+        // the app imports: the conversion happens at build time
+        // (EmbeddedLinux/build-rootfs.sh), so first launch is an unzip.
+        XCTAssertEqual(RootfsInstaller.archiveName, "alpine-rootfs")
+        XCTAssertEqual(RootfsInstaller.archiveExtension, "zip")
+        XCTAssertEqual(RootfsInstaller.rootName, "alpine-3.21")
+        // Roots from the earlier layouts must not be reused.
+        XCTAssertTrue(RootfsInstaller.legacyRootNames.contains("alpine"))
+        XCTAssertTrue(RootfsInstaller.legacyRootNames.contains("alpine-3.24.2"))
+        XCTAssertFalse(RootfsInstaller.legacyRootNames.contains(RootfsInstaller.rootName))
     }
 
     func testCurrentRootRemovesTheLegacyAlpineInstall() throws {
