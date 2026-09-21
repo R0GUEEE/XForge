@@ -9,17 +9,17 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: ipa
-  cancel-in-progress: true
+  contents: read
 
 jobs:
   payload:
     name: Provision Alpine build root
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
+    # Supersede older dispatches while the run is still on the cheaper Linux work.
+    concurrency:
+      group: ipa-payload
+      cancel-in-progress: true
     env:
       # The release contains Alpine build dependencies and Swift only. xtool and
       # the Darwin SDK are explicit in-guest components installed on demand.
@@ -61,7 +61,10 @@ jobs:
           tar -xzOf "$archive" "$manifest" | tee /tmp/payload-manifest.txt
           grep -qE '^base:[[:space:]]+alpine-minirootfs-3\.24\.2-aarch64\.tar\.gz$' /tmp/payload-manifest.txt
           grep -qE '^rootfs:[[:space:]]+3\.24\.2$' /tmp/payload-manifest.txt
-          ! grep -qE '(^|/)xtool|darwin\.artifactbundle' /tmp/rootfs-contents.txt
+          if grep -qE '(^|/)xtool|darwin\.artifactbundle' /tmp/rootfs-contents.txt; then
+            echo '::error::payload unexpectedly bundles xtool or the Darwin SDK'
+            exit 1
+          fi
           grep -qE '^xtool:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
           echo "payload=$archive" >> "$GITHUB_OUTPUT"
 
@@ -77,6 +80,9 @@ jobs:
     needs: payload
     runs-on: macos-15
     timeout-minutes: 90
+    # Once a macOS archive starts, let it finish instead of canceling a packaged IPA.
+    concurrency:
+      group: ipa-build
     steps:
       - uses: actions/checkout@v4
 
@@ -157,7 +163,10 @@ jobs:
             || { echo '::error::bundled rootfs has no Swift toolchain'; exit 1; }
           manifest="$(grep -E '/usr/local/share/xforge/payload-manifest.txt$' /tmp/rootfs-contents.txt | head -1)"
           tar -xzOf "$ARCHIVE" "$manifest" | tee /tmp/payload-manifest.txt
-          ! grep -qE '(^|/)xtool|darwin\.artifactbundle' /tmp/rootfs-contents.txt
+          if grep -qE '(^|/)xtool|darwin\.artifactbundle' /tmp/rootfs-contents.txt; then
+            echo '::error::bundled rootfs unexpectedly contains xtool or the Darwin SDK'
+            exit 1
+          fi
           grep -qE '^xtool:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
           {
             echo '### Bundled Alpine build root'
@@ -223,12 +232,3 @@ jobs:
           path: dist/XForge-0.5.0-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
-
-      - name: Upload to release (manual trigger only)
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: xforge-${{ github.run_number }}
-          name: XForge 0.5.0 — provisioned Alpine terminal
-          files: dist/XForge-0.5.0-unsigned.ipa
-          body_path: CHANGELOG.md
-          generate_release_notes: false
