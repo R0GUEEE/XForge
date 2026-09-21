@@ -264,7 +264,16 @@ jobs:
             echo "Vendored iSH-AOK engine not present — skipping."
             exit 0
           fi
-          brew install meson ninja llvm lld libarchive
+          need_formula() { brew --prefix "$1" >/dev/null 2>&1 || missing+=("$1"); }
+          missing=()
+          command -v meson >/dev/null 2>&1 || missing+=(meson)
+          command -v ninja >/dev/null 2>&1 || missing+=(ninja)
+          need_formula llvm
+          need_formula lld
+          need_formula libarchive
+          if [ "${#missing[@]}" -gt 0 ]; then
+            brew install "${missing[@]}"
+          fi
           bash EmbeddedLinux/build-ish-aok-core.sh
 
       - name: Generate Xcode project (XcodeGen)
