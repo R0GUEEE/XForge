@@ -117,7 +117,9 @@ struct GuestFileBrowserView: View {
                 return Entry(name: URL(fileURLWithPath: full).lastPathComponent,
                              path: full, isDirectory: parts[0] == "d", size: Int64(parts[2]) ?? 0)
             }
-        } catch { error = error.localizedDescription }
+        } catch let caught {
+            self.error = caught.localizedDescription
+        }
         loading = false
     }
 
