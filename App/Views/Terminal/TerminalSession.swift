@@ -54,7 +54,6 @@ final class TerminalSession: ObservableObject {
     private var didAttemptBoot = false
     private var holdback = ""
     private var markerSeen = false
-    private var producedOutput = false
     private var generation = 0
 
     init() {
@@ -155,7 +154,6 @@ final class TerminalSession: ObservableObject {
         activeLabel = command.label
         markerSeen = false
         holdback = ""
-        producedOutput = false
         let currentGeneration = generation
 
         let promptLine = "\(prompt) \(command.text)"
@@ -170,9 +168,12 @@ final class TerminalSession: ObservableObject {
         }
         revision += 1
 
-        let keepAwake = InstallAssertion.begin(reason: "terminal command")
         Task { [weak self] in
             guard let self else { return }
+            // Hold the app awake while the guest works, for the whole task
+            // including its early exit when the command is detached.
+            let keepAwake = InstallAssertion.begin(reason: "terminal command")
+            defer { keepAwake.end() }
             var status: Int32 = -1
             do {
                 let vm = XForgeEnvironment.makeVM()
@@ -203,7 +204,6 @@ final class TerminalSession: ObservableObject {
             self.revision += 1
             self.running = false
             self.activeLabel = nil
-            keepAwake.end()
             self.save()
             self.startNextIfIdle()
         }
@@ -218,7 +218,7 @@ final class TerminalSession: ObservableObject {
     func interrupt() {
         guard running else { return }
         generation += 1
-        runUntilReady()
+        detachRunningCommand()
         buffer.appendLine("^C",
                           style: TerminalStyle(foreground: .index(9)))
         buffer.appendLine("[stopped watching; the command keeps running in the guest]",
@@ -226,7 +226,7 @@ final class TerminalSession: ObservableObject {
         revision += 1
     }
 
-    private func runUntilReady() {
+    private func detachRunningCommand() {
         running = false
         activeLabel = nil
         holdback = ""
