@@ -27,26 +27,36 @@ self-contained, all fetchable):
   .tbd stubs, module maps) + the iOS Swift stdlib. This is the big one (multi-GB).
 - **`xtool` aarch64 binary** (the prebuilt `xtool-aarch64.AppImage`, 51 MB).
 
-## 1b. The userspace is **Alpine aarch64**, bundled in the app
+## 1b. The userspace is **plain Alpine aarch64**, bundled as a fakefs ZIP
 
-The embedded Linux starts from the official **Alpine Linux arm64 minirootfs**:
+The embedded Linux boots the official **Alpine Linux aarch64 minirootfs**:
 
 ```
-https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz
+https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.0-aarch64.tar.gz
 ```
 
-- The release workflow runs `EmbeddedLinux/build-rootfs-payload.sh` on native
-  arm64 Linux. It downloads that exact archive, installs the project build
-  dependencies, Swift, and xtool, then bundles the provisioned archive into
-  `XForge.app`.
-- On first boot the archive is imported into the engine's `fakefs` format (a `data/` tree
-  plus a `meta.db` SQLite database) inside the app container; every later launch reuses
-  it. See `App/EmbeddedVM/RootfsInstaller.swift`.
-- Because Swift and xtool are glibc binaries, payload provisioning installs the
-  required glibc runtime under `/opt/glibc` in the otherwise-musl Alpine guest.
-- `EmbeddedLinux/install-toolchain.sh` is idempotent and runs inside the guest
-  during payload creation. The same component actions can repair or update an
-  installed guest later.
+- `EmbeddedLinux/build-rootfs.sh` downloads that archive, converts it to the
+  engine's `fakefs` format with the engine's own `tools/fakefsify`, configures the
+  root (mount points, `/etc/passwd`, `/etc/profile`, `/etc/motd`,
+  `/etc/apk/repositories`, a default `/etc/resolv.conf`), and packs it as
+  `alpine-rootfs.zip`.
+- **The conversion happens at build time, not in the app.** `fakefsify` runs on
+  the build machine, so the ZIP already *is* a fakefs — a `data/` tree plus
+  `meta.db` — and first launch costs an unzip rather than an import of thousands
+  of files into SQLite on a phone. This is the same layout OpenMinis ships, and
+  it is why `App/EmbeddedVM/RootfsInstaller.swift` uses `unzip` and then
+  `mount_root` instead of `fakefs_import`.
+- **The root is small and plain.** Swift, xtool and the glibc layer are *not* in
+  it: the guest installs them on demand with `install-toolchain.sh`, which keeps
+  the artifact a few megabytes instead of ~1.4 GB and keeps the root
+  reproducible. The trade is that a fresh install must provision once, in the
+  guest, before it can build anything.
+- Because the root is small, it is stored as a **pinned release asset**
+  (`rootfs-v1`) rather than rebuilt per IPA run. `build-ipa.yml` downloads it and
+  verifies its sha256; `build-rootfs.yml` rebuilds and republishes it when the
+  Alpine base or the root's configuration changes. Committing it to git is not an
+  option — GitHub rejects any file over 100 MB in a push, though at a few MB this
+  root would fit if that were ever preferable.
 - The multi-GB `darwin` SDK is *not* baked into the rootfs. The app resolves the
   newest `darwin-sdk-*` release asset and installs it on demand with SwiftPM.
 
@@ -161,13 +171,14 @@ path, with a fast remote path available later.
 ## 7. Repo layout
 
 ```
-.github/workflows/unsigned-ipa.yml   # CI: build the ish-arm64 core + unsigned XForge.ipa
+.github/workflows/build-ipa.yml      # CI: build the ish-arm64 core + unsigned XForge.ipa
+.github/workflows/build-rootfs.yml    # CI: build and publish the pinned Alpine rootfs
 project.yml                          # XcodeGen definition
 App/                                 # SwiftUI app sources (native shell)
-App/EmbeddedVM/                      # LinuxVM bridge, ISHEmulator, C bridge, rootfs import
+App/EmbeddedVM/                      # LinuxVM bridge, ISHEmulator, C bridge, rootfs unpack
 Support/                             # Info.plist, entitlements, Resources/ (bundled rootfs)
 Vendor/ish-arm64/                      # git submodule: the embedded Linux engine
 Vendor/ish-arm64-build/                # core static libs (built, gitignored)
-EmbeddedLinux/                       # fetch-rootfs.sh, build-ish-aok-core.sh, install-toolchain.sh
+EmbeddedLinux/                       # build-rootfs.sh, build-ish-core.sh, install-toolchain.sh
 Docs/                                # this design doc + tutorials
 ```

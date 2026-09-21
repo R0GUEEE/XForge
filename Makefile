@@ -1,4 +1,4 @@
-.PHONY: bootstrap submodule rootfs payload ish-core icon gen build test ipa sdk clean
+.PHONY: bootstrap submodule rootfs rootfs-publish ish-core icon gen build test ipa init clean
 
 XCODE := xcodebuild
 SCHEME := XForge
@@ -11,13 +11,20 @@ submodule:
 	git submodule update --init --depth 1 Vendor/ish-arm64
 	git -C Vendor/ish-arm64 submodule update --init --depth 1 deps/libarchive
 
-## Fetch the bundled Alpine aarch64 root filesystem into Support/Resources.
+## Build the bundled Alpine fakefs rootfs into Support/Resources.
+## Small and rarely changes; build-ipa.yml downloads the published copy instead.
 rootfs:
-	@bash EmbeddedLinux/fetch-rootfs.sh
+	@bash EmbeddedLinux/build-rootfs.sh Support/Resources
 
-## Fetch the provisioned Alpine root filesystem (payload). See build-rootfs-payload.sh.
-payload:
-	@bash EmbeddedLinux/build-rootfs-payload.sh
+## Build the rootfs and publish it as a pinned release asset for CI.
+## Usage: make rootfs-publish TAG=rootfs-v1 [ALPINE=3.21]
+rootfs-publish:
+	@test -n "$(TAG)" || { echo "usage: make rootfs-publish TAG=rootfs-v1"; exit 1; }
+	@command -v gh >/dev/null 2>&1 || { \
+		echo "GitHub CLI is required: https://cli.github.com/"; exit 1; \
+	}
+	gh workflow run build-rootfs.yml -f tag=$(TAG) -f alpine_version=$(or $(ALPINE),3.21)
+	@echo "Dispatched build-rootfs.yml for $(TAG); then set ROOTFS_TAG in build-ipa.yml."
 
 ## Build the embedded ish-arm64 Linux engine into Vendor/ish-arm64-build/lib.
 ish-core:
@@ -46,12 +53,15 @@ ipa:
 	@command -v gh >/dev/null 2>&1 || { \
 		echo "GitHub CLI is required: https://cli.github.com/"; exit 1; \
 	}
-	gh workflow run unsigned-ipa.yml
-	@echo "Dispatched unsigned-ipa.yml; monitor it with: gh run watch"
+	gh workflow run build-ipa.yml
+	@echo "Dispatched build-ipa.yml; monitor it with: gh run watch"
 
-## (macOS only) Build the darwin Swift SDK from local Xcode
-sdk:
-	xtool sdk build "$$(dirname $$(dirname $$(xcrun -f swiftc)))" darwin-sdk-out
+## Install Swift + xtool into the guest, on the device (the rootfs ships bare).
+## Run this inside the XForge terminal, not on the host:
+##     sh /root/install-toolchain.sh all
+init:
+	@echo "Run this in the XForge terminal (embedded Linux), not on the host:"
+	@echo "    sh /root/install-toolchain.sh all"
 
 clean:
-	rm -rf build dist XForge.xcodeproj Vendor/ish-arm64-build
+	rm -rf build dist XForge.xcodeproj Vendor/ish-arm64-build .rootfs-work

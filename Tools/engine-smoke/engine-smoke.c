@@ -16,7 +16,13 @@
 //  target to the engine's meson build, so the bridge is compiled with exactly the
 //  engine's own flags and guest-arch defines).
 //
-//  Usage: engine-smoke <rootfs.tar.xz> [workdir]
+//  Usage: engine-smoke <unpacked-fakefs-root> [workdir]
+//
+//  The root is an already-converted fakefs (a data/ tree plus meta.db), which
+//  is what the app has after unzipping the bundled alpine-rootfs.zip. The
+//  conversion and the unzip are both host-side, so neither goes through the
+//  engine and neither is what this harness needs to prove — it starts at the
+//  first call that actually touches the kernel.
 //
 //  Every step prints a flushed breadcrumb *before* it runs, so a crash leaves
 //  the last step it reached on stdout with nothing after it.
@@ -46,23 +52,6 @@ static void say(const char *fmt, ...) {
 
 // Announce a step before running it: if the process dies inside the step, the
 // breadcrumb is already on the wire and nothing follows it.
-// Progress for the rootfs import. The engine calls this once per archive entry
-// (thousands of times), and the elapsed time is useful in a smoke log because
-// the import is the slowest part of a first launch. Printed at 10% steps so the
-// output stays readable and the reader can see it moving. Returning 0 means
-// "keep going" — the engine's callback can cancel the import. 
-static int smoke_import_progress(void *cookie, double fraction, const char *message) {
-    (void) cookie;
-    (void) message;
-    static int last_bucket = -1;
-    int bucket = (int) (fraction * 10.0);
-    if (bucket > last_bucket) {
-        last_bucket = bucket;
-        say("[smoke] import %3d%%", bucket * 10);
-    }
-    return 0;
-}
-
 static void step(const char *what) {    say("[smoke] >>> %s", what);
 }
 
@@ -210,23 +199,22 @@ static int stage_into_share(const char *source, const char *destination) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: engine-smoke <rootfs.tar.xz> [workdir]\n");
+        fprintf(stderr, "usage: engine-smoke <unpacked-fakefs-root> [workdir]\n");
         return 2;
     }
-    const char *archive = argv[1];
+    const char *src_root = argv[1];
     const char *work = argc > 2 ? argv[2] : "/tmp/xforge-smoke";
 
     char root[4096], host[4096];
-    snprintf(root, sizeof root, "%s/root", work);
+    snprintf(root, sizeof root, "%s", src_root);
     snprintf(host, sizeof host, "%s/host", work);
 
     say("[smoke] === XForge engine smoke test ===");
-    say("[smoke] archive : %s", archive);
-    say("[smoke] rootfs  : %s", root);
+    say("[smoke] rootfs  : %s (unpacked fakefs)", src_root);
     say("[smoke] hostdir : %s", host);
 
-    if (access(archive, R_OK) != 0) {
-        say("[smoke] FAIL archive is not readable: %s", strerror(errno));
+    if (access(src_root, R_OK) != 0) {
+        say("[smoke] FAIL the rootfs directory is not readable: %s", strerror(errno));
         return 2;
     }
 
@@ -238,27 +226,37 @@ int main(int argc, char **argv) {
     }
     result("prepare work directory", 1);
 
-    // --- 1. import ---------------------------------------------------------
-    // This is exactly what ToolchainManager.install(.rootfs) does through
-    // RootfsInstaller.installIfNeeded().
-    step("import the bundled rootfs (fakefs_import)");
-    int rc = xf_ish_import_rootfs(archive, root, smoke_import_progress, NULL);
-    {
-        const char *err = xf_ish_last_error();
-        say("[smoke] import returned %d%s%s", rc,
-            (err != NULL && err[0] != '\0') ? " : " : "",
-            (err != NULL && err[0] != '\0') ? err : "");
+    // --- 1. the root ------------------------------------------------------
+    // The fakefs root is mounted in place, so point the harness at the caller's
+    // directory rather than copying it: in the app this is `<Documents>/
+    // embedded-linux/roots/alpine-3.21`, the result of unzipping the bundled
+    // alpine-rootfs.zip. Unzipping needs no engine, so this harness only checks
+    // that what it was given is a usable fakefs.
+    step("check the unpacked rootfs (data/ + meta.db)");
+    char data_dir[4096];
+    snprintf(data_dir, sizeof data_dir, "%s/data", root);
+    char meta_db[4096];
+    snprintf(meta_db, sizeof meta_db, "%s/meta.db", root);
+    struct stat st;
+    int root_ok = 1;
+    if (stat(data_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        say("[smoke] FAIL %s is not a directory", data_dir);
+        root_ok = 0;
+    } else if (stat(meta_db, &st) != 0 || st.st_size == 0) {
+        say("[smoke] FAIL %s is missing or empty", meta_db);
+        root_ok = 0;
     }
-    if (rc != 0) {
-        result("import the bundled rootfs", 0);
-        say("[smoke] === stopped: the import failed, so boot was never attempted ===");
+    if (!root_ok) {
+        result("check the unpacked rootfs", 0);
+        say("[smoke] === stopped: not a fakefs root, so boot was never attempted ===");
         return 1;
     }
-    result("import the bundled rootfs", 1);
+    say("[smoke] rootfs  : %s", root);
+    result("check the unpacked rootfs", 1);
 
     // --- 2. boot -----------------------------------------------------------
     step("boot the guest (mount_root + become_first_process)");
-    rc = xf_ish_boot(root, host);
+    int rc = xf_ish_boot(root, host);
     {
         const char *err = xf_ish_last_error();
         say("[smoke] boot returned %d%s%s", rc,

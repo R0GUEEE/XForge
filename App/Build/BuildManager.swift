@@ -274,7 +274,7 @@ enum BuildError: LocalizedError {
         case .noArtifact:
             return "The build did not produce an artifact."
         case .notProvisioned:
-            return "The embedded Linux is not provisioned."
+            return "The Alpine build toolchain is not installed. Run `sh /root/install-toolchain.sh all` in Terminal."
         case .stepFailed(let step, let status):
             return "\(step) failed inside the embedded Linux (exit \(status))."
         }

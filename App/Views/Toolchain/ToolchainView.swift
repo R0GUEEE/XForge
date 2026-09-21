@@ -80,9 +80,9 @@ struct ToolchainView: View {
             } header: {
                 Text("Offline Imports")
             } footer: {
-                Text("Choose an Alpine aarch64 .tar.gz minirootfs. A custom import "
-                     + "replaces the provisioned root, so it may not include XForge's "
-                     + "bundled build tools. Quit and reopen XForge first if Linux is running.")
+                Text("Choose a rootfs archive to replace the bundled one. A plain Alpine "
+                     + ".tar.gz is imported on the host, so it will not have XForge's "
+                     + "root configuration. Quit and reopen XForge first if Linux is running.")
             }
 
             if let activity = toolchain.activity ?? preparing {

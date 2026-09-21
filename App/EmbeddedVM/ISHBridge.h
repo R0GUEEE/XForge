@@ -56,28 +56,17 @@ int xf_ish_set_log_file(const char *path);
 /// No-op (returning -ENODEV) when no log file is set.
 int xf_ish_log(const char *text);
 
-/// Progress callback for the rootfs import. `fraction` is 0..1 and `message` is
-/// the archive entry currently being unpacked (both may be NULL/0 on the first
-/// call). Return 0 to continue or non-zero to cancel the import.
-typedef int (*xf_import_progress_fn)(void *cookie, double fraction, const char *message);
-
-/// Import a rootfs archive (`.tar.gz`, `.tar.xz`, ...) into a brand-new fakefs
-/// root directory (`data/` + `meta.db`). `dest_dir` must not exist yet.
+/// Boot the guest from an installed fakefs root directory.
 ///
-/// `progress` may be NULL. When supplied it is called from the importing thread
-/// — frequently, once per archive entry, so callers should throttle whatever
-/// they do with it rather than drawing per call.
-///
-/// Returns 0 on success or a negative errno. See `xf_ish_last_error`.
-int xf_ish_import_rootfs(const char *archive_path, const char *dest_dir,
-                         xf_import_progress_fn progress, void *cookie);
-
-/// Boot the guest from an already-imported fakefs root directory.
+/// The root is *already* fakefs — a `data/` tree plus `meta.db`, converted on the
+/// build machine by `tools/fakefsify` (see EmbeddedLinux/build-rootfs.sh). The app
+/// only unzips it, so there is no import step here: `fakefs_import` is a build-time
+/// tool in this design, not a runtime one.
 ///
 /// `host_dir` (may be NULL) is mounted read-write into the guest at `/host`, so
-/// the app's own container is reachable from inside Linux. That is how the
-/// darwin Swift SDK and other large artifacts get in without pushing gigabytes
-/// through the shell pipe. Returns 0 on success or a negative errno.
+/// the app's own container is reachable from inside Linux. That is how large
+/// artifacts get in without pushing megabytes through the shell pipe. Returns 0
+/// on success or a negative errno.
 ///
 /// XForge boots deliberately headless: it does NOT exec `/sbin/init`. XForge
 /// only needs a pid 1 that can be the parent of the commands it runs, so it

@@ -32,13 +32,16 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                     await vm.prepareRootfs()
                     try await vm.boot()
 
-                    // The release payload is provisioned before it is bundled.
-                    // Opening Build only verifies the guest; it must never run an
-                    // installer against either the host or the guest at runtime.
-                    continuation.yield(.plan("Checking the bundled Alpine build toolchain…"))
+                    // The bundled root is a *plain* Alpine userspace: Swift and
+                    // xtool are installed by the guest on demand
+                    // (`install-toolchain.sh`), not baked in. So this check
+                    // reports what the guest can actually do, and an unprovisioned
+                    // root is a normal first-run state, not a broken release.
+                    continuation.yield(.plan("Checking the Alpine toolchain…"))
                     guard try await buildEnvironmentIsReady() else {
                         continuation.yield(.failed(
-                            "The bundled Alpine build toolchain is incomplete. Reinstall this XForge release."
+                            "The Alpine build toolchain is not installed yet. "
+                            + "Run `sh /root/install-toolchain.sh all` in the Terminal tab."
                         ))
                         continuation.finish()
                         return
@@ -72,17 +75,23 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
     /// Verify only; this must never invoke the installer. The executable and apk
     /// checks make a stale or partially restored installation fail clearly.
     ///
+    /// Whether the guest has the toolchain XForge builds with: the apk build
+    /// dependencies, Swift, and xtool.
+    ///
+    /// These are installed by the guest itself (`install-toolchain.sh`), not
+    /// shipped in the rootfs, so a false result is the ordinary state of a fresh
+    /// install rather than a packaging error.
+    ///
     /// Every probe here is a separate guest process, and their output goes to a
-    /// *file*, never `/dev/null`: ish-arm64's engine kills a forked guest
-    /// program whose stdout/stderr is `/dev/null` (found with the engine-smoke
-    /// harness — `swift --version >/dev/null 2>&1` died where the unredirected
-    /// form ran fine). A probe killed that way reports "not provisioned" on a
-    /// rootfs that is, which is worse than a noisy log line.
+    /// *file*, never `/dev/null`: this engine kills a forked guest program whose
+    /// stdout/stderr is `/dev/null` (found with the engine-smoke harness —
+    /// `swift --version >/dev/null 2>&1` died where the unredirected form ran
+    /// fine). A probe killed that way reports "not installed" for a toolchain
+    /// that is, which is worse than a noisy log line.
     private func buildEnvironmentIsReady() async throws -> Bool {
         let silence = ">/tmp/xforge-probe.log 2>&1"
         let status = try await vm.run(
-            "test -f /usr/local/share/xforge/build-environment-v2 && "
-            + "apk info -e clang lld cmake ninja git \(silence) && "
+            "apk info -e clang lld cmake ninja git \(silence) && "
             + "swift --version \(silence) && xtool --version \(silence)",
             environment: nil
         ) { _ in }

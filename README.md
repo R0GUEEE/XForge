@@ -25,13 +25,20 @@ named `darwin`. All three heavyweight pieces are self-contained Linux artifacts:
 | Piece | Source | Notes |
 |---|---|---|
 | Linux engine | ish-arm64 (`Vendor/ish-arm64` submodule), built for iOS | runs in-process, no JIT entitlement |
-| Provisioned Alpine aarch64 rootfs | `alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz` | **bundled in the app**, imported directly by the terminal on first boot |
-| Swift aarch64 Linux toolchain | swift.org, via `swiftly` | **bundled in the app**, installed in the provisioned Alpine guest |
-| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | **bundled in the app**, unpacked in the provisioned Alpine guest |
+| Alpine aarch64 rootfs | `alpine-rootfs.zip` (plain Alpine 3.21 fakefs) | **bundled in the app**, unpacked on first boot; pinned by release tag |
+| Swift aarch64 Linux toolchain | swift.org, via `swiftly` | installed **by the guest**, on demand, via `install-toolchain.sh` |
+| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | installed **by the guest**, on demand |
 | `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | optional, user-installed in Alpine |
 
-The IPA build provisions Alpine on a native arm64 Linux runner before packaging it.
-That guest root is purpose-built to run as XForge's embedded Linux system — the
+The bundled root is deliberately **small and plain**: a bare Alpine userspace,
+already converted to the engine's `fakefs` format at build time. Swift, xtool and
+the rest are installed by the guest itself when you need them, which keeps the
+app small and the root reproducible. (Baking a toolchain in made the artifact
+~1.4 GB; it is a few MB now.)
+
+Earlier revisions of this file described provisioning Alpine on a native arm64
+Linux runner before packaging. That guest root was purpose-built to run as
+XForge's embedded Linux system — the
 Alpine build dependencies, Swift, and `xtool` are baked in — and the embedded
 terminal imports it directly without downloading tools to the iOS host. The
 Darwin SDK remains an explicit in-guest install (a 200 MB asset most builds
@@ -44,13 +51,13 @@ modules, runtime libraries, and package metadata required for on-device builds.
 
 ```
 App/                    SwiftUI app — project editing, build pipeline, signing
-App/EmbeddedVM/         ish-arm64 bridge: ISHEmulator, C shim, rootfs import
+App/EmbeddedVM/         ish-arm64 bridge: ISHEmulator, C shim, rootfs unpack
 App/Build/              BuildExecutor protocol + EmbeddedLinuxExecutor
 Vendor/ish-arm64/         git submodule: the embedded Linux engine
-EmbeddedLinux/          fetch-rootfs.sh, build-ish-aok-core.sh, install-toolchain.sh
+EmbeddedLinux/          build-rootfs.sh, build-ish-core.sh, install-toolchain.sh
 Support/                Info.plist, entitlements, Resources/ (bundled rootfs)
 project.yml             XcodeGen definition
-.github/workflows/      unsigned-ipa.yml (builds and releases the IPA)
+.github/workflows/      build-ipa.yml (IPA), build-rootfs.yml (the pinned root)
 Docs/DESIGN.md          full architecture write-up
 ```
 
@@ -106,27 +113,32 @@ make gen && open XForge.xcodeproj
 
 `make bootstrap` runs three steps:
 
-1. `git submodule update --init --depth 1 Vendor/ish-arm64` — the engine sources.
-2. `EmbeddedLinux/fetch-rootfs.sh` — puts the provisioned Alpine aarch64 rootfs
-   into `Support/Resources/` so it is bundled into `XForge.app`. The release
-   workflow creates this payload first; use `XFORGE_ROOTFS=plain` only for a
-   deliberately minimal development image.
+1. `git submodule update --init --depth 1 Vendor/ish-arm64` — the engine sources
+   (plus its `deps/libarchive` submodule, which the fakefs tools link against).
+2. `EmbeddedLinux/build-rootfs.sh` — builds the Alpine aarch64 rootfs into
+   `Support/Resources/` so it is bundled into `XForge.app`. It converts the plain
+   Alpine minirootfs to the engine's fakefs format *on this machine*, so the app
+   only has to unzip it. `build-ipa.yml` downloads the published copy instead of
+   rebuilding it — see `EmbeddedLinux/build-rootfs.sh` and `build-rootfs.yml`.
 3. `EmbeddedLinux/build-ish-core.sh` — builds the engine's static libraries into
-   `Vendor/ish-arm64-build/lib` for the linker.
+   `Vendor/ish-arm64-build/lib` for the linker. This step needs macOS: the
+   aarch64 gadgets use `.req` register aliases that only clang's assembler
+   accepts.
 
 The engine is device-only; simulator builds (and `make test`) compile a stub instead
 and need none of the above beyond a plain `make gen`.
 
 Or build the unsigned IPA for sideloading via GitHub Actions
-(`.github/workflows/unsigned-ipa.yml`) and install it with SideStore/AltStore.
+(`.github/workflows/build-ipa.yml`) and install it with SideStore/AltStore.
 
 ## On-device build pipeline
 
-1. **Embedded Linux** — ish-arm64 boots the bundled provisioned Alpine aarch64 rootfs (imported
-   into its `fakefs` format on first terminal use).
-2. **Toolchain** — the payload build runs `EmbeddedLinux/install-toolchain.sh` inside
-   Alpine before packaging, installing project dependencies, Swift, and xtool in the
-   guest; the darwin SDK remains an explicit in-guest install.
+1. **Embedded Linux** — ish-arm64 boots the bundled Alpine aarch64 rootfs, which is
+   already in the engine's `fakefs` format and is unpacked on first use.
+2. **Toolchain** — the guest installs what a build needs itself, on demand:
+   `sh /root/install-toolchain.sh all` (the Toolchain screen offers it as a command
+   in the terminal). It installs the apk build dependencies, the glibc layer,
+   Swift and xtool; the darwin SDK stays an explicit in-guest install.
 3. **Build** — `xtool dev build -s -i` runs in the guest; the `.ipa` is copied back out.
 4. **Signing** — export the unsigned `.ipa` to SideStore/AltStore or another signing
    service. Direct free-Apple-ID signing through XKit remains planned.

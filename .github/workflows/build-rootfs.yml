@@ -1,0 +1,103 @@
+name: Publish the Alpine rootfs
+
+# Builds the Alpine root filesystem that XForge bundles, and publishes it as a
+# pinned release asset for `build-ipa.yml` to download.
+#
+# Run this by hand when the root changes (a new Alpine release, a change to the
+# root's configuration). It is deliberately NOT part of the IPA build: the root
+# is tiny and rarely changes, and rebuilding it on every IPA run is what used to
+# make that job slow and its artifact enormous.
+#
+# The output is a ZIP of an *already-converted* fakefs — a `data/` tree plus a
+# `meta.db` — produced by the engine's own tools/fakefsify. The app only unzips
+# it, so first launch costs an unzip rather than a multi-minute import.
+#
+# Builds on Linux rather than macOS on purpose: the conversion tool must run on
+# the build machine (it is not cross-compiled), so any host works, and the arm64
+# Linux runner is much faster at this than an emulated one.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish under (e.g. rootfs-v1)
+        type: string
+        required: true
+      alpine_version:
+        description: Alpine release series
+        type: string
+        default: "3.21"
+
+permissions:
+  contents: write
+
+jobs:
+  rootfs:
+    name: Build and publish the rootfs
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Check out the engine (for tools/fakefsify)
+        run: |
+          set -euo pipefail
+          git submodule update --init --depth 1 Vendor/ish-arm64
+          # fakefsify links libarchive, so its submodule is required too.
+          git -C Vendor/ish-arm64 submodule update --init --depth 1 deps/libarchive
+
+      - name: Install the build tools
+        run: |
+          set -euo pipefail
+          # meson/ninja build fakefsify; libarchive-dev is what it links
+          # against (the engine's meson looks for it via pkg-config); zip packs
+          # the result; shellcheck guards the builder script.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq meson ninja-build libarchive-dev zip unzip shellcheck
+
+      - name: Check the rootfs builder
+        run: |
+          set -euo pipefail
+          bash -n EmbeddedLinux/build-rootfs.sh
+          shellcheck -S error EmbeddedLinux/build-rootfs.sh
+
+      - name: Build the rootfs
+        env:
+          XFORGE_ALPINE_VERSION: ${{ inputs.alpine_version }}
+        run: |
+          set -euo pipefail
+          bash EmbeddedLinux/build-rootfs.sh dist/rootfs
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          # Create the release if it is new; uploading with --clobber makes a
+          # re-run of the same tag replace the assets rather than fail.
+          gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1 || \
+            gh release create "$TAG" \
+              --repo "${{ github.repository }}" \
+              --title "XForge Alpine rootfs (${{ inputs.alpine_version }})" \
+              --notes "Plain Alpine aarch64 fakefs for the XForge embedded Linux engine, built by EmbeddedLinux/build-rootfs.sh. Pinned by build-ipa.yml via ROOTFS_TAG."
+
+          gh release upload "$TAG" \
+            --repo "${{ github.repository }}" \
+            dist/rootfs/alpine-rootfs.zip \
+            dist/rootfs/alpine-rootfs.zip.sha256 \
+            --clobber
+
+      - name: Summary
+        run: |
+          set -euo pipefail
+          {
+            echo "### Published \`${{ inputs.tag }}\`"
+            echo
+            echo "- asset: \`alpine-rootfs.zip\`"
+            echo "- size: $(du -h dist/rootfs/alpine-rootfs.zip | cut -f1)"
+            echo "- sha256: $(cut -d' ' -f1 < dist/rootfs/alpine-rootfs.zip.sha256)"
+            echo
+            echo "Set \`ROOTFS_TAG\` in .github/workflows/build-ipa.yml to this tag."
+          } >> "$GITHUB_STEP_SUMMARY"

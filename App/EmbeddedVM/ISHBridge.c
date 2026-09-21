@@ -46,12 +46,6 @@ int xf_ish_log(const char *text) {
     return 0;
 }
 
-int xf_ish_import_rootfs(const char *archive_path, const char *dest_dir,
-                         xf_import_progress_fn progress, void *cookie) {
-    (void) archive_path; (void) dest_dir; (void) progress; (void) cookie;
-    return xf_sim_unsupported();
-}
-
 int xf_ish_boot(const char *root_dir, const char *host_dir) {
     (void) root_dir; (void) host_dir;
     return xf_sim_unsupported();
@@ -95,7 +89,6 @@ void xf_ish_shutdown(void) {}
 #include "fs/fd.h"         // adhoc_fd_create, realfs_fdops
 #include "fs/devices.h"    // MEM_MAJOR, DEV_NULL_MINOR, TTY_ALTERNATE_MAJOR, ...
 #include "fs/path.h"       // AT_PWD
-#include "tools/fakefs.h"  // fakefs_import
 
 // --- state ------------------------------------------------------------------
 
@@ -232,62 +225,6 @@ static void xf_exit_hook(struct task *task, int code) {
 #define XF_READ_CHUNK 8192
 
 // --- API --------------------------------------------------------------------
-
-// The engine's progress callback can cancel through a `bool *cancel` out
-// parameter; the one XForge exports only reports. Bridge the two, holding both
-// the public function and its cookie.
-static xf_import_progress_fn s_progress_fn = NULL;
-static void *s_progress_cookie = NULL;
-
-static void xf_import_progress_adapter(void *cookie, double fraction,
-                                       const char *message, bool *cancel_out) {
-    (void) cookie;
-    if (cancel_out != NULL)
-        *cancel_out = false;
-    if (s_progress_fn != NULL &&
-        s_progress_fn(s_progress_cookie, fraction, message) != 0 &&
-        cancel_out != NULL) {
-        *cancel_out = true;
-    }
-}
-
-int xf_ish_import_rootfs(const char *archive_path, const char *dest_dir,
-                         xf_import_progress_fn progress, void *cookie) {
-    if (archive_path == NULL || dest_dir == NULL) return -EINVAL;
-
-    xf_logf("import: begin %s -> %s", archive_path, dest_dir);
-
-    // Importing a fakefs is a host-side archive/database operation, so the
-    // emulator is deliberately NOT initialised here: that starts emulator
-    // support threads and CPU state, and doing it during pre-install can leave
-    // first-run setup stalled right after a successful import. xf_ish_boot()
-    // initialises the engine later, on the same permanent guest thread that
-    // runs every command.
-    struct fakefsify_error err;
-    memset(&err, 0, sizeof(err));
-
-    // The engine's progress callback has a `cancel` out-parameter; the public
-    // one XForge exports only reports, so adapt between them here.
-    struct progress bridge = { .cookie = NULL, .callback = NULL };
-    if (progress != NULL) {
-        bridge.cookie = cookie;
-        bridge.callback = xf_import_progress_adapter;
-    }
-
-    if (!fakefs_import(archive_path, dest_dir, &err, bridge)) {
-        const char *kind =
-            err.type == ERR_ARCHIVE ? "archive" :
-            err.type == ERR_SQLITE  ? "sqlite"  :
-            err.type == ERR_POSIX   ? "posix"   : "cancelled";
-        xf_logf("import: failed: %s: %s", kind, err.message ? err.message : "unknown error");
-        xf_fail("rootfs import failed (%s): %s", kind,
-                err.message ? err.message : "unknown error");
-        free(err.message);
-        return -EIO;
-    }
-    xf_logf("import: done");
-    return 0;
-}
 
 int xf_ish_is_booted(void) {
     return s_booted ? 1 : 0;

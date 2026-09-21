@@ -104,15 +104,26 @@ EOF
 # -Dlog_handler=nslog routes the engine's printk through NSLog, which is what
 # the engine's own app does and what makes a crash explain itself in the device
 # console; the dprintf handler writes to a descriptor nothing opens.
+# -Dlog='' keeps the DEBUG_* log channels off (meson takes a space-separated
+# list; empty means none), matching the reference build.
+#
+# -Db_ndebug=true is NOT optional. meson's `release` buildtype only implies -O3;
+# it does not define NDEBUG — that is this separate option. Without it every
+# assert() in the kernel stays live in a shipping build, so a failed assertion
+# calls abort() *on the user's device* instead of being a development check.
+# The engine's own build documents that this exact mistake shipped to TestFlight
+# as a SIGABRT in sys_execve/args_copy (the mem_ptr() copy-on-write assert).
 log "Configuring ish-arm64 (guest_arch=$GUEST_ARCH, kernel=ish, engine=asbestos)"
 meson setup "$MESON_BUILD" "$ISH" \
     --cross-file "$CROSS" \
     --buildtype=release \
+    -Db_ndebug=true \
     -Ddefault_library=static \
     -Dguest_arch="$GUEST_ARCH" \
     -Dkernel=ish \
     -Dengine=asbestos \
-    -Dlog_handler=nslog
+    -Dlog_handler=nslog \
+    -Dlog=''
 
 # The aarch64 gadget sources alias registers with `.req` (`_cpu .req x1`,
 # `_pc .req x28`, …) and then use those names as operands. Only clang's
@@ -134,6 +145,26 @@ rm -f "$MESON_BUILD/req-probe.S" "$MESON_BUILD/req-probe.o"
 
 log "Building libish / libish_emu / libfakefs"
 ninja -C "$MESON_BUILD" libish.a libish_emu.a libfakefs.a
+
+# The VDSO is not a separate artifact to ship: kernel/vdso.c `.incbin`s
+# libvdso.so.elf straight into libish.a, so building libish already built it.
+# But the build degrades silently — if meson cannot find an aarch64-linux
+# cross-compiler it substitutes a target that just `touch`es an empty file, and
+# the guest then gets a bogus VDSO with nothing in the log to say so. Verify the
+# file is a real aarch64 ELF shared object rather than trusting the build.
+VDSO="$MESON_BUILD/vdso/arm64/libvdso.so.elf"
+if [ ! -s "$VDSO" ]; then
+    die "the arm64 VDSO was not built: $VDSO is missing or empty.
+       meson falls back to an EMPTY placeholder when it cannot find an
+       aarch64-linux cross-compiler, so this is a silent failure otherwise.
+       Install one (brew install llvm lld) — clang must support
+       '-target aarch64-linux-gnu -fuse-ld=lld'."
+fi
+if command -v file >/dev/null 2>&1; then
+    file "$VDSO" | grep -q 'ELF 64-bit.*aarch64' || die \
+        "$VDSO is not an aarch64 ELF (got: $(file -b "$VDSO"))"
+fi
+note "VDSO: $(du -h "$VDSO" | cut -f1) (embedded into libish.a)"
 
 for lib in libish.a libish_emu.a libfakefs.a; do
     [ -f "$MESON_BUILD/$lib" ] || die "$lib was not produced"
