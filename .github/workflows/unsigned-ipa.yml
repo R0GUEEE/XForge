@@ -2,8 +2,11 @@ name: Build unsigned XForge IPA
 
 # The Alpine rootfs is assembled on native arm64 Linux before the macOS archive.
 # `install-toolchain.sh all` runs inside that Alpine filesystem, so its apk build
-# dependencies and Swift are installed in the root the terminal boots. xtool and
-# the Darwin SDK remain on-demand guest components.
+# dependencies, Swift and xtool are installed in the root the terminal boots. The
+# root is provisioned purpose-built for running as XForge's embedded Linux system
+# (a build environment, not a general-purpose distro), so it is slimmed before
+# packing. The Darwin SDK remains an on-demand guest component (a 200 MB asset
+# most builds fetch from the guest instead of shipping in every IPA).
 
 on:
   workflow_dispatch:
@@ -21,10 +24,11 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     env:
-      # The release contains Alpine build dependencies and Swift only. xtool and
-      # the Darwin SDK are explicit in-guest components installed on demand.
+      # The release bakes in Alpine build dependencies, Swift and xtool. The
+      # Darwin SDK stays an explicit in-guest component installed on demand —
+      # it is a 200 MB asset most builds never need baked into every IPA.
       XFORGE_INCLUDE_SDK: "0"
-      XFORGE_INSTALL_XTOOL: "0"
+      XFORGE_INSTALL_XTOOL: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -35,8 +39,10 @@ jobs:
         run: |
           set -euo pipefail
           # This chroots into Alpine and runs the same guest installer exposed by
-          # the app. It installs apk build dependencies, glibc, swiftly, and Swift
-          # in the guest root, never on the iOS host. xtool is intentionally deferred.
+          # the app. It installs apk build dependencies, glibc, swiftly, Swift and
+          # xtool in the guest root, never on the iOS host, then slims the result
+          # (docs, man pages, locales, caches, bytecode) so the archive only holds
+          # what running XForge's embedded Linux actually needs.
           # `sudo` otherwise drops this setting and the payload builder's
           # default `auto` mode tries to install the Darwin SDK as well.
           sudo --preserve-env=XFORGE_INCLUDE_SDK,XFORGE_INSTALL_XTOOL \
@@ -61,8 +67,13 @@ jobs:
           tar -xzOf "$archive" "$manifest" | tee /tmp/payload-manifest.txt
           grep -qE '^base:[[:space:]]+alpine-minirootfs-3\.24\.2-aarch64\.tar\.gz$' /tmp/payload-manifest.txt
           grep -qE '^rootfs:[[:space:]]+3\.24\.2$' /tmp/payload-manifest.txt
-          ! grep -qE '(^|/)xtool|darwin\.artifactbundle' /tmp/rootfs-contents.txt
-          grep -qE '^xtool:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
+          grep -qE "(^|/)usr/local/bin/xtool$" /tmp/rootfs-contents.txt \
+            || { echo "::error::payload is missing usr/local/bin/xtool"; exit 1; }
+          grep -qE "(^|/)opt/xtool/usr/bin/xtool$" /tmp/rootfs-contents.txt \
+            || { echo "::error::payload has no unpacked xtool"; exit 1; }
+          ! grep -qE '^xtool:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
+          ! grep -qE '(^|/)darwin\.artifactbundle' /tmp/rootfs-contents.txt
+          grep -qE '^darwin-sdk:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
           echo "payload=$archive" >> "$GITHUB_OUTPUT"
 
       - name: Upload provisioned Alpine payload
@@ -93,7 +104,13 @@ jobs:
           git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue
 
       - name: Install build tools
-        run: brew install xcodegen meson ninja llvm lld libarchive
+        run: |
+          # xcodegen generates the Xcode project; meson/ninja build iSH-AOK's
+          # core; llvm/lld provide the cross-linker its i386 VDSO needs (Apple's
+          # clang cannot do that link). libarchive is deliberately not installed
+          # here: the app links the copy built from the vendored submodule
+          # (deps/libarchive.xcodeproj), not a Homebrew package.
+          brew install xcodegen meson ninja llvm lld
 
       - name: Build the embedded iSH-AOK core (iOS arm64)
         run: bash EmbeddedLinux/build-ish-aok-core.sh
@@ -120,7 +137,7 @@ jobs:
           set -euo pipefail
           archive="$(find dist/rootfs -maxdepth 1 -name '*-provisioned.tar.gz' -print -quit)"
           test -n "$archive"
-          XFORGE_ROOTFS=payload XFORGE_REQUIRE_XTOOL=0 XFORGE_ROOTFS_ARCHIVE="$archive" \
+          XFORGE_ROOTFS=payload XFORGE_REQUIRE_XTOOL=1 XFORGE_ROOTFS_ARCHIVE="$archive" \
             bash EmbeddedLinux/fetch-rootfs.sh
           # XcodeGen resolves resources when it generates the project. Regenerate
           # after replacing the small source archive with the provisioned payload.
@@ -157,8 +174,10 @@ jobs:
             || { echo '::error::bundled rootfs has no Swift toolchain'; exit 1; }
           manifest="$(grep -E '/usr/local/share/xforge/payload-manifest.txt$' /tmp/rootfs-contents.txt | head -1)"
           tar -xzOf "$ARCHIVE" "$manifest" | tee /tmp/payload-manifest.txt
-          ! grep -qE '(^|/)xtool|darwin\.artifactbundle' /tmp/rootfs-contents.txt
-          grep -qE '^xtool:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
+          grep -qE "(^|/)usr/local/bin/xtool$" /tmp/rootfs-contents.txt \
+            || { echo "::error::bundled rootfs is missing usr/local/bin/xtool"; exit 1; }
+          ! grep -qE '^xtool:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
+          ! grep -qE '(^|/)darwin\.artifactbundle' /tmp/rootfs-contents.txt
           {
             echo '### Bundled Alpine build root'
             echo

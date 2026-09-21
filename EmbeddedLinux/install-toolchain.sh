@@ -346,13 +346,23 @@ step_deps() {
     # SwiftPM packages, extracting the Darwin SDK and compiling C/C++ package
     # dependencies. Keep this list in the rootfs: XForge's host is only a UI and
     # file-transfer bridge, never the build environment.
+    #
+    # This guest is provisioned specifically to run as XForge's embedded Linux —
+    # not as a general-purpose Alpine desktop — so packages with no caller
+    # anywhere in XForge stay out: `bash` (the guest is only ever launched as
+    # `/bin/sh`, and this script itself is `/bin/sh`), `wget` (busybox already
+    # ships a `wget` applet; every script here uses `curl`), `file` and `perl`
+    # (nothing in XForge's guest scripts or build pipeline calls them), and
+    # `gnupg` (step_swift() already falls back to `--no-verify` when it is
+    # absent, and the toolchain it downloads is verified once, at build time,
+    # not re-verified on every guest boot).
     packages="
-        bash curl wget tar xz zip unzip git ca-certificates
+        curl tar xz zip unzip git ca-certificates
         gcompat libc6-compat zlib-static openssl
-        binutils zstd file gnupg tzdata
+        binutils zstd tzdata
         build-base clang lld cmake ninja pkgconf
         linux-headers musl-dev openssl-dev libxml2-dev icu-dev
-        python3 perl sqlite-dev
+        python3 sqlite-dev
     "
 
     missing=""
