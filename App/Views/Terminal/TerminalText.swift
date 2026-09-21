@@ -242,7 +242,12 @@ final class TerminalBuffer {
         case "\u{1b}":
             pendingCarriageReturn = false
             state = .escape
-        case "\n":
+        case "\n", "\r\n":
+            // Swift treats CR+LF as a *single* grapheme cluster, so a guest
+            // program that emits Windows-style line endings delivers "\r\n" as
+            // ONE Character — not as "\r" followed by "\n". Matching only "\n"
+            // here would write that character into a cell and the line would
+            // never break, turning a whole command's output into one line.
             pendingCarriageReturn = false
             newline()
         case "\r":
@@ -255,9 +260,10 @@ final class TerminalBuffer {
             applyPendingCarriageReturn()
             tab()
         default:
-            if character.asciiValue.map({ $0 < 0x20 }) == true || character == "\u{07}" {
-                return
-            }
+            // Remaining control characters (BEL, NUL, …) are not printable. A
+            // grapheme can hold more than one scalar, so test all of them rather
+            // than `asciiValue`, which is nil for anything multi-scalar.
+            if character.unicodeScalars.allSatisfy({ $0.value < 0x20 }) { return }
             applyPendingCarriageReturn()
             write(character)
         }

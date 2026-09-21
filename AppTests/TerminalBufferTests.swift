@@ -35,6 +35,17 @@ final class TerminalBufferTests: XCTestCase {
         XCTAssertTrue(buffer.current.isEmpty)
     }
 
+    func testCarriageReturnAndNewlineSplitAcrossChunksIsStillOneNewline() {
+        // The other half of the same problem: CR and LF can also arrive in
+        // separate chunks, where CR is held until the next character arrives.
+        let buffer = TerminalBuffer()
+        buffer.feed("abc\r")
+        buffer.feed("\nnext")
+
+        XCTAssertEqual(buffer.lines.map(\.text), ["abc"])
+        XCTAssertEqual(buffer.current.text, "next")
+    }
+
     func testBackspaceErasesThePreviousCharacter() {
         let buffer = TerminalBuffer()
         buffer.feed("ab\u{08}c")
