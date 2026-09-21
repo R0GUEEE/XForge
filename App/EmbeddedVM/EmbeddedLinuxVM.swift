@@ -331,10 +331,22 @@ final class EmbeddedLinuxVM: LinuxVM {
         let tag = UUID().uuidString
         let inputURL = transfer.appendingPathComponent("stdin-\(tag)")
         let outputURL = transfer.appendingPathComponent("stdout-\(tag)")
-        // Both must exist before the guest touches them: the shell is told to read
-        // a path that must already be a regular file, and the tailer opens the
-        // output immediately.
-        FileManager.default.createFile(atPath: inputURL.path, contents: nil)
+
+        // The input is a FIFO, not a regular file. A regular file is wrong in a
+        // way that is easy to miss: a shell reading one hits end-of-input as soon
+        // as it reaches the current end and *exits*, so the terminal's shell would
+        // die at startup and every later write would go nowhere. A FIFO delivers a
+        // stream instead — the shell blocks waiting for input and keeps running.
+        //
+        // It is created empty (a FIFO must not have a writer yet) and the host
+        // opens the write end once, in `attach`, holding it for the session's
+        // life: closing between writes would look like end-of-input.
+        unlink(inputURL.path)
+        if mkfifo(inputURL.path, 0o600) != 0 {
+            throw LinuxVMError.notImplemented(
+                "could not create the terminal's input FIFO: \(String(cString: strerror(errno)))")
+        }
+        // The output is an ordinary file the tailer follows, so it just has to exist.
         FileManager.default.createFile(atPath: outputURL.path, contents: nil)
 
         let guestInput = "\(Self.guestShare)/\(Self.transferDir)/\(inputURL.lastPathComponent)"
@@ -348,23 +360,32 @@ final class EmbeddedLinuxVM: LinuxVM {
             onOutput: onOutput
         )
 
-        // The shell reads its stdin *directly from the host's file* — no pipe, no
-        // `tail -f`, no second process:
-        //   /bin/sh -i  < /host/.xforge-transfer/stdin-…      → reads what we append
-        //               > /host/.xforge-transfer/stdout-… 2>&1 → writes what we tail
-        //
-        // An earlier attempt used `tail -f <file> | /bin/sh -i`, which works but
-        // starts two processes and leaves the shell reading from a pipe rather
-        // than a file — so `read` and interactive prompts behaved subtly
-        // differently from a real terminal. Handing the file descriptor straight
-        // to the shell is simpler and truer to what a terminal is.
+        // The shell's stdin is the host's FIFO, and its output goes to a file the
+        // host follows:
+        //   /bin/sh  < /host/.xforge-transfer/stdin-…       → a stream from the host
+        //            > /host/.xforge-transfer/stdout-… 2>&1 → a file the host tails
         //
         // Note the shell is started DETACHED. `runCapturedAfterBoot` would block
         // the engine's one guest thread until the shell exited — which never
         // happens — so every other command in the app (a build, a component
         // install, the boot check) would starve behind it forever.
+        // NOT `-i`. `-i` asks for *interactive* mode, which makes the shell try to
+        // claim a controlling terminal for job control — there is none here (the
+        // session's stdin is a file, not a tty), so it printed
+        // "sh: can't access tty; job control turned off" on every start.
+        //
+        // `-i` was never what made this work: the shell reads the host's file and
+        // prompts because that is what a shell with a readable stdin does, as the
+        // redirect below already arranges. Dropping it removes the complaint and
+        // changes nothing else — the shell is still persistent, still accepts
+        // input at any time, and still prints its own `$` prompt.
+        //
+        // Job control genuinely is unavailable, and this design does not pretend
+        // otherwise: there is no tty, so `Ctrl-Z`/`fg`/`bg` have nothing to act
+        // on. Ctrl-C is delivered as a real signal instead (see
+        // `InteractiveShellSession.interruptForeground`).
         let command = """
-        exec /bin/sh -i < \(GuestShell.quote(guestInput)) > \(GuestShell.quote(guestOutput)) 2>&1
+        exec /bin/sh < \(GuestShell.quote(guestInput)) > \(GuestShell.quote(guestOutput)) 2>&1
         """
 
         let process = try await emulator.startDetached(command, shell: "/bin/sh", stdinPath: nil)
