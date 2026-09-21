@@ -44,7 +44,7 @@ Vendor/ish-AOK/         git submodule: the embedded Linux engine
 EmbeddedLinux/          fetch-rootfs.sh, build-ish-aok-core.sh, install-toolchain.sh
 Support/                Info.plist, entitlements, Resources/ (bundled rootfs)
 project.yml             XcodeGen definition
-.github/workflows/      unsigned-ipa.yml + build-darwin-sdk.yml
+.github/workflows/      unsigned-ipa.yml (builds and releases the IPA)
 Docs/DESIGN.md          full architecture write-up
 ```
 
