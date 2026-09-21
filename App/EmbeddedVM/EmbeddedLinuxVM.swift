@@ -68,13 +68,16 @@ final class EmbeddedLinuxVM: LinuxVM {
             guard emulator.isRunning else {
                 throw LinuxVMError.guestDidNotStart
             }
-            // The native engine has completed its boot at this point. Do not make
-            // Terminal availability depend on a headless shell probe: a damaged
-            // procfs/share mount can make that probe wait indefinitely even though
-            // Alpine itself is mounted and ready to accept a command. Commands are
-            // checked at their call sites and surface their own errors instead.
+            // `xf_ish_boot` has mounted the fakefs, but that alone does not mean
+            // the guest can execute a shell or reach its /host share.  The latter
+            // is the transport used for every large SDK import and for streamed
+            // terminal output, so do not report Alpine as ready until both paths
+            // have completed a bounded round trip.
+            try await verifyRootfs()
+            try await verifyCommandBridge()
+            await configureGuestResolver()
             isBooted = true
-            XForgeLog.note("boot: native Alpine guest is ready")
+            XForgeLog.note("boot: verified Alpine guest is ready")
         }
         bootTask = task
         do {
@@ -170,7 +173,7 @@ final class EmbeddedLinuxVM: LinuxVM {
             return
         }
 
-        let status = (try? await run(
+        let status = (try? await runLoginStreamingAfterBoot(
             // The file can be a dangling symlink into /run in newer roots, so
             // replace it rather than writing through it (same reason iSH-AOK's
             // app unlinks first).
@@ -181,16 +184,9 @@ final class EmbeddedLinuxVM: LinuxVM {
         XForgeLog.note("dns: resolv.conf from \(source) servers (exit \(status)): "
             + text.split(separator: "\n").joined(separator: " "))
 
-        // Prove resolution actually works, and say so in the log. A guest with a
-        // correct-looking resolv.conf that still cannot resolve is the failure
-        // that costs the most time to find: it looks like a code bug when it is
-        // the network, or the Local Network permission, and the guest's own
-        // error ("DNS: transient error") says nothing about which.
-        let box = OutputBox()
-        _ = try? await run("timeout 8 nslookup dl-cdn.alpinelinux.org 2>&1 | tail -3",
-                           environment: nil) { box.append($0) }
-        let answer = box.value.trimmingCharacters(in: .whitespacesAndNewlines)
-        XForgeLog.note("dns: resolution probe: \(answer.isEmpty ? "(no output)" : answer)")
+        // Do not make Alpine startup wait on a network query. The resolver is
+        // now installed, and the download command that needs it reports any
+        // real DNS/network error in its own output.
     }
 
     /// Run every app command through the same interactive login-shell transport

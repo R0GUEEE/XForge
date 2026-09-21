@@ -94,7 +94,7 @@ enum SDKInstaller {
             if tail.contains("info.json") {
                 throw ToolchainError.sdkLayoutUnexpected
             }
-            throw ToolchainError.sdkInstallFailed(status)
+            throw ToolchainError.sdkInstallFailed(status, output.tail)
         }
 
         let verified = try await vm.run(
@@ -102,7 +102,7 @@ enum SDKInstaller {
             environment: nil
         ) { _ in }
         guard verified == 0 else {
-            throw ToolchainError.sdkInstallFailed(verified)
+            throw ToolchainError.sdkInstallFailed(verified, "")
         }
 
         advance(1.0, "Darwin SDK installed in Alpine")

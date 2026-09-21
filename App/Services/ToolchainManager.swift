@@ -289,7 +289,7 @@ final class ToolchainManager: ObservableObject {
                 if output.value.contains("info.json") || output.value.contains("darwin.artifactbundle") {
                     throw ToolchainError.sdkLayoutUnexpected
                 }
-                throw ToolchainError.sdkInstallFailed(status)
+                throw ToolchainError.sdkInstallFailed(status, output.tail)
             }
             advanceProgress(1.0, "Done")
             message = "Darwin SDK installed from \(zip.lastPathComponent)."
@@ -304,9 +304,9 @@ final class ToolchainManager: ObservableObject {
     /// Install the Darwin SDK from an `Xcode.xip` the user picked, instead of the
     /// prebuilt bundle XForge publishes.
     ///
-    /// `xtool sdk build` is what turns an Xcode install into the SDK bundle, and it
-    /// needs both xtool and a Swift toolchain in the guest — and the xip staged
-    /// where the guest can read it, which is the shared folder at `/host`.
+    /// Current xtool installs an Xcode.xip directly. It performs the extraction
+    /// and required SDK post-processing itself, so XForge must not create an
+    /// obsolete artifactbundle and pass it to `swift sdk install` afterwards.
     func installSDKFromXcode(xip: URL) async {
         isInstalling = .sdk
         defer { isInstalling = nil }
@@ -316,16 +316,12 @@ final class ToolchainManager: ObservableObject {
         beginProgress(.sdk)
         do {
             try await stageXcodeForGuest(xip)
-            advanceProgress(0.5, "Building the darwin SDK inside the guest with xtool")
+            advanceProgress(0.5, "Installing the Darwin SDK inside the guest with xtool")
 
             let guestXip = "/host/\(Self.hostShareName(for: xip))"
-            let guestOutput = "/root/.cache/xforge-sdk-build"
             let output = OutputCollector()
             let status = try await vm.run(
-                "rm -rf \(GuestShell.quote(guestOutput)) && "
-                + "mkdir -p \(GuestShell.quote(guestOutput)) && "
-                + "cd /root && xtool sdk build \(GuestShell.quote(guestXip)) "
-                + GuestShell.quote(guestOutput),
+                "xtool sdk install \(GuestShell.quote(guestXip))",
                 environment: nil
             ) { chunk in
                 output.append(chunk)
@@ -336,18 +332,17 @@ final class ToolchainManager: ObservableObject {
                 throw ToolchainError.sdkBuildFailed(status, output.tail)
             }
 
-            advanceProgress(0.9, "Installing the built SDK in the guest")
-            let installStatus = try await vm.run(
-                "swift sdk install \(GuestShell.quote(guestOutput + "/darwin.artifactbundle")) "
-                + "&& rm -rf \(GuestShell.quote(guestOutput))",
+            advanceProgress(0.9, "Verifying the Darwin SDK in the guest")
+            let verifyStatus = try await vm.run(
+                "swift sdk list 2>&1 | grep -qi darwin",
                 environment: nil
             ) { chunk in
                 XForgeLog.note("guest: " + chunk.trimmingCharacters(in: .whitespacesAndNewlines))
             }
-            guard installStatus == 0 else { throw ToolchainError.sdkInstallFailed(installStatus) }
+            guard verifyStatus == 0 else { throw ToolchainError.sdkInstallFailed(verifyStatus, "") }
 
             advanceProgress(1.0, "Done")
-            message = "Darwin SDK built from \(xip.lastPathComponent) and installed."
+            message = "Darwin SDK installed from \(xip.lastPathComponent)."
         } catch {
             XForgeLog.note("install: SDK from Xcode FAILED: \(error.localizedDescription)")
             message = error.localizedDescription
@@ -503,7 +498,7 @@ enum ToolchainError: LocalizedError {
     case scriptMissing
     case provisioningFailed(Int32, step: String, output: String)
     case sdkLayoutUnexpected
-    case sdkInstallFailed(Int32)
+    case sdkInstallFailed(Int32, String)
     case sdkBuildFailed(Int32, String)
     case sdkArchiveUnsupported
     case notEnoughSpace(needed: Int64, free: Int64)
@@ -521,10 +516,11 @@ enum ToolchainError: LocalizedError {
             return text + " The Engine log has the guest's own output."
         case .sdkLayoutUnexpected:
             return "The downloaded Darwin SDK archive did not contain darwin.artifactbundle/info.json."
-        case .sdkInstallFailed(let status):
-            return "`swift sdk install` failed inside the guest (exit \(status))."
+        case .sdkInstallFailed(let status, let output):
+            return "`swift sdk install` failed inside the guest (exit \(status)). "
+                + (output.isEmpty ? "See Settings → Diagnostics → Engine log." : String(output.suffix(400)))
         case .sdkBuildFailed(let status, let output):
-            return "`xtool sdk build` failed in the guest (exit \(status)). "
+            return "`xtool sdk install` failed in the guest (exit \(status)). "
                 + (output.isEmpty ? "" : String(output.suffix(400)))
         case .sdkArchiveUnsupported:
             return "Choose a .zip archive containing darwin.artifactbundle."

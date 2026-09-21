@@ -163,4 +163,21 @@ final class ToolchainManagerTests: XCTestCase {
         let missing = DownloadError.assetNotFound("darwin.artifactbundle.zip in any darwin-sdk-* release")
         XCTAssertTrue(missing.localizedDescription.contains("darwin.artifactbundle.zip"))
     }
+
+    func testXcodeImportUsesCurrentXtoolInstallFlow() async throws {
+        let xip = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xforge-sdk-test-\(UUID().uuidString).xip")
+        try Data().write(to: xip)
+        defer { try? FileManager.default.removeItem(at: xip) }
+
+        let vm = StubLinuxVM()
+        vm.succeeding = ["xtool sdk install", "swift sdk list"]
+        let manager = ToolchainManager(vm: vm)
+
+        await manager.installSDKFromXcode(xip: xip)
+
+        XCTAssertTrue(vm.ranCommands.contains { $0.contains("xtool sdk install") })
+        XCTAssertFalse(vm.ranCommands.contains { $0.contains("xtool sdk build") })
+        XCTAssertTrue(vm.ranCommands.contains { $0.contains("swift sdk list") })
+    }
 }

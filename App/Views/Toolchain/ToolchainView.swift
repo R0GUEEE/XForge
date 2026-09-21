@@ -66,8 +66,8 @@ struct ToolchainView: View {
                 }
                 .disabled(toolchain.isInstalling != nil)
             } footer: {
-                Text("The Darwin SDK is normally downloaded prebuilt (214 MB). Building "
-                     + "it from your own Xcode.xip runs `xtool sdk build` inside the guest "
+                Text("The Darwin SDK is normally downloaded prebuilt (about 457 MB). Building "
+                     + "it from your own Xcode.xip runs `xtool sdk install` inside the guest "
                      + "instead — it needs xtool and Swift there, and room for the "
                      + "extracted Xcode.")
             }
