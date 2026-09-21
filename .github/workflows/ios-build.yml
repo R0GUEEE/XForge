@@ -258,6 +258,7 @@ jobs:
 
       - name: Build vendored iSH-AOK core
         if: hashFiles('EmbeddedLinux/build-ish-aok-core.sh') != ''
+        shell: bash
         run: |
           set -e
           if [ ! -f Vendor/ish-AOK/meson.build ]; then
