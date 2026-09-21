@@ -242,6 +242,31 @@ jobs:
               fi
             done
 
+      - name: Prepare vendored iSH-AOK engine
+        if: hashFiles('EmbeddedLinux/build-ish-aok-core.sh') != ''
+        run: |
+          set -e
+          if [ ! -f .gitmodules ] || ! git config --file .gitmodules --get-regexp '^submodule\.Vendor/ish-AOK\.path$' >/dev/null; then
+            echo "No Vendor/ish-AOK submodule configured — skipping."
+            exit 0
+          fi
+          git submodule update --init --depth 1 Vendor/ish-AOK
+          # Only what the core actually links: the archive reader (rootfs import)
+          # and smallclue (the built-in toolbox). The heavy native-program
+          # submodules stay out of the checkout.
+          git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue
+
+      - name: Build vendored iSH-AOK core
+        if: hashFiles('EmbeddedLinux/build-ish-aok-core.sh') != ''
+        run: |
+          set -e
+          if [ ! -f Vendor/ish-AOK/meson.build ]; then
+            echo "Vendored iSH-AOK engine not present — skipping."
+            exit 0
+          fi
+          brew install meson ninja llvm lld libarchive
+          bash EmbeddedLinux/build-ish-aok-core.sh
+
       - name: Generate Xcode project (XcodeGen)
         env:
           IOS_PATH: ${{ steps.params.outputs.ios_path }}
