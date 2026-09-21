@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 /// Orchestrates the on-device IPA build pipeline. Exposes a `PipelineSnapshot` that
-/// drives the GUI's stage UI. Provisioning, dependency resolution, compilation,
+/// drives the GUI's stage UI. Toolchain checks, dependency resolution, compilation,
 /// packaging, and SDK tooling all run inside Alpine via `BuildExecutor`.
 @MainActor
 final class BuildManager: ObservableObject {

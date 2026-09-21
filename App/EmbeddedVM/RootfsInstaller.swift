@@ -14,17 +14,10 @@ enum RootfsInstaller {
     /// Directory name of the installed root inside `<Documents>/embedded-linux/roots`.
     static let rootName = "alpine"
 
-    /// The names the bundled archive can have, best first.
-    ///
-    /// `-provisioned` is what `EmbeddedLinux/build-rootfs-payload.sh` produces:
-    /// the same Alpine release with the toolchain *already* installed in it (apk
-    /// build dependencies, the glibc layer, xtool, swiftly + Swift, optionally the
-    /// darwin SDK). Booting it means the user has nothing left to install — which
-    /// is the point of `EmbeddedLinux/fetch-rootfs.sh` preferring that archive.
-    /// The plain minirootfs stays supported: it is what `XFORGE_ROOTFS=plain`
-    /// builds, and its guest-side installer does the provisioning instead.
+    /// XForge always boots the plain Alpine userspace that ships in the app.
+    /// Toolchains are optional, user-initiated guest installs; accepting a
+    /// provisioned archive here would silently change the Terminal's base system.
     static let bundledArchiveNames = [
-        "\(archiveName)-provisioned",
         archiveName,
     ]
 

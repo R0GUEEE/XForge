@@ -32,28 +32,14 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                     await vm.prepareRootfs()
                     try await vm.boot()
 
-                    // A bundled minirootfs deliberately contains only Alpine itself.
-                    // Before every build, the guest verifies its required packages and
-                    // toolchain. The script is idempotent, so an already-ready rootfs
-                    // only performs inexpensive checks.
-                    try await provisionGuestForBuild(continuation: continuation)
-
-                    continuation.yield(.plan("Verifying Swift toolchain…"))
-                    let swift = try await vm.run("swift --version", environment: nil) {
-                        continuation.yield(.output($0))
-                    }
-                    guard swift == 0 else {
-                        continuation.yield(.failed("The Swift toolchain could not run in the embedded Linux."))
-                        continuation.finish()
-                        return
-                    }
-
-                    continuation.yield(.plan("Verifying xtool…"))
-                    let xtool = try await vm.run("xtool --version", environment: nil) {
-                        continuation.yield(.output($0))
-                    }
-                    guard xtool == 0 else {
-                        continuation.yield(.failed("xtool could not run in the embedded Linux."))
+                    // The bundled root is intentionally plain Alpine. Do not turn
+                    // opening the Build tab into a multi-gigabyte package install:
+                    // users opt into Swift and xtool from the Toolchain screen.
+                    continuation.yield(.plan("Checking the user-installed build toolchain…"))
+                    guard try await buildEnvironmentIsReady() else {
+                        continuation.yield(.failed(
+                            "Swift and xtool are not installed. Open Toolchain and install them before building."
+                        ))
                         continuation.finish()
                         return
                     }
@@ -83,37 +69,8 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
         }
     }
 
-    /// Stages the app-owned provisioning script inside Alpine and executes every
-    /// required step there. The script itself checks installed packages before
-    /// calling apk, so this is safe to run at the start of each build.
-    private func provisionGuestForBuild(
-        continuation: AsyncThrowingStream<BuildEvent, Error>.Continuation
-    ) async throws {
-        if try await buildEnvironmentIsReady() {
-            continuation.yield(.plan("Reusing the prebuilt Alpine build environment…"))
-            return
-        }
-
-        guard let script = Bundle.main.url(forResource: "install-toolchain", withExtension: "sh") else {
-            throw ToolchainError.scriptMissing
-        }
-
-        let guestPath = "/root/install-toolchain.sh"
-        try await vm.copyIn(hostURL: script, to: guestPath)
-        continuation.yield(.plan("Prebuilding the Alpine toolchain and build requirements…"))
-        let status = try await vm.run(
-            "sh \(GuestShell.quote(guestPath)) all",
-            environment: nil
-        ) {
-            continuation.yield(.output($0))
-        }
-        guard status == 0 else {
-            throw BuildError.stepFailed("Alpine build environment provisioning", status)
-        }
-    }
-
-    /// The readiness stamp changes when XForge's rootfs requirements change. The
-    /// executable and apk checks make a stale or partially restored stamp harmless.
+    /// Verify only; this must never invoke the installer. The executable and apk
+    /// checks make a stale or partially restored installation fail clearly.
     ///
     /// Every probe here is a separate guest process, and their output goes to a
     /// *file*, never `/dev/null`: iSH-AOK's arm64 engine kills a forked guest

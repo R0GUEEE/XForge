@@ -26,9 +26,8 @@ struct ToolchainView: View {
             } header: {
                 Text("Interactive Shell")
             } footer: {
-                Text("A real shell into the embedded Alpine aarch64 Linux. The tools "
-                     + "installed here are in its rootfs, so `swift --version` and "
-                     + "`xtool --version` work there.")
+                Text("A real shell into the bundled plain Alpine aarch64 Linux. Swift, "
+                     + "xtool, and SDKs remain absent until you explicitly install them.")
             }
 
             Section {

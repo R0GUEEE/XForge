@@ -66,7 +66,7 @@ enum BuildEvent: Sendable {
 /// Pluggable build backend. `Local` = embedded Linux VM, `Remote` = future build server.
 @MainActor
 protocol BuildExecutor {
-    /// Fetch/install the base toolchain + xtool (no-op if already installed).
+    /// Verify the user-installed base toolchain + xtool without installing it.
     func bootstrap() async throws -> AsyncThrowingStream<BuildEvent, Error>
     /// Install the `darwin` Swift SDK bundle (fetched on demand).
     func installSDK(from source: SDKSource) async throws

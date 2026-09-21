@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Full build pipeline for one project, driven by `BuildManager`. Shows the real
-/// pipeline stages (provision → sdk → configure → resolve → compile → package →
+/// pipeline stages (toolchain check → sdk → configure → resolve → compile → package →
 /// artifact) with live state and a streaming console.
 struct BuildPipelineView: View {
     let project: Project

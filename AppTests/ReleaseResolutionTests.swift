@@ -71,6 +71,13 @@ final class ReleaseResolutionTests: XCTestCase {
     func testUnwrapsTheCorrectXForgeRepo() {
         XCTAssertEqual(XForgeReleases.repository, "R0GUEEE/XForge")
     }
+
+    func testOnlyThePlainAlpineArchiveIsEligibleForBoot() {
+        XCTAssertEqual(
+            RootfsInstaller.bundledArchiveNames,
+            ["alpine-minirootfs-3.23.3-aarch64"]
+        )
+    }
 }
 
 /// A `LinuxVM` that answers from a script, so the toolchain probes can be tested
@@ -179,5 +186,23 @@ final class ToolchainManagerTests: XCTestCase {
         XCTAssertTrue(vm.ranCommands.contains { $0.contains("xtool sdk install") })
         XCTAssertFalse(vm.ranCommands.contains { $0.contains("xtool sdk build") })
         XCTAssertTrue(vm.ranCommands.contains { $0.contains("swift sdk list") })
+    }
+
+    func testBuildBootstrapDoesNotProvisionAMissingToolchain() async throws {
+        let vm = StubLinuxVM()
+        let executor = EmbeddedLinuxExecutor(
+            vm: vm,
+            stagingDir: FileManager.default.temporaryDirectory
+        )
+        let stream = try await executor.bootstrap()
+
+        do {
+            for try await _ in stream {}
+        } catch {
+            // The current implementation throws after it tries the installer;
+            // the replacement reports a missing toolchain as a failed event.
+        }
+
+        XCTAssertFalse(vm.ranCommands.contains { $0.contains("install-toolchain.sh") })
     }
 }

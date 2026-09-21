@@ -24,18 +24,14 @@ named `darwin`. All three heavyweight pieces are self-contained Linux artifacts:
 | Piece | Source | Notes |
 |---|---|---|
 | Linux engine | iSH-AOK (`Vendor/ish-AOK` submodule), built for iOS | runs in-process, no JIT entitlement |
-| Alpine aarch64 rootfs | `alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz` | **bundled in the app**, imported on first boot |
-| Swift aarch64 Linux toolchain | swift.org, via `swiftly` | **already installed in the bundled rootfs** |
-| `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | fetched by the app on first use — **not bundled** (`include_darwin_sdk=1` bakes it in) |
-| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | **already installed in the bundled rootfs** |
+| Alpine aarch64 rootfs | `alpine-minirootfs-3.23.3-aarch64.tar.gz` | **bundled in the app**, imported directly by the terminal on first boot |
+| Swift aarch64 Linux toolchain | swift.org, via `swiftly` | optional, user-installed in Alpine |
+| `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | optional, user-installed in Alpine |
+| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | optional, user-installed in Alpine |
 
-The provisioning happens at **build** time, not on the device (the darwin SDK
-excepted — the app fetches that on first use unless `include_darwin_sdk=1`):
-`EmbeddedLinux/build-rootfs-payload.sh` unpacks the plain Alpine minirootfs on an
-arm64 Linux host, runs the app's own `EmbeddedLinux/install-toolchain.sh` inside a
-`chroot` of it, and packs the result as the `-provisioned` archive above. There is
-no second implementation that could drift from what a device installs, and an app
-built this way has nothing left to download — it even builds offline.
+The IPA build intentionally packages only the plain Alpine minirootfs. Opening the
+terminal imports and boots that root without downloading or installing build tools.
+Swift, xtool, and the darwin SDK are explicit actions on the Toolchain screen.
 
 ## Repo layout
 
@@ -105,23 +101,11 @@ make gen && open XForge.xcodeproj
 
 1. `git submodule update --init --depth 1 Vendor/ish-AOK` — the engine sources.
 2. `EmbeddedLinux/fetch-rootfs.sh` — puts the Alpine aarch64 rootfs into
-   `Support/Resources/` so it is bundled into `XForge.app`. With
-   `XFORGE_ROOTFS=auto` (the default) it prefers the **provisioned** payload
-   published by the `Build rootfs payload` workflow, which already contains the
-   toolchain; `XFORGE_ROOTFS=plain` takes the small minirootfs instead and leaves
-   the toolchain to be installed on the device.
+   `Support/Resources/` so it is bundled into `XForge.app`. Use
+   `XFORGE_ROOTFS=plain` to select the small minirootfs and leave toolchains
+   for explicit installation in the guest.
 3. `EmbeddedLinux/build-ish-aok-core.sh` — builds the engine's static libraries into
    `Vendor/ish-AOK-build/lib` for the linker.
-
-To build the payload yourself (arm64 Linux, as root — it chroots into the rootfs
-and runs the guest's arm64 binaries there):
-
-```bash
-sudo make payload                 # → dist/alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz
-#   sudo XFORGE_INCLUDE_SDK=1 make payload       # ... with the darwin SDK in it
-XFORGE_ROOTFS=payload XFORGE_ROOTFS_ARCHIVE=dist/*-provisioned.tar.gz \
-  bash EmbeddedLinux/fetch-rootfs.sh
-```
 
 The engine is device-only; simulator builds (and `make test`) compile a stub instead
 and need none of the above beyond a plain `make gen`.
@@ -131,10 +115,10 @@ Or build the unsigned IPA for sideloading via GitHub Actions
 
 ## On-device build pipeline
 
-1. **Embedded Linux** — iSH-AOK boots the bundled Alpine aarch64 rootfs (imported into
-   its `fakefs` format on first launch).
-2. **Toolchain** — `EmbeddedLinux/install-toolchain.sh` provisions Swift + xtool in the
-   guest; the `darwin` SDK is fetched on first use and `swift sdk install`ed in-guest.
+1. **Embedded Linux** — iSH-AOK boots the bundled plain Alpine aarch64 rootfs (imported
+   into its `fakefs` format on first terminal use).
+2. **Toolchain** — `EmbeddedLinux/install-toolchain.sh` installs Swift + xtool only when
+   the user requests it; the darwin SDK is likewise an explicit in-guest install.
 3. **Build** — `xtool dev build -s -i` runs in the guest; the `.ipa` is copied back out.
 4. **Signing** — free Apple ID via XKit; hand the `.ipa` to SideStore for install.
 
@@ -142,9 +126,8 @@ Or build the unsigned IPA for sideloading via GitHub Actions
 
 - [x] Embedded Linux engine: iSH-AOK built for iOS, running in-process
 - [x] Alpine aarch64 rootfs bundled in the app and imported on first boot
-- [x] Toolchain provisioning — at build time, into the bundled rootfs
-      (`EmbeddedLinux/build-rootfs-payload.sh`); in-guest install remains as the
-      fallback for a plain rootfs
+- [x] Plain Alpine rootfs — bundled without Swift, xtool, or a darwin SDK; the
+      optional in-guest installer is available from Toolchain
 - [ ] XKit signing (free Apple ID) wired into the export flow
 - [ ] Hand-off of built `.ipa` to SideStore/AltStore for install
 - [ ] `RemoteExecutor` (build server) for fast compilation of real apps

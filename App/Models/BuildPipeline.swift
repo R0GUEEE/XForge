@@ -14,7 +14,7 @@ enum BuildStage: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .provision: return "Provision embedded Linux"
+        case .provision: return "Check build toolchain"
         case .sdk: return "Install Darwin SDK"
         case .configure: return "Configure app"
         case .resolve: return "Resolve dependencies"

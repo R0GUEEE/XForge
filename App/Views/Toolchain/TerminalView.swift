@@ -237,10 +237,10 @@ struct TerminalView: View {
     private static let banner = """
     XForge terminal — commands run in the embedded Alpine aarch64 Linux.
     Commands run with XForge's /bin/sh launch command and stream output here live.
-    The tools XForge installs live in its rootfs, so `swift --version` and
-    `xtool --version` work here. `sh /root/install-toolchain.sh` (re)installs them.
+    This starts with the bundled plain Alpine rootfs. Swift and xtool are optional
+    installs from the Toolchain screen; they are not installed automatically.
 
-    Try: uname -a · cat /etc/alpine-release · ls /host · swift --version
+    Try: uname -a · cat /etc/alpine-release · ls /host · apk --version
 
     """
 }
