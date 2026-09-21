@@ -46,7 +46,14 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 
+# Resolve the output directory to an absolute path up front. Packing happens
+# from inside the work directory (so the ZIP holds relative paths), and a
+# relative OUT_DIR would then resolve against the wrong directory — which is
+# exactly how a CI run failed with "Could not create output file" while the same
+# script worked locally with an absolute path.
 OUT_DIR="${1:-$REPO/dist/rootfs}"
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 ALPINE_VERSION="${XFORGE_ALPINE_VERSION:-3.21}"
 ALPINE_MINOR="${XFORGE_ALPINE_MINOR:-0}"
 ALPINE_ARCH="aarch64"
@@ -87,7 +94,7 @@ for tool in curl meson ninja python3 zip; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
 done
 
-mkdir -p "$OUT_DIR" "$WORK"
+mkdir -p "$WORK"
 
 # ---------------------------------------------------------------------------
 # 1. Download the plain minirootfs
