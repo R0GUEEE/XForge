@@ -242,14 +242,23 @@ jobs:
               fi
             done
 
-      - name: Prepare vendored iSH-AOK engine
-        if: hashFiles('EmbeddedLinux/build-ish-aok-core.sh') != ''
+      - name: Check vendored iSH-AOK requirements
+        if: hashFiles('App/EmbeddedVM/ISHAOKBridge.c') != ''
         run: |
           set -e
-          if [ ! -f .gitmodules ] || ! git config --file .gitmodules --get-regexp '^submodule\.Vendor/ish-AOK\.path$' >/dev/null; then
-            echo "No Vendor/ish-AOK submodule configured — skipping."
-            exit 0
+          if [ ! -f EmbeddedLinux/build-ish-aok-core.sh ]; then
+            echo "::error::App/EmbeddedVM/ISHAOKBridge.c includes Vendor/ish-AOK headers, but EmbeddedLinux/build-ish-aok-core.sh is missing."
+            exit 1
           fi
+          if [ ! -f .gitmodules ] || ! git config --file .gitmodules --get-regexp '^submodule\.Vendor/ish-AOK\.path$' >/dev/null; then
+            echo "::error::App/EmbeddedVM/ISHAOKBridge.c includes Vendor/ish-AOK headers, but the Vendor/ish-AOK submodule is not configured in .gitmodules."
+            exit 1
+          fi
+
+      - name: Prepare vendored iSH-AOK engine
+        if: hashFiles('App/EmbeddedVM/ISHAOKBridge.c') != ''
+        run: |
+          set -e
           git submodule update --init --depth 1 Vendor/ish-AOK
           # Only what the core actually links: the archive reader (rootfs import)
           # and smallclue (the built-in toolbox). The heavy native-program
@@ -257,14 +266,10 @@ jobs:
           git -C Vendor/ish-AOK submodule update --init --depth 1 deps/libarchive deps/smallclue
 
       - name: Build vendored iSH-AOK core
-        if: hashFiles('EmbeddedLinux/build-ish-aok-core.sh') != ''
+        if: hashFiles('App/EmbeddedVM/ISHAOKBridge.c') != ''
         shell: bash
         run: |
           set -e
-          if [ ! -f Vendor/ish-AOK/meson.build ]; then
-            echo "Vendored iSH-AOK engine not present — skipping."
-            exit 0
-          fi
           need_formula() { brew --prefix "$1" >/dev/null 2>&1 || missing+=("$1"); }
           missing=()
           command -v meson >/dev/null 2>&1 || missing+=(meson)
