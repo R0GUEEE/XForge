@@ -180,7 +180,15 @@ final class TerminalSession: ObservableObject {
     }
 
     private func drainQueue() {
-        guard running, shell?.isRunning == true, !pending.isEmpty else { return }
+        guard !pending.isEmpty else { return }
+        guard running, shell?.isRunning == true else {
+            // No shell to write to. Take the line out of the queue and report it,
+            // rather than leaving it pending forever and looking like it will run:
+            // a command that silently never executes is the worst of the options.
+            let dropped = pending.removeFirst()
+            sendToShell(dropped.text, label: dropped.label)
+            return
+        }
         let next = pending.removeFirst()
         // A command from another screen is announced, because the user did not
         // type it and needs to know where it came from. The echo of the command

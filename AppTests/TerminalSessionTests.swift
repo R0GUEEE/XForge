@@ -74,12 +74,24 @@ final class TerminalSessionTests: XCTestCase {
         let (session, vm) = await makeSession()
         let shell = try shell(of: vm)
 
+        // The guest writes from a background queue, and TerminalSession hops that
+        // onto the main actor before touching the screen — so the assertion has to
+        // let that hop run. That asynchrony is deliberate: the tailer must never
+        // block on the UI.
         shell.emit("total 8\ndrwxr-xr-x\n")
+        try await settle()
         XCTAssertTrue(session.buffer.plainText.contains("total 8"))
 
         let before = session.revision
         shell.emit("more\n")
+        try await settle()
         XCTAssertGreaterThan(session.revision, before, "the view must be told to redraw")
+    }
+
+    /// Let queued main-actor hops from the guest run.
+    private func settle() async {
+        for _ in 0..<5 { await Task.yield() }
+        try? await Task.sleep(for: .milliseconds(20))
     }
 
     func testInterruptIsASignalNotAControlCharacter() async throws {
@@ -91,7 +103,7 @@ final class TerminalSessionTests: XCTestCase {
 
         session.interrupt()
         // The signal is delivered asynchronously; give it a turn to land.
-        try await Task.sleep(for: .milliseconds(50))
+        try await settle()
 
         XCTAssertEqual(shell.interrupts, 1, "interrupt should signal the foreground program")
         XCTAssertEqual(shell.received.count, before,
@@ -101,7 +113,7 @@ final class TerminalSessionTests: XCTestCase {
     func testCommandsFromOtherScreensJoinTheSameShell() async throws {
         let (session, vm) = await makeSession()
         session.enqueue("apk add --no-cache git", label: "Toolchain")
-        try await Task.sleep(for: .milliseconds(50))
+        try await settle()
 
         XCTAssertEqual(try shell(of: vm).received, ["apk add --no-cache git\n"])
         XCTAssertEqual(try shell(of: vm).pid, 4242, "it runs in the terminal's own shell")
@@ -111,7 +123,7 @@ final class TerminalSessionTests: XCTestCase {
         let (session, vm) = await makeSession()
         let shell = try shell(of: vm)
         shell.simulateExit()
-        try await Task.sleep(for: .milliseconds(50))
+        try await settle()
 
         XCTAssertFalse(session.running)
         XCTAssertTrue(session.buffer.plainText.contains("the shell exited"),
@@ -122,6 +134,7 @@ final class TerminalSessionTests: XCTestCase {
         let (session, _) = await makeSession()
         session.shutdown()
         session.enqueue("echo lost")
+        try await settle()
 
         XCTAssertTrue(session.buffer.plainText.contains("the shell is not running"),
                       "a queued line that cannot run must be visible")
