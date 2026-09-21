@@ -6,10 +6,10 @@ All notable changes to **XForge** are documented here.
 
 ### Fixed
 - **Superseding unsigned-IPA dispatches no longer cancel a packaged IPA while it is
-  being published.** The build workflow keeps the `ipa` concurrency guard so only
-  one macOS archive runs at a time, and a follow-up publish workflow uploads the
-  completed artifact (cleaning up an empty draft for the same tag first if a
-  cancelled upload left one behind).
+  being published.** The payload job still supersedes older dispatches before the
+  expensive macOS work starts, the macOS build job stays serialized, and a
+  follow-up publish workflow uploads the completed artifact after the build
+  workflow succeeds.
 
 ### Changed
 - **The Sign & Install tab is now the Terminal.** Tab 3 is a full-screen terminal
