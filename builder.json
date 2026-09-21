@@ -1,0 +1,18 @@
+{
+  "project": "XForge",
+  "platform": "ios",
+  "github": {
+    "owner": "R0GUEEE",
+    "repo": "XForge"
+  },
+  "provider": "github",
+  "codemagic": {},
+  "bitrise": {},
+  "ios": {},
+  "flutter": {
+    "watch": {}
+  },
+  "reactNative": {},
+  "kmp": {},
+  "mobai": {}
+}
