@@ -201,6 +201,23 @@ jobs:
           [ -z "$strays" ] \
             || { echo "::error::build leftovers in the app bundle: $strays"; exit 1; }
 
+          # Exactly one rootfs, and it is the one the app reads. This is a real
+          # regression: the app used to bundle a tarball it imported at runtime,
+          # that file stayed committed after the switch to a fakefs ZIP, and the
+          # IPA shipped both — 4 MB of dead weight nothing ever opened.
+          rootfs_files="$(find "$APP_PATH" -maxdepth 1 \
+            \( -name '*.tar.gz' -o -name '*.tar.xz' -o -name 'alpine-rootfs*.zip' \) -print)"
+          count="$(printf '%s\n' "$rootfs_files" | grep -c . || true)"
+          [ "$count" = "1" ] || {
+            echo "::error::expected exactly one rootfs in the bundle, found $count:"
+            printf '  %s\n' $rootfs_files
+            exit 1
+          }
+          case "$rootfs_files" in
+            */alpine-rootfs.zip) ;;
+            *) echo "::error::the bundled rootfs is not alpine-rootfs.zip: $rootfs_files"; exit 1 ;;
+          esac
+
           # Identity and the icon wiring that makes the app installable.
           PLIST="$APP_PATH/Info.plist"
           test -f "$PLIST"

@@ -27,9 +27,10 @@ Vendor/ish-arm64-build/
 # single source of truth for the app's Info.plist.
 Support/Info.plist
 
-# Rootfs variants other than the release-pinned asset stay local. The pinned
-# gzip archive is deliberately tracked so a clean checkout and CI-produced IPA
-# contain the complete embedded Linux environment without a pre-build download.
-Support/Resources/*.tar.xz
-Support/Resources/*.tar.gz
-!Support/Resources/alpine-minirootfs-3.24.2-aarch64.tar.gz
+# The bundled rootfs is a build product, not a source file: CI downloads it from
+# the pinned `rootfs-v1` release and `make rootfs` builds it locally, so a clean
+# checkout compiles and bundles one either way. Nothing here is tracked — an
+# earlier revision committed a 4 MB tarball, and it stayed in the bundle long
+# after the app stopped reading it (the IPA shipped both roots).
+Support/Resources/*
+!Support/Resources/.gitkeep
