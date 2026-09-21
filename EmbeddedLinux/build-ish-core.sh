@@ -38,6 +38,7 @@ GUEST_ARCH="${ISH_GUEST_ARCH:-arm64}"
 MIN_SDK="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*"; }
+note() { printf '    %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 [ -f "$ISH/meson.build" ] || die "ish-arm64 sources not found at $ISH
