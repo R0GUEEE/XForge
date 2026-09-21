@@ -76,6 +76,12 @@ targets:
         # explicit prevents an Archive action from emitting only build products.
         SKIP_INSTALL: NO
         # --- app icon / accent colour -------------------------------------
+        # The entitlements file is checked in and edited by hand (Support/
+        # XForge.entitlements explains each key). It is wired in as a build
+        # setting rather than through XcodeGen's `entitlements:` block: XcodeGen
+        # generates that file from `properties`, and with none declared it wrote
+        # an empty plist over it, which silently dropped every entitlement.
+        CODE_SIGN_ENTITLEMENTS: $(SRCROOT)/Support/XForge.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         # --- embedded iSH-AOK engine (device builds only) -----------------
@@ -148,8 +154,6 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-    entitlements:
-      path: Support/XForge.entitlements
 
   XForgeTests:
     type: bundle.unit-test

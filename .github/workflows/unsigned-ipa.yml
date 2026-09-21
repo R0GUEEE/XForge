@@ -224,17 +224,21 @@ jobs:
           # dash, which PlistBuddy's :key path syntax does not accept, and a check
           # that cannot read the file it is checking is worse than no check.
           python3 - <<'PY'
-          import plistlib, sys
+          import hashlib, plistlib, sys
 
           path = "Support/XForge.entitlements"
+          raw = open(path, "rb").read()
+          # Print what was actually read: the previous failure reported every key
+          # missing for a file that is correct, which is only diagnosable if the
+          # check says which bytes it looked at.
+          print(f"{path}: {len(raw)} bytes, sha256 {hashlib.sha256(raw).hexdigest()[:16]}")
           required = [
               "get-task-allow",
               "application-identifier",
               "com.apple.developer.kernel.extended-virtual-addressing",
               "com.apple.developer.kernel.increased-memory-limit",
           ]
-          with open(path, "rb") as handle:
-              entitlements = plistlib.load(handle)
+          entitlements = plistlib.loads(raw)
 
           missing = [key for key in required if key not in entitlements]
           if missing:
