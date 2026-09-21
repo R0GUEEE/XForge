@@ -67,7 +67,16 @@ jobs:
           XFORGE_ALPINE_VERSION: ${{ inputs.alpine_version }}
         run: |
           set -euo pipefail
-          bash EmbeddedLinux/build-rootfs.sh dist/rootfs
+          # As root: installing the glibc layer runs the guest's own installer in
+          # a chroot of the tree being built (it unpacks Ubuntu packages with
+          # ar/zstd and writes to /lib, /usr/lib and /opt/glibc), and a chroot
+          # needs mounts. Keep the work directory and the output separate so the
+          # resulting files are owned by the runner, not root.
+          sudo -E env "PATH=$PATH" \
+            XFORGE_ALPINE_VERSION="$XFORGE_ALPINE_VERSION" \
+            bash EmbeddedLinux/build-rootfs.sh "$PWD/dist/rootfs"
+          sudo chown -R "$(id -u):$(id -g)" dist
+          ls -la dist/rootfs
 
       - name: Publish the release
         env:

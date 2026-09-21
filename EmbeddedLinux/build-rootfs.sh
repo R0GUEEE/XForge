@@ -193,6 +193,14 @@ if [ "${XFORGE_SKIP_GLIBC:-0}" = "1" ]; then
 else
     log "Installing the glibc compatibility layer (this is the slow part)"
 
+    # The step runs the guest's installer in a chroot, which needs mounts, and
+    # aarch64 binaries have to execute. Say so plainly: otherwise this surfaces
+    # as "mount: must be superuser to use mount" from somewhere in the middle of
+    # a long install.
+    [ "$(id -u)" -eq 0 ] || die "installing the glibc layer needs root (it chroots
+       into the root being built and mounts /proc). Re-run with sudo, or set
+       XFORGE_SKIP_GLIBC=1 to build a root without the layer."
+
     # Bind /proc and /dev: apk and the shell expect them, and the step's own
     # verification compiles a program.
     mount -t proc none "$DATA/proc"
