@@ -2,16 +2,62 @@
 
 All notable changes to **XForge** are documented here.
 
-## Terminal tab — and components installed by command
-
-### Fixed
-- **Superseding unsigned-IPA dispatches no longer cancel a packaged IPA while it is
-  being published.** The payload job still supersedes older dispatches before the
-  expensive macOS work starts, the macOS build job stays serialized, and a
-  follow-up publish workflow uploads the completed artifact after the build
-  workflow succeeds.
+## ish-arm64 engine, a plain Alpine root, and glibc preinstalled
 
 ### Changed
+- **The embedded Linux engine is now [ish-arm64](https://github.com/OpenMinis/ish-arm64)**
+  (`Vendor/ish-arm64`), replacing iSH-AOK. It is a fork of ish-app/ish that adds a
+  native AArch64 guest backend to the threaded-code interpreter, so the bundled
+  Alpine *aarch64* root runs as a same-architecture guest instead of being
+  cross-translated from x86. Like iSH-AOK it emits no machine code and needs no
+  executable memory, so no JIT entitlement is required and it works sideloaded.
+- **The bundled root is a plain Alpine userspace, and it is already a fakefs.**
+  `EmbeddedLinux/build-rootfs.sh` downloads the official Alpine aarch64 minirootfs,
+  converts it with the engine's own `tools/fakefsify`, configures it, and packs
+  `alpine-rootfs.zip`. First launch is an unzip, not a multi-minute import of
+  thousands of files into SQLite on a phone. Swift and xtool are *not* bundled —
+  the guest installs them on demand with `install-toolchain.sh`.
+- **The bundled root is stored as a pinned release asset** (`rootfs-v2`) rather
+  than rebuilt for every IPA. `.github/workflows/build-rootfs.yml` builds and
+  publishes it; `.github/workflows/build-ipa.yml` downloads it and verifies its
+  sha256. Building it per IPA run is what used to make the artifact ~1.4 GB; the
+  app is 161 MB now.
+- **The glibc compatibility layer is preinstalled in the root.** Every tool XForge
+  builds with is a glibc binary (xtool is a Swift program built on Ubuntu, and so
+  is the toolchain) while Alpine is musl, and `gcompat` is not enough for them.
+  Baking the layer in removes the most failure-prone step of an on-device
+  provision: a package renamed between Ubuntu releases yields a layer that loads
+  but cannot resolve a symbol, which surfaces much later inside a tool. Build the
+  root with `XFORGE_SKIP_GLIBC=1` to leave it out and have the guest install it.
+- **The rootfs builder runs the guest's own installer in a chroot**, so there is a
+  single implementation of provisioning rather than two that can drift. It needs
+  root, and says so up front if it does not have it.
+
+### Fixed
+- **The engine build no longer leaves kernel assertions live.** meson's `release`
+  buildtype implies `-O3` but does not define `NDEBUG`; that is the separate
+  `b_ndebug` option. Without it every `assert()` survived into a shipping build
+  and called `abort()` on a real device.
+- **The guest VDSO is verified rather than assumed.** It is `.incbin`ed into
+  `libish.a`, and meson silently substitutes an *empty* file when it cannot find
+  an aarch64-linux cross-compiler — so a build could succeed and produce a guest
+  with a bogus VDSO. The build now fails loudly in that case.
+- **The IPA ships exactly one rootfs.** It briefly carried both the new fakefs ZIP
+  and the tarball the app used to import at runtime — 4 MB of dead weight nothing
+  opened — because the old file stayed committed and a `.gitignore` rule kept it
+  tracked on purpose.
+- **Superseding dispatches no longer cancel a packaged IPA mid-publish.** The
+  cancellation moved to the provisioning job, and the build job is serialized but
+  never cancelled.
+- **The payload builder no longer dies measuring the rootfs.** `du -skx` inside a
+  command substitution exits non-zero when a `/proc` entry vanishes mid-walk, and
+  under `set -e` that aborted a build whose toolchain had already been installed
+  and verified.
+- **`meta.db` queries compare paths as text.** fakefs stores paths as BLOB, and a
+  `LIKE` against a BLOB only works through SQLite's version-dependent implicit
+  coercion — the same check passed locally and failed on CI's older SQLite.
+
+### Changed (app)
 - **The Sign & Install tab is now the Terminal.** Tab 3 is a full-screen terminal
   into the embedded Alpine system, laid out like the engine's: the screen *is* the
   terminal, with a key bar of the characters a phone keyboard cannot type (Tab,
@@ -31,35 +77,32 @@ All notable changes to **XForge** are documented here.
     `xtool sdk install "path/to/xip"`;
   - **the Swift toolchain** — the command swift.org documents, run in the guest
     (`curl -O https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz`,
-    `tar zxf`, `./swiftly init --quiet-shell-followup`, `env.sh`, `hash -r`), plus
-    the glibc layer the guest needs to run what it installs;
+    `tar zxf`, `./swiftly init --quiet-shell-followup`, `env.sh`, `hash -r`);
   - **xtool** with its provisioning step, and the **prebuilt darwin bundle** by
     downloading and installing it inside the guest.
 - The Terminal's Components menu — in the toolbar and on the wrench key of its
   key bar — runs those same commands, so nothing depends on remembering a path.
 - A command handed over by another screen is queued, echoed in the terminal with
   the screen that asked for it, and runs as soon as the current one finishes.
-
-## Alpine 3.24.2 root refresh
-
-- Replaced the bundled Alpine 3.23.3 base with the official Alpine 3.24.2
-  aarch64 minirootfs and migrated installed guests to a versioned root.
-- The release workflow provisions the root with XForge's build dependencies,
-  Swift, and xtool before bundling it into the IPA.
+- The Build screen reports what the guest can actually do, so a fresh install
+  reads as "the toolchain is not installed yet" (with the command to fix it)
+  rather than as a broken release.
 
 ## [0.5.0] — 2026-09-20 — Toolchain preinstalled
 
+> Superseded: this shipped a ~1.4 GB root with Swift, xtool and the glibc layer
+> baked in, and imported it on device. The root is now a small plain Alpine fakefs
+> and the guest provisions itself. Kept here for history.
+
 ### Changed
-- **The app now ships a *provisioned* Alpine rootfs, so there is nothing to
-  install on the device.** The IPA bundles
+- **The app shipped a *provisioned* Alpine rootfs, so there was nothing to
+  install on the device.** The IPA bundled
   `alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz`: the Alpine aarch64
   release with the Alpine build dependencies (clang, lld, cmake, ninja, git, …),
   the glibc compatibility layer under `/opt/glibc`, swiftly and the Swift
-  toolchain. xtool and the Darwin SDK remain explicit on-device installs.
-- **The `darwin` Swift SDK is not bundled.** It is a ~200 MB release asset that
-  the app fetches on first use, so it stays out of the IPA. Pass
-  `include_darwin_sdk=1` to the IPA (or the payload) workflow to bake it in as
-  well, which makes the app able to build with no network at all.
+  toolchain. xtool and the Darwin SDK remained explicit on-device installs.
+- **The `darwin` Swift SDK was not bundled.** It is a ~200 MB release asset that
+  the app fetches on first use, so it stayed out of the IPA.
 - **Provisioning happens at build time**, in
   `EmbeddedLinux/build-rootfs-payload.sh`, on an arm64 Linux host: it chroots
   into the unpacked minirootfs and runs the app's *own*
