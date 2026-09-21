@@ -143,34 +143,122 @@ fi
 note "$FAKEFSIFY"
 
 # ---------------------------------------------------------------------------
-# 3. Convert to fakefs
-# ---------------------------------------------------------------------------
-OUT_ROOTFS="$WORK/$ROOTFS_NAME"
-
-log "Converting to fakefs (this is the slow part)"
-rm -rf "$OUT_ROOTFS"
-"$FAKEFSIFY" "$ROOTFS_PATH" "$OUT_ROOTFS"
-
-[ -d "$OUT_ROOTFS/data" ] || die "fakefsify produced no data/ directory"
-[ -f "$OUT_ROOTFS/meta.db" ] || die "fakefsify produced no meta.db"
-note "data:   $(du -sh "$OUT_ROOTFS/data" | cut -f1)"
-note "meta:   $(du -h "$OUT_ROOTFS/meta.db" | cut -f1)"
-
-# ---------------------------------------------------------------------------
-# 4. Configure the root
+# 3. Unpack the plain rootfs we will shape
 #
-# A bare Alpine minirootfs is not quite bootable as XForge's guest: it has no
-# mount points, no DNS, no apk repositories, and root may not have a usable
-# shell. These are the same adjustments the reference makes.
+# Everything happens on this tree — configuration and the glibc layer both —
+# and it is converted to fakefs exactly once, at the end. That ordering is not
+# cosmetic: `fakefsify` builds `meta.db` as an index of the files present when
+# it runs, and the engine reads *the database*, not the directory. Files copied
+# into `data/` after conversion exist on disk and are invisible in the guest —
+# a first attempt installed the glibc layer that way and the layer did not exist
+# as far as the engine was concerned (568 files on disk, 0 rows in meta.db).
 # ---------------------------------------------------------------------------
-DATA="$OUT_ROOTFS/data"
-log "Configuring the root"
+DATA="$WORK/rootfs-tree"
+
+log "Unpacking $ROOTFS_FILE into the root tree"
+rm -rf "$DATA"
+mkdir -p "$DATA"
+tar -xzf "$ROOTFS_PATH" -C "$DATA"
+[ -x "$DATA/bin/sh" ] || die "the unpacked root has no /bin/sh"
 
 # Mount points the guest expects. The engine mounts /proc and /dev/pts itself;
 # these directories have to exist first.
 for dir in dev proc sys tmp run root home; do
     mkdir -p "$DATA/$dir"
 done
+
+# ---------------------------------------------------------------------------
+# 4. Install the glibc compatibility layer
+#
+# Alpine is musl-based, but every tool XForge builds with is a *glibc* binary:
+# xtool is a Swift program built on Ubuntu, and the Swift toolchain is too.
+# `gcompat` is not enough for them (they die on strptime_l, fts_*, fcntl64 …), so
+# the layer takes Ubuntu's own glibc and its libraries and points the loader at
+# them.
+#
+# Baking it in rather than letting the guest install it removes the most
+# failure-prone step of an on-device provision: a package renamed between Ubuntu
+# releases produces a layer that loads but cannot resolve a symbol, which
+# surfaces much later as a tool dying on an undefined symbol. It costs ~95 MB
+# compressed, so the root stays small.
+#
+# This runs the *same* `install-toolchain.sh glibc` step the guest would run, in
+# a chroot of this very tree, so there is only ever one implementation of the
+# layer. The chroot is what makes it work: the step unpacks Ubuntu packages with
+# `ar`/`zstd` and writes to /lib, /usr/lib and /opt/glibc, and those paths have
+# to mean the guest root.
+# ---------------------------------------------------------------------------
+if [ "${XFORGE_SKIP_GLIBC:-0}" = "1" ]; then
+    log "Skipping the glibc layer (XFORGE_SKIP_GLIBC=1)"
+else
+    log "Installing the glibc compatibility layer (this is the slow part)"
+
+    # Bind /proc and /dev: apk and the shell expect them, and the step's own
+    # verification compiles a program.
+    mount -t proc none "$DATA/proc"
+    GLIBC_MOUNTS="$DATA/proc"
+    trap 'for m in $GLIBC_MOUNTS; do umount -l "$m" 2>/dev/null || true; done' EXIT
+    mount --rbind /dev "$DATA/dev" 2>/dev/null || true
+    GLIBC_MOUNTS="$DATA/dev $GLIBC_MOUNTS"
+    mount --rbind /sys "$DATA/sys" 2>/dev/null || true
+    GLIBC_MOUNTS="$DATA/sys $GLIBC_MOUNTS"
+
+    # DNS: name resolution happens inside the chroot, and the minirootfs ships no
+    # nameservers at all.
+    if [ -s /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf; then
+        grep '^nameserver' /etc/resolv.conf | sed -n '1,3p' > "$DATA/etc/resolv.conf"
+    else
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$DATA/etc/resolv.conf"
+    fi
+
+    # The Alpine-side prerequisites for the step itself (it fetches packages with
+    # curl and unpacks them with ar/zstd), and its copy of the installer.
+    install -m 0755 "$HERE/install-toolchain.sh" "$DATA/root/install-toolchain.sh"
+    chroot "$DATA" /bin/sh -c \
+        "apk add --no-cache curl tar xz zstd binutils ca-certificates" \
+        || die "could not install the glibc step's own prerequisites in the chroot"
+
+    chroot "$DATA" /bin/sh -c \
+        "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root; \
+         sh /root/install-toolchain.sh glibc" \
+        || die "installing the glibc layer in the chroot failed"
+
+    # The layer is only useful if the guest can resolve it, so check the entry
+    # points a Swift or xtool binary loads rather than trusting the step's status.
+    #
+    # `-L` rather than `-e` on the symlinks, deliberately: they are absolute and
+    # point into the *guest's* /opt/glibc, which does not exist on the build
+    # machine, so `-e` (which follows the link) reports them missing here even
+    # though they resolve perfectly inside the guest. What has to exist at build
+    # time is the link itself.
+    for required in \
+        opt/glibc/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1 \
+        usr/local/share/xforge/glibc.env; do
+        [ -e "$DATA/$required" ] || die "the glibc layer is incomplete: $required is missing"
+    done
+    for link in lib/ld-linux-aarch64.so.1 lib/aarch64-linux-gnu usr/lib/aarch64-linux-gnu; do
+        [ -L "$DATA/$link" ] || die "the glibc layer is not wired in: $link is missing"
+    done
+
+    umount -l "$DATA/dev" 2>/dev/null || true
+    umount -l "$DATA/sys" 2>/dev/null || true
+    umount -l "$DATA/proc" 2>/dev/null || true
+
+    # The layer's own prerequisite packages are no longer needed: they were
+    # installed to run the step, not to run the guest.
+    chroot "$DATA" /bin/sh -c "apk del --no-cache zstd binutils" >/dev/null 2>&1 || true
+
+    note "glibc layer installed at /opt/glibc"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Configure the root
+#
+# A bare Alpine minirootfs is not quite bootable as XForge's guest: it has no
+# mount points, no DNS, no apk repositories, and root may not have a usable
+# shell. These are the same adjustments the reference makes.
+# ---------------------------------------------------------------------------
+log "Configuring the root"
 
 # The guest logs in as root with no password, and its shell must exist.
 if [ -f "$DATA/etc/passwd" ]; then
@@ -242,7 +330,46 @@ mkdir -p "$DATA/usr/local/share/xforge"
 } > "$DATA/usr/local/share/xforge/rootfs-manifest.txt"
 
 # ---------------------------------------------------------------------------
-# 5. Pack
+# 6. Convert to fakefs
+#
+# Last, after everything that adds, removes or links anything — the conversion
+# builds `meta.db` as an index of the tree as it stands, and the engine reads
+# the database rather than scanning the directory. Anything added afterwards
+# would be on disk and invisible in the guest.
+#
+# `fakefs_import` reads an *archive* (libarchive, gzip+tar), not a directory, so
+# the configured tree is packed once here and converted from that.
+# ---------------------------------------------------------------------------
+OUT_ROOTFS="$WORK/$ROOTFS_NAME"
+
+log "Converting to fakefs"
+rm -rf "$OUT_ROOTFS"
+STAGED_TAR="$WORK/$ROOTFS_NAME.tar.gz"
+tar -czf "$STAGED_TAR" -C "$DATA" .
+"$FAKEFSIFY" "$STAGED_TAR" "$OUT_ROOTFS"
+rm -f "$STAGED_TAR"
+
+[ -d "$OUT_ROOTFS/data" ] || die "fakefsify produced no data/ directory"
+[ -f "$OUT_ROOTFS/meta.db" ] || die "fakefsify produced no meta.db"
+note "data: $(du -sh "$OUT_ROOTFS/data" | cut -f1)"
+note "meta: $(du -h "$OUT_ROOTFS/meta.db" | cut -f1)"
+
+# The glibc layer must be *indexed*, not merely present. This is the check that
+# would have caught installing it after conversion: the files existed on disk and
+# the guest could not see them at all.
+if [ "${XFORGE_SKIP_GLIBC:-0}" != "1" ]; then
+    if command -v sqlite3 >/dev/null 2>&1; then
+        indexed="$(sqlite3 "$OUT_ROOTFS/meta.db" \
+            "SELECT COUNT(*) FROM paths WHERE path LIKE '%aarch64-linux-gnu%';" 2>/dev/null || echo 0)"
+        [ "${indexed:-0}" -gt 0 ] || die \
+            "the glibc layer is not indexed in meta.db ($indexed paths) — the guest
+       would not see it. It must be installed before the fakefs conversion."
+        note "glibc paths indexed in meta.db: $indexed"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Pack
 # ---------------------------------------------------------------------------
 log "Packing $ZIP_NAME"
 ZIP_PATH="$OUT_DIR/$ZIP_NAME"

@@ -46,11 +46,24 @@ https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3
   of files into SQLite on a phone. This is the same layout OpenMinis ships, and
   it is why `App/EmbeddedVM/RootfsInstaller.swift` uses `unzip` and then
   `mount_root` instead of `fakefs_import`.
-- **The root is small and plain.** Swift, xtool and the glibc layer are *not* in
-  it: the guest installs them on demand with `install-toolchain.sh`, which keeps
-  the artifact a few megabytes instead of ~1.4 GB and keeps the root
-  reproducible. The trade is that a fresh install must provision once, in the
-  guest, before it can build anything.
+- **The root is small and pre-provisioned only where it matters.** Swift and
+  xtool are *not* in it — the guest installs them on demand with
+  `install-toolchain.sh` — which is what keeps the artifact ~95 MB instead of
+  ~1.4 GB. The **glibc compatibility layer is** included: every tool XForge
+  builds with is a glibc binary (xtool is a Swift program built on Ubuntu, and so
+  is the toolchain), Alpine is musl, and `gcompat` is not enough for them. Baking
+  that layer in removes the most failure-prone step of an on-device provision
+  (a package renamed between Ubuntu releases yields a layer that loads but cannot
+  resolve a symbol, which surfaces much later inside a tool).
+- **The layer is installed before the fakefs conversion, and that ordering is
+  load-bearing.** `fakefsify` writes `meta.db` as an index of the tree as it
+  stands, and the engine resolves files through the database rather than by
+  scanning `data/`. Installing the layer *after* conversion therefore produces a
+  root where the files are on disk and completely invisible in the guest — 568
+  files present, zero rows in `meta.db`. `build-rootfs.sh` asserts the layer is
+  indexed before it packs.
+- The trade is that a fresh install must still provision once, in the guest,
+  before it can build anything.
 - Because the root is small, it is stored as a **pinned release asset**
   (`rootfs-v1`) rather than rebuilt per IPA run. `build-ipa.yml` downloads it and
   verifies its sha256; `build-rootfs.yml` rebuilds and republishes it when the

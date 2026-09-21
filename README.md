@@ -137,8 +137,10 @@ Or build the unsigned IPA for sideloading via GitHub Actions
    already in the engine's `fakefs` format and is unpacked on first use.
 2. **Toolchain** — the guest installs what a build needs itself, on demand:
    `sh /root/install-toolchain.sh all` (the Toolchain screen offers it as a command
-   in the terminal). It installs the apk build dependencies, the glibc layer,
-   Swift and xtool; the darwin SDK stays an explicit in-guest install.
+   in the terminal). It installs the apk build dependencies, Swift and xtool; the
+   darwin SDK stays an explicit in-guest install. The **glibc compatibility layer**
+   is already in the bundled root, so the first thing the guest would otherwise
+   have to download is already there.
 3. **Build** — `xtool dev build -s -i` runs in the guest; the `.ipa` is copied back out.
 4. **Signing** — export the unsigned `.ipa` to SideStore/AltStore or another signing
    service. Direct free-Apple-ID signing through XKit remains planned.

@@ -167,7 +167,17 @@ glibc_fetch_indexes() {
 }
 
 step_glibc() {
-    if [ -x "$GLIBC_LD" ] && [ -f "$GLIBC_LIB/libc.so.6" ]; then
+    # "Already present" has to mean the layer is *usable*, not merely that the
+    # loader exists. The two halves can diverge: the loader lives under
+    # /opt/glibc, while the wiring that makes glibc binaries actually run is the
+    # symlink farm in /lib and /usr/lib. Checking only the loader reports a
+    # half-built layer as complete, and the failure then appears much later as a
+    # tool dying on an undefined symbol or an unloadable interpreter.
+    #
+    # This is why the check is on the wiring too: the loader a Swift binary is
+    # loaded by, and the unversioned link names a Swift link resolves against.
+    if [ -x "$GLIBC_LD" ] && [ -f "$GLIBC_LIB/libc.so.6" ] \
+       && [ -e "/lib/ld-linux-$ARCH.so.1" ] && [ -e "/usr/lib/$MULTIARCH" ]; then
         log "glibc runtime already present at $GLIBC_ROOT"
     else
         log "Installing the glibc runtime (Ubuntu $UBUNTU_SUITE, $UBUNTU_ARCH)"
