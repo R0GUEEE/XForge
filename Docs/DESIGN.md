@@ -29,24 +29,26 @@ self-contained, all fetchable):
 
 ## 1b. The userspace is **Alpine aarch64**, bundled in the app
 
-The embedded Linux is the **Alpine Linux arm64 minirootfs** that iSH-AOK publishes:
+The embedded Linux starts from the official **Alpine Linux arm64 minirootfs**:
 
 ```
-https://github.com/emkey1/ish-AOK/raw/refs/heads/working/alpine-minirootfs-3.23.3-aarch64.tar.xz
+https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz
 ```
 
-- `EmbeddedLinux/fetch-rootfs.sh` downloads that exact archive into
-  `Support/Resources/`, where XcodeGen bundles it as an app resource. **Nothing is
-  downloaded after install** — the rootfs ships inside `XForge.app`.
+- The release workflow runs `EmbeddedLinux/build-rootfs-payload.sh` on native
+  arm64 Linux. It downloads that exact archive, installs the project build
+  dependencies, Swift, and xtool, then bundles the provisioned archive into
+  `XForge.app`.
 - On first boot the archive is imported into iSH-AOK's `fakefs` format (a `data/` tree
   plus a `meta.db` SQLite database) inside the app container; every later launch reuses
   it. See `App/EmbeddedVM/RootfsInstaller.swift`.
-- Because Swift + xtool are glibc binaries, the guest installs Alpine's `gcompat` +
-  `libc6-compat` during toolchain provisioning so they run on the musl base.
-- `EmbeddedLinux/install-toolchain.sh` runs *in the guest* for first-boot provisioning;
-  it is idempotent and also fetches the darwin SDK if not already staged.
-- The multi-GB `darwin` SDK is *not* baked into the rootfs — it's fetched on first use
-  from the CI-hosted release and staged into `/opt/darwin.artifactbundle`.
+- Because Swift and xtool are glibc binaries, payload provisioning installs the
+  required glibc runtime under `/opt/glibc` in the otherwise-musl Alpine guest.
+- `EmbeddedLinux/install-toolchain.sh` is idempotent and runs inside the guest
+  during payload creation. The same component actions can repair or update an
+  installed guest later.
+- The multi-GB `darwin` SDK is *not* baked into the rootfs. The app resolves the
+  newest `darwin-sdk-*` release asset and installs it on demand with SwiftPM.
 
 ## 2. Where the `darwin` SDK comes from
 

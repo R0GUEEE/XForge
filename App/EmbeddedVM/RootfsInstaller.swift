@@ -10,10 +10,13 @@ import Foundation
 enum RootfsInstaller {
     /// Base name of the bundled archive. This is built from Alpine's minirootfs
     /// with XForge's guest build dependencies and toolchain installed.
-    static let archiveName = "alpine-minirootfs-3.23.3-aarch64-provisioned"
+    static let archiveName = "alpine-minirootfs-3.24.2-aarch64-provisioned"
     static let archiveExtension = "tar.gz"
     /// Directory name of the installed root inside `<Documents>/embedded-linux/roots`.
-    static let rootName = "alpine"
+    static let rootName = "alpine-3.24.2"
+    /// Roots from releases that must not be reused after the base distribution
+    /// changes. They are removed only after the replacement root is valid.
+    static let legacyRootNames = ["alpine"]
 
     /// XForge boots the provisioned Alpine userspace shipped in the app. The
     /// payload is imported directly into the embedded terminal's fakefs, so
@@ -59,6 +62,7 @@ enum RootfsInstaller {
     static func installIfNeeded(into rootsDirectory: URL) throws -> URL {
         let root = installedRoot(in: rootsDirectory)
         if isInstalled(in: rootsDirectory) {
+            removeLegacyRoots(in: rootsDirectory, fileManager: .default)
             return root
         }
 
@@ -112,7 +116,21 @@ enum RootfsInstaller {
             try fm.removeItem(at: root)
         }
         try fm.moveItem(at: staging, to: root)
+        removeLegacyRoots(in: rootsDirectory, fileManager: fm)
         return root
+    }
+
+    private static func removeLegacyRoots(in rootsDirectory: URL, fileManager fm: FileManager) {
+        for name in legacyRootNames where name != rootName {
+            let legacy = rootsDirectory.appendingPathComponent(name, isDirectory: true)
+            guard fm.fileExists(atPath: legacy.path) else { continue }
+            do {
+                try fm.removeItem(at: legacy)
+                XForgeLog.note("rootfs: removed legacy root \(name)")
+            } catch {
+                XForgeLog.note("rootfs: could not remove legacy root \(name): \(error.localizedDescription)")
+            }
+        }
     }
 
     private static func isValidImportedRoot(_ root: URL, fileManager fm: FileManager) -> Bool {

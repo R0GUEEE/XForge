@@ -24,7 +24,7 @@ named `darwin`. All three heavyweight pieces are self-contained Linux artifacts:
 | Piece | Source | Notes |
 |---|---|---|
 | Linux engine | iSH-AOK (`Vendor/ish-AOK` submodule), built for iOS | runs in-process, no JIT entitlement |
-| Provisioned Alpine aarch64 rootfs | `alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz` | **bundled in the app**, imported directly by the terminal on first boot |
+| Provisioned Alpine aarch64 rootfs | `alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz` | **bundled in the app**, imported directly by the terminal on first boot |
 | Swift aarch64 Linux toolchain | swift.org, via `swiftly` | installed in the bundled Alpine guest |
 | `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | optional, user-installed in Alpine |
 | `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | installed in the bundled Alpine guest |
@@ -122,7 +122,8 @@ Or build the unsigned IPA for sideloading via GitHub Actions
    Alpine before packaging, installing project dependencies, Swift, and xtool in the guest;
    the darwin SDK is likewise an explicit in-guest install.
 3. **Build** — `xtool dev build -s -i` runs in the guest; the `.ipa` is copied back out.
-4. **Signing** — free Apple ID via XKit; hand the `.ipa` to SideStore for install.
+4. **Signing** — export the unsigned `.ipa` to SideStore/AltStore or another signing
+   service. Direct free-Apple-ID signing through XKit remains planned.
 
 ## Roadmap
 

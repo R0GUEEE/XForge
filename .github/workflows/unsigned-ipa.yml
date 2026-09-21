@@ -58,6 +58,8 @@ jobs:
             || { echo '::error::payload has no Swift toolchain'; exit 1; }
           manifest="$(grep -E '/usr/local/share/xforge/payload-manifest.txt$' /tmp/rootfs-contents.txt | head -1)"
           tar -xzOf "$archive" "$manifest" | tee /tmp/payload-manifest.txt
+          grep -qE '^base:[[:space:]]+alpine-minirootfs-3\.24\.2-aarch64\.tar\.gz$' /tmp/payload-manifest.txt
+          grep -qE '^rootfs:[[:space:]]+3\.24\.2$' /tmp/payload-manifest.txt
           grep -qE '^xtool:[[:space:]]+xtool ' /tmp/payload-manifest.txt
           echo "payload=$archive" >> "$GITHUB_OUTPUT"
 
@@ -82,14 +84,6 @@ jobs:
           name: xforge-provisioned-alpine-rootfs
           path: dist/rootfs
 
-      - name: Bundle the provisioned Alpine rootfs in the app
-        run: |
-          set -euo pipefail
-          archive="$(find dist/rootfs -maxdepth 1 -name '*-provisioned.tar.gz' -print -quit)"
-          test -n "$archive"
-          XFORGE_ROOTFS=payload XFORGE_ROOTFS_ARCHIVE="$archive" \
-            bash EmbeddedLinux/fetch-rootfs.sh
-
       - name: Check out the iSH-AOK engine (submodule)
         run: |
           set -euo pipefail
@@ -112,6 +106,24 @@ jobs:
             -resolvePackageDependencies \
             -destination 'generic/platform=iOS' 2>&1 | tee /tmp/resolve.log
 
+      - name: Run unit tests
+        run: |
+          set -o pipefail
+          xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            test 2>&1 | tee /tmp/tests.log
+
+      - name: Bundle the provisioned Alpine rootfs in the app
+        run: |
+          set -euo pipefail
+          archive="$(find dist/rootfs -maxdepth 1 -name '*-provisioned.tar.gz' -print -quit)"
+          test -n "$archive"
+          XFORGE_ROOTFS=payload XFORGE_ROOTFS_ARCHIVE="$archive" \
+            bash EmbeddedLinux/fetch-rootfs.sh
+          # XcodeGen resolves resources when it generates the project. Regenerate
+          # after replacing the small source archive with the provisioned payload.
+          xcodegen generate --spec project.yml
+
       - name: Archive (unsigned)
         run: |
           set -o pipefail
@@ -127,7 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           APP="build/XForge.xcarchive/Products/Applications/XForge.app"
-          ARCHIVE="$APP/alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz"
+          ARCHIVE="$APP/alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz"
           test -d "$APP"
           test -x "$APP/XForge"
           test -f "$ARCHIVE"
@@ -200,7 +212,7 @@ jobs:
           ditto "$APP" dist/Payload/XForge.app
           ditto -c -k --keepParent dist/Payload "$IPA"
           unzip -t "$IPA"
-          unzip -Z1 "$IPA" | grep -q 'Payload/XForge.app/alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz$'
+          unzip -Z1 "$IPA" | grep -q 'Payload/XForge.app/alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz$'
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

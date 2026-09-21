@@ -32,4 +32,4 @@ Support/Info.plist
 # contain the complete embedded Linux environment without a pre-build download.
 Support/Resources/*.tar.xz
 Support/Resources/*.tar.gz
-!Support/Resources/alpine-minirootfs-3.23.3-aarch64.tar.gz
+!Support/Resources/alpine-minirootfs-3.24.2-aarch64.tar.gz

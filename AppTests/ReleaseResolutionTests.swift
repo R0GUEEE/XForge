@@ -75,8 +75,29 @@ final class ReleaseResolutionTests: XCTestCase {
     func testOnlyTheProvisionedAlpineArchiveIsEligibleForBoot() {
         XCTAssertEqual(
             RootfsInstaller.bundledArchiveNames,
-            ["alpine-minirootfs-3.23.3-aarch64-provisioned"]
+            ["alpine-minirootfs-3.24.2-aarch64-provisioned"]
         )
+        XCTAssertEqual(RootfsInstaller.rootName, "alpine-3.24.2")
+        XCTAssertEqual(RootfsInstaller.legacyRootNames, ["alpine"])
+    }
+
+    func testCurrentRootRemovesTheLegacyAlpineInstall() throws {
+        let roots = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xforge-roots-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: roots) }
+
+        let current = RootfsInstaller.installedRoot(in: roots)
+        try FileManager.default.createDirectory(
+            at: current.appendingPathComponent("data", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        try Data([1]).write(to: current.appendingPathComponent("meta.db"))
+
+        let legacy = roots.appendingPathComponent("alpine", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+
+        XCTAssertEqual(try RootfsInstaller.installIfNeeded(into: roots), current)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
     }
 }
 

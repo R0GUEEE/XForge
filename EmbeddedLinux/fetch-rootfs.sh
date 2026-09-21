@@ -5,13 +5,13 @@
 #
 # Two flavours exist, and the app prefers the first one it finds:
 #
-#   alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz
+#   alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz
 #       Built by EmbeddedLinux/build-rootfs-payload.sh: the minirootfs with the
 #       whole toolchain already installed in it (apk build environment, the glibc
 #       layer, xtool, swiftly + the Swift toolchain, optionally the darwin SDK).
 #       An app built with this needs nothing installed on the device.
 #
-#   alpine-minirootfs-3.23.3-aarch64.tar.gz
+#   alpine-minirootfs-3.24.2-aarch64.tar.gz
 #       The plain Alpine minirootfs. Small, and the user runs
 #       install-toolchain.sh in the guest afterwards.
 #
@@ -24,6 +24,7 @@
 #                            payload = fail if there is no provisioned archive.
 #     XFORGE_ROOTFS_ARCHIVE  path to an already-built archive (usually what the
 #                            CI job just produced); skips every download.
+#     ROOTFS_URL / ROOTFS_SHA256  custom plain-rootfs source and checksum.
 #     XFORGE_PAYLOAD_URL     explicit provisioned archive URL (implies payload).
 #     XFORGE_PAYLOAD_TAG_PREFIX  release series holding payloads
 #                            (default: xforge-payload-)
@@ -39,8 +40,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 DEST="${1:-$REPO/Support/Resources}"
 
-BASE_NAME="alpine-minirootfs-3.23.3-aarch64"
-PLAIN_URL="${ROOTFS_URL:-https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64/$BASE_NAME.tar.gz}"
+BASE_NAME="alpine-minirootfs-3.24.2-aarch64"
+DEFAULT_PLAIN_URL="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/$BASE_NAME.tar.gz"
+DEFAULT_PLAIN_SHA256="9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773"
+PLAIN_URL="${ROOTFS_URL:-$DEFAULT_PLAIN_URL}"
+PLAIN_SHA256="${ROOTFS_SHA256:-}"
+[ -n "$PLAIN_SHA256" ] || [ "$PLAIN_URL" != "$DEFAULT_PLAIN_URL" ] || PLAIN_SHA256="$DEFAULT_PLAIN_SHA256"
 PAYLOAD_NAME="$BASE_NAME-provisioned.tar.gz"
 PAYLOAD_TAG_PREFIX="${XFORGE_PAYLOAD_TAG_PREFIX:-xforge-payload-}"
 REPOSITORY="${XFORGE_REPOSITORY:-R0GUEEE/XForge}"
@@ -67,6 +72,19 @@ discard() {
 
 verify_archive() {
     tar -tzf "$1" >/dev/null 2>&1 || die "$1 is not a readable .tar.gz"
+}
+
+verify_plain_checksum() {
+    local archive="$1" actual
+    [ -n "$PLAIN_SHA256" ] || return 0
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual="$(sha256sum "$archive" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+        actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+    else
+        die "sha256sum or shasum is required to verify $(basename "$archive")"
+    fi
+    [ "$actual" = "$PLAIN_SHA256" ] || die "$(basename "$archive") SHA-256 mismatch (got $actual)"
 }
 
 # A payload is only usable if the provisioning actually landed in it — the app
@@ -118,14 +136,15 @@ install_payload() {
 
 install_plain() {
     local target="$DEST/$BASE_NAME.tar.gz"
-    if [ -f "$target" ] && tar -tzf "$target" >/dev/null 2>&1; then
+    if [ -f "$target" ] && verify_plain_checksum "$target" && tar -tzf "$target" >/dev/null 2>&1; then
         log "$BASE_NAME.tar.gz already present and valid ($(du -h "$target" | cut -f1))"
     else
         log "Fetching $BASE_NAME.tar.gz"
         note "$PLAIN_URL"
         curl -fL --retry 3 --retry-delay 2 "$PLAIN_URL" -o "$target.partial"
+        verify_plain_checksum "$target.partial"
+        verify_archive "$target.partial" || { rm -f "$target.partial"; die "downloaded file is not a valid .tar.gz"; }
         mv "$target.partial" "$target"
-        verify_archive "$target" || { rm -f "$target"; die "downloaded file is not a valid .tar.gz"; }
         note "verified $(du -h "$target" | cut -f1)"
     fi
     discard "$PAYLOAD_NAME"
@@ -146,7 +165,7 @@ if [ "$MODE" = "payload" ]; then
         exit 0
     fi
     url="${XFORGE_PAYLOAD_URL:-$(resolve_payload_url)}"
-    [ -n "$url" ] || die "no $PAYLOAD_NAME in any $PAYLOAD_TAG_PREFIX* release of $REPOSITORY — run the Build rootfs payload workflow, or pass XFORGE_ROOTFS_ARCHIVE"
+    [ -n "$url" ] || die "no $PAYLOAD_NAME in any $PAYLOAD_TAG_PREFIX* release of $REPOSITORY — build it with build-rootfs-payload.sh, or pass XFORGE_ROOTFS_ARCHIVE"
     log "Downloading the provisioned rootfs payload"
     note "$url"
     curl -fL --retry 3 --retry-delay 2 "$url" -o "$DEST/$PAYLOAD_NAME.partial"

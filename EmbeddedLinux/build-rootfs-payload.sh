@@ -12,7 +12,7 @@
 # This script does that provisioning **at build time** instead, on native aarch64
 # Linux, and packs the result:
 #
-#     alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz
+#     alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz
 #
 # It runs the app's OWN provisioning script inside a `chroot` of the unpacked
 # root filesystem — there is deliberately no second implementation that could
@@ -24,7 +24,8 @@
 #     sudo EmbeddedLinux/build-rootfs-payload.sh [output-dir]      # default: dist
 #
 # Environment:
-#     XFORGE_ROOTFS_URL       plain minirootfs to start from (default: Alpine 3.23.3)
+#     XFORGE_ROOTFS_URL       plain minirootfs to start from (default: Alpine 3.24.2)
+#     XFORGE_ROOTFS_SHA256    checksum for a custom rootfs URL
 #     XFORGE_INCLUDE_SDK      auto | 1 | 0 — bake the darwin Swift SDK in too
 #                             (default: auto = include when a release has one)
 #     XFORGE_SDK_URL          explicit darwin.artifactbundle.tar.xz URL (implies 1)
@@ -44,7 +45,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 
 OUT_DIR="${1:-$REPO/dist}"
-ROOTFS_URL="${XFORGE_ROOTFS_URL:-https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/aarch64/alpine-minirootfs-3.23.3-aarch64.tar.gz}"
+DEFAULT_ROOTFS_URL="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/aarch64/alpine-minirootfs-3.24.2-aarch64.tar.gz"
+DEFAULT_ROOTFS_SHA256="9bf70a7f18ea44094cbb5f70c58f9af129c8214745743db0e68e5502cc2ce773"
+ROOTFS_URL="${XFORGE_ROOTFS_URL:-$DEFAULT_ROOTFS_URL}"
+ROOTFS_SHA256="${XFORGE_ROOTFS_SHA256:-}"
+[ -n "$ROOTFS_SHA256" ] || [ "$ROOTFS_URL" != "$DEFAULT_ROOTFS_URL" ] || ROOTFS_SHA256="$DEFAULT_ROOTFS_SHA256"
 BASE_NAME="$(basename "$ROOTFS_URL" .tar.gz)"
 PAYLOAD_NAME="${XFORGE_PAYLOAD_NAME:-$BASE_NAME-provisioned.tar.gz}"
 INCLUDE_SDK="${XFORGE_INCLUDE_SDK:-auto}"
@@ -118,6 +123,9 @@ mkdir -p "$ROOTFS" "$OUT_DIR"
 ARCHIVE="$WORK/$(basename "$ROOTFS_URL")"
 log "Fetching $ROOTFS_URL"
 curl -fL --retry 3 --retry-delay 2 -o "$ARCHIVE" "$ROOTFS_URL"
+if [ -n "$ROOTFS_SHA256" ]; then
+    printf '%s  %s\n' "$ROOTFS_SHA256" "$ARCHIVE" | sha256sum -c -
+fi
 tar -tzf "$ARCHIVE" >/dev/null || die "the downloaded rootfs is not a valid .tar.gz"
 note "$(du -h "$ARCHIVE" | cut -f1) → $ARCHIVE"
 

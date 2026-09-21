@@ -3,7 +3,7 @@ import Foundation
 /// Resolution of XForge's own published release assets.
 ///
 /// The darwin Swift SDK is published under its **own release series**
-/// (`darwin-sdk-<n>`, produced by `.github/workflows/build-darwin-sdk.yml`), so
+/// (`darwin-sdk-<n>`, published independently from the IPA release), so
 /// `https://github.com/<repo>/releases/latest/download/<asset>` does not find it —
 /// `latest` points at the newest release of any kind (usually an XForge IPA),
 /// which 404s. This asks the API for the newest matching release instead.

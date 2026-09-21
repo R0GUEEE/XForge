@@ -145,7 +145,7 @@ glibc_package_url() {
         [ -f "$index" ] || continue
         url="$(awk -v want="$1" '
             /^Package: /   { pkg = $2 }
-            /^Filename: /  { if (pkg == want) { print "http://ports.ubuntu.com/ubuntu-ports/" $2; exit } }
+            /^Filename: /  { if (pkg == want) { print "https://ports.ubuntu.com/ubuntu-ports/" $2; exit } }
         ' "$index")"
         [ -n "$url" ] && { echo "$url"; return 0; }
     done
@@ -156,7 +156,7 @@ glibc_fetch_indexes() {
     for component in main universe; do
         target="/tmp/xforge-glibc/Packages-$component"
         [ -s "$target" ] && continue
-        url="http://ports.ubuntu.com/ubuntu-ports/dists/$UBUNTU_SUITE/$component/binary-$UBUNTU_ARCH/Packages.gz"
+        url="https://ports.ubuntu.com/ubuntu-ports/dists/$UBUNTU_SUITE/$component/binary-$UBUNTU_ARCH/Packages.gz"
         if curl -fL --retry 3 -o "$target.gz" "$url" 2>>"$SILENT"; then
             gzip -dc "$target.gz" > "$target"
         fi

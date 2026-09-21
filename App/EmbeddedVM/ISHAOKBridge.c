@@ -243,7 +243,7 @@ static void xf_global_init(void) {
     ish_accel_pix_init();
 }
 
-// NOTE: do NOT call fs_register() here.
+// NOTE: do not register additional filesystems here.
 //
 // fs/mount.c already ships a static table containing every filesystem this
 // bridge uses -- realfs, procfs, devptsfs, tmpfs, devtmpfs, sysfs, cgroupfs,
@@ -251,7 +251,7 @@ static void xf_global_init(void) {
 // more (that headroom is for the iOS app's own two: iosfs and iosfs_unsafe).
 //
 // The first version of this bridge registered eight of them again, which
-// overflows the table, and fs_register() handles an overflow with
+// overflows the table, and the registration path handles an overflow with
 // `assert(!"reached filesystem limit")` -- an abort() in the middle of boot.
 // On a device that is a silent SIGABRT: stderr goes nowhere in an iOS app, so
 // "installing the Linux/SDK" simply killed the app with no message at all.

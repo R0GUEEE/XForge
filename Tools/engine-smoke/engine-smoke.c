@@ -335,7 +335,7 @@ int main(int argc, char **argv) {
     }
 
     probe_guest("network: DNS + HTTP from the guest",
-                "wget -q -T 30 -O /dev/null http://dl-cdn.alpinelinux.org/alpine/ && echo net-ok", 180000);
+                "wget -q -T 30 -O /dev/null https://dl-cdn.alpinelinux.org/alpine/ && echo net-ok", 180000);
     probe_guest("network: apk update (the first thing provisioning runs)",
                 "apk update 2>&1 | tail -3", 300000);
 

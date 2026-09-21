@@ -88,9 +88,6 @@ final class ToolchainManager: ObservableObject {
 
     private let vm: LinuxVM
 
-    /// Pinned xtool aarch64 AppImage (matches the XKit version in project.yml).
-    static let xtoolDownloadURL = "https://github.com/xtool-org/xtool/releases/download/1.17.0/xtool-aarch64.AppImage"
-
     init(vm: LinuxVM? = nil) {
         self.vm = vm ?? XForgeEnvironment.makeVM()
     }

@@ -41,9 +41,12 @@ test: gen
 		-destination 'platform=iOS Simulator,name=iPhone 16' test
 
 ## Build the unsigned IPA for sideloading
-ipa: gen
-	@bash .github/workflows/_local_ipa.sh || \
-	echo "Use the 'unsigned-ipa.yml' GitHub Actions workflow to build the IPA."
+ipa:
+	@command -v gh >/dev/null 2>&1 || { \
+		echo "GitHub CLI is required: https://cli.github.com/"; exit 1; \
+	}
+	gh workflow run unsigned-ipa.yml
+	@echo "Dispatched unsigned-ipa.yml; monitor it with: gh run watch"
 
 ## (macOS only) Build the darwin Swift SDK from local Xcode
 sdk:

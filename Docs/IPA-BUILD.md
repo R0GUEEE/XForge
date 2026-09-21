@@ -45,11 +45,9 @@ This split means `IPABuilder` is fully testable without the VM: give it any comp
 
 ## 4. Signing strategy
 
-1. If a free-Apple-ID identity is active → sign with that certificate (XKit Zupersign).
-2. Otherwise → **ad-hoc** (fake-sign) so the `.ipa` is structurally valid and can be
-   handed to SideStore/AltStore, which apply their own provisioning.
-3. Entitlements: `get-task-allow`, `application-identifier`; team entitlements when a
-   certificate is present.
+The current build exports an unsigned `.ipa`, which must be signed by Xcode,
+SideStore/AltStore, or another signing service before installation. XKit-based
+Apple ID authentication and signing are planned but are not wired into this build.
 
 ## 5. BuildRequest / BuildResult
 
@@ -91,7 +89,7 @@ struct BuildResult {
 Docs/IPA-BUILD.md                     this design
 App/Models/BuildPipeline.swift        BuildStage, BuildRequest, BuildResult, BuildEvent
 App/Build/IPABuilder.swift            host-side packaging (Payload, Info.plist, zip)
-App/Build/CodeSigning.swift           signer abstraction (XKit real / ad-hoc)
+App/Services/SigningService.swift     signing abstraction (integration pending)
 App/Build/BuildManager.swift          orchestrator / state machine
 AppTests/IPABuilderTests.swift        packaging unit tests
 App/Views/Build/*                     UI driven by BuildManager.stages

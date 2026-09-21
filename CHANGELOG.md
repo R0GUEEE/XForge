@@ -2,12 +2,19 @@
 
 All notable changes to **XForge** are documented here.
 
+## Alpine 3.24.2 root refresh
+
+- Replaced the bundled Alpine 3.23.3 base with the official Alpine 3.24.2
+  aarch64 minirootfs and migrated installed guests to a versioned root.
+- The release workflow provisions the root with XForge's build dependencies,
+  Swift, and xtool before bundling it into the IPA.
+
 ## [0.5.0] — 2026-09-20 — Toolchain preinstalled
 
 ### Changed
 - **The app now ships a *provisioned* Alpine rootfs, so there is nothing to
   install on the device.** The IPA bundles
-  `alpine-minirootfs-3.23.3-aarch64-provisioned.tar.gz`: the Alpine aarch64
+  `alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz`: the Alpine aarch64
   release with the whole guest toolchain already in it — apk build dependencies
   (clang, lld, cmake, ninja, git, …), the glibc compatibility layer under
   `/opt/glibc`, the swift/swiftc/xtool wrappers, xtool unpacked in `/opt/xtool`,
@@ -26,10 +33,9 @@ All notable changes to **XForge** are documented here.
   executed inside the finished rootfs and the result is written to
   `/usr/local/share/xforge/payload-manifest.txt` **inside** the archive, which is
   what the IPA build verifies before shipping it.
-- `.github/workflows/unsigned-ipa.yml` builds that payload first (cached by a
-  content key, so only a change to the provisioning pays for it) and then bundles
-  it; `.github/workflows/build-rootfs-payload.yml` can also build and publish it
-  on its own. `EmbeddedLinux/fetch-rootfs.sh` learned `XFORGE_ROOTFS=auto|payload|plain`.
+- `.github/workflows/unsigned-ipa.yml` builds that payload first and then bundles
+  it into the released IPA. `EmbeddedLinux/fetch-rootfs.sh` supports
+  `XFORGE_ROOTFS=auto|payload|plain` for release and local builds.
 - **Bundle identifier is now `com.r0gueee.xforge`** (was `org.xforge.XForge`), and
   the app version is 0.5.0 (8).
 
@@ -174,7 +180,7 @@ Three fixes, all from the engine log of a real device install attempt.
   device setup, `/host` share, each command and its exit status, and the guest's
   output when a command fails). Settings → Diagnostics → **Engine log** shows,
   copies and shares it.
-- **Engine smoke test** (`Tools/engine-smoke`, `.github/workflows/engine-smoke.yml`)
+- **Engine smoke test** (`Tools/engine-smoke`)
   — boots the bundled Alpine rootfs on a macOS host through the app's own bridge and
   runs commands in it, so bridge and boot regressions fail CI instead of a device.
 
