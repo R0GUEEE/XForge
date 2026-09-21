@@ -6,9 +6,10 @@ SCHEME := XForge
 ## Everything needed to build locally, in order.
 bootstrap: submodule rootfs ish-core
 
-## Pull the iSH-AOK engine sources (git submodule).
+## Pull the ish-arm64 engine sources (git submodule).
 submodule:
-	git submodule update --init --depth 1 Vendor/ish-AOK
+	git submodule update --init --depth 1 Vendor/ish-arm64
+	git -C Vendor/ish-arm64 submodule update --init --depth 1 deps/libarchive
 
 ## Fetch the bundled Alpine aarch64 root filesystem into Support/Resources.
 rootfs:
@@ -53,4 +54,4 @@ sdk:
 	xtool sdk build "$$(dirname $$(dirname $$(xcrun -f swiftc)))" darwin-sdk-out
 
 clean:
-	rm -rf build dist XForge.xcodeproj Vendor/ish-AOK-build
+	rm -rf build dist XForge.xcodeproj Vendor/ish-arm64-build

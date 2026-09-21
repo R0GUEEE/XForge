@@ -1,0 +1,398 @@
+name: Build XForge IPA
+
+# Builds the unsigned XForge IPA.
+#
+# Two jobs, because the two halves need different machines:
+#
+#   payload (ubuntu-24.04-arm) — XForge boots a *provisioned* Alpine rootfs, and
+#     provisioning means running the guest's own installer. It needs a chroot
+#     into Alpine and native aarch64 to execute the guest's apk, swiftly, Swift
+#     and xtool. The macOS runner cannot do this: it would have to emulate arm64
+#     Linux binaries, which takes hours.
+#
+#   ipa (macos-15) — builds the embedded Linux engine (OpenMinis/ish-arm64) into
+#     static libraries, generates the Xcode project, archives the app with the
+#     provisioned rootfs bundled, and packages it.
+#
+# The engine build is macOS-only by nature, not by choice: the aarch64 gadget
+# sources alias registers with `.req` and then use those names as operands, which
+# only clang's integrated assembler accepts — GNU as rejects every such
+# instruction. `EmbeddedLinux/build-ish-core.sh` probes for that capability and
+# fails with an explanation rather than a wall of assembler errors.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: Publish the IPA as a GitHub release
+        type: boolean
+        default: true
+      include_darwin_sdk:
+        description: Bake the darwin Swift SDK into the rootfs (~200 MB)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  payload:
+    name: Provision the Alpine rootfs
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    # Superseding dispatches cancel an older *payload* run, and only this job:
+    # the payload is the part that is safe to throw away and re-run. The `ipa`
+    # job below builds and publishes, and must never be cancelled half-way —
+    # which is why this workflow has no top-level concurrency group. One there
+    # with `cancel-in-progress: true` used to kill IPAs that were already
+    # packaged.
+    concurrency:
+      group: xforge-payload
+      cancel-in-progress: true
+    env:
+      # The payload bakes in the Alpine build dependencies, Swift and xtool.
+      # The darwin SDK stays an on-demand guest component unless asked for: it is
+      # a ~200 MB asset most builds never need inside every IPA.
+      XFORGE_INCLUDE_SDK: ${{ inputs.include_darwin_sdk && '1' || '0' }}
+      XFORGE_INSTALL_XTOOL: "1"
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install the payload build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq pigz shellcheck
+
+      # The payload builder is a shell script that runs for ~10 minutes behind a
+      # `set -euo pipefail`, so a one-line bug in it costs the whole job. These
+      # checks take seconds and run before the expensive provisioning.
+      - name: Check the payload builder
+        run: |
+          set -euo pipefail
+          bash -n EmbeddedLinux/build-rootfs-payload.sh
+          bash -n EmbeddedLinux/build-ish-core.sh
+          shellcheck -S error \
+            EmbeddedLinux/build-rootfs-payload.sh \
+            EmbeddedLinux/build-ish-core.sh \
+            EmbeddedLinux/fetch-rootfs.sh \
+            EmbeddedLinux/install-toolchain.sh \
+            EmbeddedLinux/payload-key.sh
+          # Measuring the rootfs must survive a bind-mounted /proc. The failure
+          # this guards was `$(du -skx …)` exiting non-zero on a /proc entry that
+          # vanished mid-walk, which aborted the whole build under `set -e`.
+          sudo -E bash Tools/test-payload-sizing.sh
+
+      - name: Provision the rootfs (runs the guest's own installer in a chroot)
+        run: |
+          set -euo pipefail
+          # This unpacks the plain Alpine minirootfs, bind-mounts /proc /sys /dev
+          # into it, runs EmbeddedLinux/install-toolchain.sh inside the chroot —
+          # there is deliberately only one provisioning implementation, so the
+          # payload cannot drift from what a device would install — then slims
+          # and packs the result.
+          #
+          # `sudo` would otherwise drop XFORGE_INCLUDE_SDK, and the builder's
+          # default `auto` mode would try to install the Darwin SDK as well.
+          sudo --preserve-env=XFORGE_INCLUDE_SDK,XFORGE_INSTALL_XTOOL \
+            bash EmbeddedLinux/build-rootfs-payload.sh dist/rootfs
+
+      - name: Verify the provisioned rootfs
+        run: |
+          set -euo pipefail
+          archive="$(find dist/rootfs -maxdepth 1 -name '*-provisioned.tar.gz' -print -quit)"
+          test -n "$archive"
+          tar -tzf "$archive" > /tmp/rootfs-contents.txt
+
+          for path in \
+            usr/local/bin/swift \
+            usr/local/share/xforge/build-environment-v2 \
+            usr/local/share/xforge/payload-manifest.txt \
+            usr/local/bin/xtool \
+            opt/xtool/usr/bin/xtool; do
+            grep -qE "(^|/)$path$" /tmp/rootfs-contents.txt \
+              || { echo "::error::payload is missing $path"; exit 1; }
+          done
+          grep -qE '(^|/)swiftly/toolchains/' /tmp/rootfs-contents.txt \
+            || { echo '::error::payload has no Swift toolchain'; exit 1; }
+
+          # The manifest is written *inside* the archive, so it is the record of
+          # what the guest can actually do — not what the build intended.
+          manifest="$(grep -E '/usr/local/share/xforge/payload-manifest.txt$' /tmp/rootfs-contents.txt | sed -n 1p)"
+          tar -xzOf "$archive" "$manifest" | tee /tmp/payload-manifest.txt
+
+          grep -qE '^base:[[:space:]]+alpine-minirootfs-3\.24\.2-aarch64\.tar\.gz$' /tmp/payload-manifest.txt
+          grep -qE '^rootfs:[[:space:]]+3\.24\.2$' /tmp/payload-manifest.txt
+          grep -qE '^swift:[[:space:]]+Swift version' /tmp/payload-manifest.txt \
+            || { echo '::error::the payload manifest does not report a Swift version'; exit 1; }
+          ! grep -qE '^xtool:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
+
+          # The SDK is opt-in, so the archive must agree with the input.
+          # `darwin-sdk:` is the SDK's version line when baked in, and the
+          # literal "not bundled" when left out.
+          if grep -qE '^darwin-sdk:[[:space:]]+not bundled$' /tmp/payload-manifest.txt; then
+            if [ "$XFORGE_INCLUDE_SDK" = "1" ]; then
+              echo '::error::the darwin SDK was requested but the payload does not contain it'
+              exit 1
+            fi
+            ! grep -qE '(^|/)darwin\.artifactbundle' /tmp/rootfs-contents.txt
+          else
+            if [ "$XFORGE_INCLUDE_SDK" != "1" ]; then
+              echo '::error::the payload contains the darwin SDK but it was not requested'
+              exit 1
+            fi
+          fi
+
+          echo "payload: $archive ($(du -h "$archive" | cut -f1))"
+          {
+            echo '### Provisioned Alpine rootfs'
+            echo
+            echo '```'
+            cat /tmp/payload-manifest.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the provisioned rootfs
+        uses: actions/upload-artifact@v4
+        with:
+          name: xforge-provisioned-rootfs
+          path: dist/rootfs/*-provisioned.tar.gz
+          if-no-files-found: error
+          retention-days: 3
+
+  ipa:
+    name: Build the IPA
+    needs: payload
+    runs-on: macos-15
+    timeout-minutes: 120
+    # Serialized, never cancelled. Two dispatches may provision payloads at the
+    # same time, but only one may be archiving and publishing. Each run
+    # publishes its own `xforge-<run_number>` tag, so a queued run is not lost —
+    # it just waits its turn.
+    concurrency:
+      group: xforge-ipa
+      cancel-in-progress: false
+    env:
+      APP_NAME: XForge
+      APP_PATH: build/XForge.xcarchive/Products/Applications/XForge.app
+      ENGINE_ROOT: Vendor/ish-arm64
+      ENGINE_LIB_DIR: Vendor/ish-arm64-build/lib
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Download the provisioned rootfs
+        uses: actions/download-artifact@v4
+        with:
+          name: xforge-provisioned-rootfs
+          path: dist/rootfs
+
+      - name: Check out the embedded Linux engine
+        run: |
+          set -euo pipefail
+          git submodule update --init --depth 1 "$ENGINE_ROOT"
+          # libarchive unpacks the rootfs archive, in the app and in the engine's
+          # own fakefs tools. The other two are deliberately skipped: deps/libapps
+          # is for the native host shells XForge does not embed, and deps/linux is
+          # only used with -Dkernel=linux, which XForge does not build.
+          git -C "$ENGINE_ROOT" submodule update --init --depth 1 deps/libarchive
+          git -C "$ENGINE_ROOT" log --oneline -1
+
+      - name: Install the build tools
+        run: |
+          set -euo pipefail
+          # xcodegen generates the Xcode project from project.yml; meson/ninja
+          # build the engine's core. libarchive is deliberately NOT installed:
+          # the app links the copy built from the vendored submodule
+          # (deps/libarchive.xcodeproj), not a Homebrew package.
+          # llvm/lld are for the engine's VDSO step, which links 32-bit i386
+          # objects that Apple's clang cannot produce; note that the `llvm`
+          # bottle ships clang but not ld.lld, hence the separate `lld` formula.
+          brew install xcodegen meson ninja llvm lld
+
+      - name: Build the embedded Linux engine (ish-arm64, iOS arm64)
+        run: |
+          set -euo pipefail
+          bash EmbeddedLinux/build-ish-core.sh
+          # Prove the engine is really there before spending 20 minutes on an
+          # archive that would fail to link. A missing library here is the most
+          # likely way this job breaks.
+          for lib in libish.a libish_emu.a libfakefs.a libfakefsify.a libarchive.a; do
+            test -f "$ENGINE_LIB_DIR/$lib" \
+              || { echo "::error::the engine build did not produce $lib"; exit 1; }
+          done
+          # The guest backend is selected at compile time, and app and engine must
+          # agree on struct layouts. The arm64 backend compiles
+          # asbestos/guest-arm64; if that is missing, the wrong arch was built.
+          # Listed to a file rather than piped into grep: grep exits at its first
+          # match, the producer dies of SIGPIPE, and under `set -o pipefail` the
+          # pipeline then reports failure for a check that actually succeeded.
+          nm -gU "$ENGINE_LIB_DIR/libish_emu.a" > /tmp/engine-symbols.txt 2>/dev/null || true
+          if grep -qi 'guest_arm64\|gadget' /tmp/engine-symbols.txt; then
+            echo "arm64 gadget backend present in libish_emu.a"
+          else
+            echo "::warning::could not confirm the arm64 gadget backend in libish_emu.a"
+          fi
+
+      - name: Generate the Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Resolve Swift package dependencies
+        run: |
+          set -o pipefail
+          xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -resolvePackageDependencies \
+            -destination 'generic/platform=iOS' 2>&1 | tee /tmp/resolve.log
+
+      - name: Run the unit tests
+        run: |
+          set -o pipefail
+          xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            test 2>&1 | tee /tmp/tests.log
+
+      - name: Bundle the provisioned rootfs into the app
+        run: |
+          set -euo pipefail
+          archive="$(find dist/rootfs -maxdepth 1 -name '*-provisioned.tar.gz' -print -quit)"
+          test -n "$archive"
+          XFORGE_ROOTFS=payload XFORGE_REQUIRE_XTOOL=1 XFORGE_ROOTFS_ARCHIVE="$archive" \
+            bash EmbeddedLinux/fetch-rootfs.sh
+          # XcodeGen resolves resources when it generates the project, so
+          # regenerate now that the small source archive has been replaced by the
+          # provisioned payload.
+          xcodegen generate --spec project.yml
+
+      - name: Archive (unsigned)
+        run: |
+          set -o pipefail
+          rm -rf build
+          xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            archive -archivePath build/XForge.xcarchive 2>&1 | tee /tmp/build.log
+
+      - name: Verify the app
+        run: |
+          set -euo pipefail
+          test -d "$APP_PATH"
+          test -x "$APP_PATH/XForge"
+
+          # The engine is statically linked, so verify from the binary rather
+          # than assuming: the app must be arm64 and must actually contain the
+          # emulator. `lipo` proves the slice; the symbol check proves the engine
+          # was not silently dropped by the linker.
+          # Output is captured rather than piped: grep exits at its first match,
+          # the producer dies of SIGPIPE, and under `set -o pipefail` that
+          # reports failure for a check that actually succeeded.
+          binary_info="$(lipo -info "$APP_PATH/XForge")"
+          case "$binary_info" in
+            *arm64*) ;;
+            *) echo "::error::the app binary is not arm64: $binary_info"; exit 1 ;;
+          esac
+          nm -a "$APP_PATH/XForge" > /tmp/app-symbols.txt 2>/dev/null || true
+          if grep -qi 'asbestos\|guest_arm64' /tmp/app-symbols.txt; then
+            echo "engine symbols present in the app binary"
+          else
+            echo "::warning::no engine symbols found in the app binary"
+          fi
+
+          # The provisioned rootfs must be inside the app, not fetched later.
+          ARCHIVE="$APP_PATH/alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz"
+          test -f "$ARCHIVE"
+          tar -tzf "$ARCHIVE" > /tmp/rootfs-contents.txt
+          for path in usr/local/bin/swift usr/local/bin/xtool; do
+            grep -qE "(^|/)$path$" /tmp/rootfs-contents.txt \
+              || { echo "::error::the bundled rootfs is missing $path"; exit 1; }
+          done
+          grep -qE '(^|/)swiftly/toolchains/' /tmp/rootfs-contents.txt \
+            || { echo '::error::the bundled rootfs has no Swift toolchain'; exit 1; }
+
+          # The app must not ship engine sources or build leftovers. `find`
+          # prints each match, so a non-empty result is the failure.
+          strays="$(find "$APP_PATH" \( -name '*.a' -o -name 'meson-*' \) -print -quit)"
+          [ -z "$strays" ] \
+            || { echo "::error::build leftovers in the app bundle: $strays"; exit 1; }
+
+          # Identity, and the icon wiring that makes the app installable.
+          PLIST="$APP_PATH/Info.plist"
+          test -f "$PLIST"
+          test -f "$APP_PATH/Assets.car"
+          get() { /usr/libexec/PlistBuddy -c "Print :$1" "$PLIST"; }
+          test "$(get CFBundleShortVersionString)" = "0.5.0"
+          test "$(get CFBundleIdentifier)" = "com.r0gueee.xforge"
+          test "$(get CFBundleDisplayName)" = "XForge"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundlePrimaryIcon" "$PLIST" >/dev/null
+
+          # Entitlements: the engine needs the large address space and the bigger
+          # memory budget, and the file must actually be wired into the build.
+          python3 - <<'PY'
+          import plistlib
+          required = {
+              "get-task-allow",
+              "application-identifier",
+              "com.apple.developer.kernel.extended-virtual-addressing",
+              "com.apple.developer.kernel.increased-memory-limit",
+          }
+          with open("Support/XForge.entitlements", "rb") as handle:
+              entitlements = plistlib.load(handle)
+          missing = required - entitlements.keys()
+          assert not missing, f"missing entitlements: {sorted(missing)}"
+          PY
+          settings="$(xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -destination 'generic/platform=iOS' -showBuildSettings 2>/dev/null)"
+          case "$settings" in
+            *XForge.entitlements*) ;;
+            *) echo '::error::CODE_SIGN_ENTITLEMENTS is not wired'; exit 1 ;;
+          esac
+
+          {
+            echo '### Built app'
+            echo
+            echo "- engine: ish-arm64, statically linked"
+            echo "- binary: ${binary_info#*: }"
+            echo "- bundled rootfs: $(du -h "$ARCHIVE" | cut -f1)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package the unsigned IPA
+        run: |
+          set -euo pipefail
+          IPA="dist/XForge-0.5.0-unsigned.ipa"
+          mkdir -p dist/Payload
+          ditto "$APP_PATH" dist/Payload/XForge.app
+          ditto -c -k --keepParent dist/Payload "$IPA"
+          unzip -t "$IPA" >/dev/null
+          # The rootfs is the difference between an app that works on first
+          # launch and one that has to provision itself on a phone. The listing
+          # is written out first: `unzip -Z1 … | grep -q` is not safe under
+          # `set -o pipefail` — grep exits at its first match, unzip dies of
+          # SIGPIPE, and the pipeline then fails a check that passed.
+          unzip -Z1 "$IPA" > /tmp/ipa-contents.txt
+          grep -q 'Payload/XForge.app/alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz$' \
+            /tmp/ipa-contents.txt \
+            || { echo '::error::the IPA does not contain the provisioned rootfs'; exit 1; }
+          echo "IPA: $IPA ($(du -h "$IPA" | cut -f1))"
+
+      - name: Upload the IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: XForge-unsigned-ipa
+          path: dist/XForge-0.5.0-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish the release
+        if: ${{ inputs.release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: xforge-${{ github.run_number }}
+          name: XForge 0.5.0 — ish-arm64 engine
+          files: dist/XForge-0.5.0-unsigned.ipa
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          fail_on_unmatched_files: true
