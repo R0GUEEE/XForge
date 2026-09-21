@@ -317,7 +317,7 @@ fi
 # — this rootfs is provisioned to run as XForge's embedded Linux, not as a
 # general-purpose Alpine desktop.
 log "Slimming the image"
-ROOTFS_SIZE_BEFORE_KIB="$(du -sk "$ROOTFS" | awk '{print $1}')"
+ROOTFS_SIZE_BEFORE_KIB="$(du -skx "$ROOTFS" | awk '{print $1}')"
 rm -rf "$ROOTFS"/var/cache/apk/* "$ROOTFS"/tmp/* "$ROOTFS"/root/.cache/* \
        "$ROOTFS"/var/cache/misc/* "$ROOTFS"/var/tmp/* "$ROOTFS"/run/* \
        "$ROOTFS"/var/log/* 2>/dev/null || true
@@ -347,7 +347,7 @@ find "$ROOTFS" -type f -name '*.py[co]' -delete 2>/dev/null || true
 # behind — a directory, not sockets, since there is no gpg-agent to leave one.
 rm -rf "$ROOTFS"/root/.gnupg 2>/dev/null || true
 
-ROOTFS_SIZE_AFTER_KIB="$(du -sk "$ROOTFS" | awk '{print $1}')"
+ROOTFS_SIZE_AFTER_KIB="$(du -skx "$ROOTFS" | awk '{print $1}')"
 ROOTFS_SAVED_KIB="$((ROOTFS_SIZE_BEFORE_KIB - ROOTFS_SIZE_AFTER_KIB))"
 note "rootfs: ${ROOTFS_SIZE_BEFORE_KIB} KiB → ${ROOTFS_SIZE_AFTER_KIB} KiB (saved ${ROOTFS_SAVED_KIB} KiB)"
 
@@ -371,7 +371,7 @@ log "Recording the payload manifest at $MANIFEST_GUEST"
     echo "stamp:        build-environment-v2"
 } > "$ROOTFS$MANIFEST_GUEST"
 
-note "rootfs  size on disk: $(du -sh "$ROOTFS" | cut -f1)"
+note "rootfs  size on disk: $(du -shx "$ROOTFS" | cut -f1)"
 du -sh "$ROOTFS"/root/.local/share/swiftly "$ROOTFS"/opt/glibc "$ROOTFS"/opt/xtool 2>/dev/null | sed 's/^/    /' || true
 
 # ---------------------------------------------------------------------------
