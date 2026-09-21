@@ -70,8 +70,10 @@ protocol LinuxEmulator: AnyObject {
 /// nobody waits on, so a detached command communicates its result through
 /// whatever its command line redirects to. This handle answers the two questions
 /// the host actually needs — is it still running, and how do I stop it.
-@MainActor
-protocol DetachedProcess: AnyObject {
+/// Not `@MainActor`: the handle itself is thread-agnostic and does its own
+/// hopping onto the guest thread, so callers may hold and use it from anywhere.
+/// `Sendable` is what carries that guarantee.
+protocol DetachedProcess: AnyObject, Sendable {
     /// Guest pid, for logging and for `kill`.
     var pid: Int32 { get }
     /// Whether it is still running.

@@ -219,6 +219,11 @@ final class ISHEmulator: LinuxEmulator {
 /// *started* detached rather than run to completion — which is the whole reason
 /// this exists: a blocking run would have held that thread for the process's
 /// lifetime and starved everything else in the app.
+///
+/// Deliberately NOT `@MainActor`: it is a handle to something that lives on the
+/// guest thread, and it is constructed from inside that thread's queue. Marking
+/// it main-actor isolated made its initialiser unreachable from where it is
+/// created, and it has no main-actor state to protect.
 private final class GuestProcess: DetachedProcess, @unchecked Sendable {
     let pid: Int32
     private let thread: GuestThreadExecutor
@@ -236,7 +241,8 @@ private final class GuestProcess: DetachedProcess, @unchecked Sendable {
     }
 
     private func checkAlive() async -> Bool {
-        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+        let pid = self.pid
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             thread.submit {
                 continuation.resume(returning: xf_ish_process_alive(pid) == 1)
             }
@@ -244,6 +250,7 @@ private final class GuestProcess: DetachedProcess, @unchecked Sendable {
     }
 
     func signal(_ number: Int32) async {
+        let pid = self.pid
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             thread.submit {
                 _ = xf_ish_kill_process(pid, number)
