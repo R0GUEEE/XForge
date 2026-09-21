@@ -4,9 +4,10 @@ import UniformTypeIdentifiers
 
 /// The Terminal tab: a shell into the embedded Alpine Linux.
 ///
-/// The layout follows the iSH terminal — the screen is the terminal, with a
-/// key bar of the characters a phone keyboard does not have (Tab, Ctrl, Esc,
-/// arrows, `- . / : ! |`, paste) sitting between it and the keyboard.
+/// The screen *is* the terminal. The shell prints its own prompt, echoes what it
+/// reads, and prints its own results, so there is no host-side prompt to draw and
+/// no command bar to type into — the field at the bottom is the keyboard's target
+/// and its contents are handed to the shell's stdin on return.
 struct TerminalView: View {
     @EnvironmentObject private var session: TerminalSession
 
@@ -23,7 +24,6 @@ struct TerminalView: View {
             }
             inputRow
             TerminalKeyBar(session: session,
-                           size: fontSize,
                            onFiles: { session.enqueue("ls -la") },
                            onComponents: { component in install(component) },
                            onHideKeyboard: { inputFocused = false })
@@ -32,7 +32,10 @@ struct TerminalView: View {
         .navigationTitle("Alpine Linux")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { toolbarContent }
-        .task { await session.boot() }
+        .task {
+            await session.boot()
+            inputFocused = true
+        }
         .fileImporter(
             isPresented: $importingXIP,
             allowedContentTypes: [UTType(filenameExtension: "xip") ?? .data],
@@ -55,8 +58,14 @@ struct TerminalView: View {
                     ForEach(Array(session.buffer.lines.enumerated()), id: \.offset) { _, line in
                         TerminalLineView(line: line, fontSize: fontSize)
                     }
-                    TerminalLineView(line: promptLine, fontSize: fontSize)
-                        .id(Self.bottomID)
+                    // The line the shell is part-way through writing. It is the
+                    // shell's own output — a prompt, a partial result, or the echo
+                    // of what was typed — so it is drawn exactly like any other
+                    // line and only kept separate so it can grow in place.
+                    if !session.buffer.current.isEmpty {
+                        TerminalLineView(line: session.buffer.current, fontSize: fontSize)
+                            .id(Self.bottomID)
+                    }
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
@@ -71,37 +80,30 @@ struct TerminalView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { inputFocused = true }
     }
 
     private static let bottomID = "org.xforge.terminal.bottom"
 
-    /// The line being written: the guest's partial output, or the host's prompt
-    /// with a cursor when the guest is not saying anything.
-    private var promptLine: TerminalLine {
-        var line = session.buffer.current
-        if !session.running && !session.booting {
-            line.cells.append(TerminalCell(character: "▊",
-                                           style: TerminalStyle(foreground: .index(10))))
-        }
-        return line
-    }
-
     // MARK: - Status strip
 
+    /// Shown while something is outstanding. There is no "running" indicator for
+    /// an ordinary command any more: the shell is always there, so the absence of
+    /// a prompt is the indication that a program is still working.
     private var activityStrip: some View {
         HStack(spacing: 8) {
-            ProgressView().controlSize(.mini).tint(.white)
-            Text(session.activeLabel.map { "\($0) — running" }
-                 ?? "\(session.pending.count) command(s) queued")
-                .font(.caption2)
-                .foregroundStyle(.white.opacity(0.85))
-            Spacer()
-            if session.running {
-                Button("Stop") { session.interrupt() }
+            if !session.pending.isEmpty {
+                ProgressView().controlSize(.mini).tint(.white)
+                Text("\(session.pending.count) command(s) queued")
                     .font(.caption2)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.white.opacity(0.85))
+            } else if let label = session.activeLabel {
+                Text("requested by \(label)")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.85))
             }
+            Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
@@ -110,14 +112,16 @@ struct TerminalView: View {
 
     // MARK: - Input
 
+    /// A single line that stands in for the keyboard: what is typed here is
+    /// written to the shell's stdin on return. It deliberately draws no prompt of
+    /// its own — the prompt on screen is the shell's.
     private var inputRow: some View {
-        HStack(spacing: 8) {
-            Text(session.prompt)
-                .font(.system(size: fontSize, design: .monospaced))
-                .foregroundStyle(Color.green)
-                .lineLimit(1)
+        HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+                .font(.system(size: fontSize - 1, weight: .bold))
+                .foregroundStyle(Color.green.opacity(0.7))
 
-            TextField(session.booting ? "starting the embedded Linux…" : "command",
+            TextField(session.booting ? "starting the embedded Linux…" : "type a command",
                       text: $session.input,
                       axis: .vertical)
                 .lineLimit(1...6)
@@ -129,24 +133,19 @@ struct TerminalView: View {
                 .focused($inputFocused)
                 .disabled(session.booting)
                 .submitLabel(.go)
-                .onSubmit { session.submit() }
+                .onSubmit {
+                    session.submit()
+                    // Keep the keyboard up: this is a terminal, and the next
+                    // command is usually typed immediately.
+                    inputFocused = true
+                }
 
             if session.booting {
                 ProgressView().controlSize(.small)
-            } else {
-                Button {
-                    session.submit()
-                } label: {
-                    Label("Run", systemImage: "return")
-                        .labelStyle(.iconOnly)
-                        .font(.system(size: 18))
-                }
-                .disabled(session.pending.isEmpty && session.input.isEmpty && !session.running)
-                .tint(.green)
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
         .background(Color(white: 0.10))
     }
 
@@ -251,9 +250,8 @@ struct TerminalView: View {
     /// Copy the chosen `.xip` into the guest's own filesystem, then hand xtool
     /// the install command.
     private func stageXIP(_ url: URL) {
-        session.enqueue(TerminalSession.TerminalCommand(
-            text: "echo \(GuestShell.quote("staging \(url.lastPathComponent) into the guest…"))",
-            label: "Components"))
+        session.enqueue("echo \(GuestShell.quote("staging \(url.lastPathComponent) into the guest…"))",
+                        label: "Components")
         Task {
             do {
                 let vm = XForgeEnvironment.makeVM()
@@ -289,47 +287,65 @@ private struct TerminalLineView: View {
 /// between the terminal and the keyboard.
 private struct TerminalKeyBar: View {
     @ObservedObject var session: TerminalSession
-    let size: Double
     var onFiles: () -> Void
     var onComponents: (SystemComponents.Component) -> Void
     var onHideKeyboard: () -> Void
 
     private static let punctuation = ["-", ".", "/", ":", "!", "|"]
 
+    /// Key metrics, defined once. The keys are deliberately small — they sit
+    /// under the terminal and exist to supply characters a phone keyboard cannot
+    /// produce, not to be a primary control surface.
+    private static let keyWidth: CGFloat = 15
+    private static let keyHeight: CGFloat = 14
+    private static let keySpacing: CGFloat = 3
+    /// The glyph is inset from the key so a symbol never touches the border, and
+    /// shrinks with it: at the old 30x28 the symbols were drawn at the body font
+    /// size, which would overflow a 15x14 key.
+    private static var glyphSize: CGFloat { 9 }
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                symbolKey("Tab", "arrow.right.to.line.alt") { session.insert("\t") }
-                symbolKey("Control", "control") { session.interrupt() }
+            HStack(spacing: Self.keySpacing) {
+                // Ctrl-C is delivered as a byte on stdin, which is the one
+                // signal path the transport supports — and the foreground
+                // program reading that stdin does see it, exactly as it would
+                // from a real terminal. Ctrl-D closes the shell's input.
+                symbolKey("Interrupt (Ctrl-C)", "control") { session.interrupt() }
                 symbolKey("Escape", "escape") { session.insert("\u{1b}") }
+                symbolKey("Tab", "arrow.right.to.line.alt") { session.insert("\t") }
                 textKey("↑") { session.recall(offset: -1) }
                 textKey("↓") { session.recall(offset: 1) }
 
-                Divider().frame(height: 20)
+                divider
 
                 ForEach(Self.punctuation, id: \.self) { character in
                     textKey(character) { session.insert(character) }
                 }
 
-                Divider().frame(height: 20)
+                divider
 
                 componentsMenu
                 symbolKey("Files", "folder") { onFiles() }
                 symbolKey("Paste", "doc.on.clipboard") { session.pasteFromClipboard() }
                 symbolKey("Hide Keyboard", "keyboard.chevron.compact.down") { onHideKeyboard() }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 4)
         }
         .background(Color(white: 0.16))
         .accessibilityLabel("Terminal keyboard")
     }
 
+    private var divider: some View {
+        Divider().frame(height: Self.keyHeight + 2)
+    }
+
     private func textKey(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: size + 1, design: .monospaced))
-                .frame(minWidth: 30, minHeight: 28)
+                .font(.system(size: Self.glyphSize + 1, design: .monospaced))
+                .frame(width: Self.keyWidth, height: Self.keyHeight)
         }
         .buttonStyle(.bordered)
         .tint(.white)
@@ -343,8 +359,8 @@ private struct TerminalKeyBar: View {
             }
         } label: {
             Image(systemName: "wrench.and.screwdriver")
-                .font(.system(size: size + 1))
-                .frame(minWidth: 30, minHeight: 28)
+                .font(.system(size: Self.glyphSize))
+                .frame(width: Self.keyWidth, height: Self.keyHeight)
         }
         .buttonStyle(.bordered)
         .tint(.white)
@@ -354,8 +370,8 @@ private struct TerminalKeyBar: View {
     private func symbolKey(_ label: String, _ symbol: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: size + 1))
-                .frame(minWidth: 30, minHeight: 28)
+                .font(.system(size: Self.glyphSize))
+                .frame(width: Self.keyWidth, height: Self.keyHeight)
         }
         .buttonStyle(.bordered)
         .tint(.white)

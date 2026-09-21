@@ -4,19 +4,22 @@ import UIKit
 
 /// The app's one terminal into the embedded Alpine Linux.
 ///
-/// This is a real shell session, with one architectural caveat that everything
-/// here is built around: XForge's engine bridge runs *one command at a time* and
-/// hands back its output, so there is no live pty to type into. The session
-/// therefore keeps the shell's state on the host side:
+/// This is a real shell session: a **persistent** shell in the guest whose stdin
+/// the host writes to and whose output the host reads as it is produced. See
+/// `InteractiveShellSession` for the transport and what it does and does not
+/// provide.
 ///
-///  - the working directory survives `cd` between commands (the guest reports
-///    where each command ended);
-///  - output is streamed as the guest writes it, through a screen model that
-///    understands carriage returns, backspaces and SGR colour (`TerminalBuffer`);
-///  - the transcript and history are persisted, so reopening the terminal shows
-///    the previous session;
-///  - other screens (Toolchain, Build) hand commands to the *same* session, so
-///    what they install is visible here while it runs.
+/// Consequences of it being a real shell, which are the point of the change:
+///  - the working directory is the shell's own, so `cd` persists and there is no
+///    replaying of `cd` before each command;
+///  - a program that reads stdin — `read`, `cat`, `sort`, a REPL, a prompt for
+///    input — receives what you type at the moment it asks;
+///  - the prompt shown is the shell's, printed by the shell, not one the host
+///    synthesises.
+///
+/// Signals are the exception. The engine cannot deliver a signal to a running
+/// child, so an interrupt detaches the screen instead of stopping the guest, and
+/// the session says exactly that rather than pretending otherwise.
 @MainActor
 final class TerminalSession: ObservableObject {
     /// The screen model. Views render `buffer.lines` and re-render when
@@ -25,36 +28,35 @@ final class TerminalSession: ObservableObject {
 
     /// Bumped whenever the screen changes.
     @Published private(set) var revision = 0
+    /// True while the guest shell is up and input is being forwarded to it.
     @Published private(set) var running = false
     @Published private(set) var booting = false
+    /// The line being composed locally, before it is handed to the shell.
+    ///
+    /// Typed text is echoed here first so the caret follows what you type even
+    /// before the shell has seen the line; on submit it is written to the shell's
+    /// stdin and the shell echoes it back with its own editing.
     @Published var input = ""
     @Published private(set) var cwd = "/root"
     @Published private(set) var history: [String] = []
-    @Published private(set) var lastExit: Int32?
-    /// Queue of commands handed over by other screens, oldest first.
-    @Published private(set) var pending: [TerminalCommand] = []
-    /// Title of the command that is running, when it was not typed here.
+    /// Commands handed over by other screens, run through the same shell.
+    @Published private(set) var pending: [QueuedLine] = []
     @Published private(set) var activeLabel: String?
-    /// True once the guest has been booted successfully in this session.
     @Published private(set) var isBooted = false
     @Published private(set) var problem: String?
 
-    /// Marker the guest prints after each command so the host can recover `$PWD`.
-    private static let marker = "__XFORGE_PWD__"
-
-    /// A command queued for the terminal, optionally with the label of the
-    /// screen that asked for it.
-    struct TerminalCommand: Identifiable, Equatable {
+    /// A line queued for the shell, optionally with the label of the screen that
+    /// asked for it.
+    struct QueuedLine: Identifiable, Equatable {
         let id = UUID()
         let text: String
         var label: String?
     }
 
+    private var shell: (any InteractiveShellSession)?
     private var historyIndex: Int?
+    private var bootTask: Task<Void, Never>?
     private var didAttemptBoot = false
-    private var holdback = ""
-    private var markerSeen = false
-    private var generation = 0
 
     init() {
         let saved = Self.read(Self.transcriptURL)
@@ -70,225 +72,176 @@ final class TerminalSession: ObservableObject {
         if buffer.isAtStart { banner() }
     }
 
-    var prompt: String { cwd == "/root" ? "$" : "\(cwd) $" }
-
-    /// Whether anything can be typed right now.
-    var acceptsInput: Bool { !booting }
+    /// Whether the exit key bar should send to a live shell.
+    var acceptsInput: Bool { !booting && shell?.isRunning == true }
 
     // MARK: - Boot
 
-    /// Boot the guest, importing the bundled rootfs if needed. Safe to call from
-    /// several screens; only the first call does work.
+    /// Start the shell, booting the guest first. Safe to call from several
+    /// screens; only the first call does work.
     func boot() async {
-        guard !didAttemptBoot else { return }
+        guard !didAttemptBoot else {
+            await bootTask?.value
+            return
+        }
         didAttemptBoot = true
         booting = true
         problem = nil
-        buffer.appendLine("[booting the embedded Linux — \(EmbeddedLinuxVM.launchCommand)]",
+        buffer.appendLine("[starting the embedded Linux…]",
                           style: TerminalStyle(foreground: .index(8)))
         revision += 1
 
-        do {
-            let vm = XForgeEnvironment.makeVM()
-            await vm.prepareRootfs()
-            try await vm.boot()
-            isBooted = true
-            buffer.appendLine("[guest is up — Alpine aarch64 Linux]",
-                              style: TerminalStyle(foreground: .index(2)))
-        } catch {
-            problem = error.localizedDescription
-            buffer.appendLine("[error] \(error.localizedDescription)",
-                              style: TerminalStyle(foreground: .index(1)))
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let vm = XForgeEnvironment.makeVM()
+                await vm.prepareRootfs()
+                try await vm.boot()
+                let session = try await vm.startInteractiveShell(
+                    onOutput: { [weak self] chunk in
+                        Task { @MainActor in self?.consume(chunk) }
+                    },
+                    onExit: { [weak self] in
+                        Task { @MainActor in self?.shellExited() }
+                    }
+                )
+                self.shell = session
+                self.isBooted = true
+                self.running = true
+                self.buffer.appendLine("[guest is up — Alpine aarch64 Linux]",
+                                       style: TerminalStyle(foreground: .index(2)))
+            } catch {
+                self.problem = error.localizedDescription
+                self.buffer.appendLine("[error] \(error.localizedDescription)",
+                                       style: TerminalStyle(foreground: .index(1)))
+            }
+            self.booting = false
+            self.revision += 1
+            self.save()
+            self.drainQueue()
         }
-        booting = false
+        bootTask = task
+        await task.value
+    }
+
+    /// The guest shell ended on its own — `exit`, or it died. Say so, rather
+    /// than leaving a live-looking prompt that silently swallows input.
+    private func shellExited() {
+        guard running else { return }
+        running = false
+        shell = nil
+        buffer.appendLine("", style: TerminalStyle())
+        buffer.appendLine("[the shell exited — reopen the tab to start a new one]",
+                          style: TerminalStyle(foreground: .index(3)))
         revision += 1
         save()
-        startNextIfIdle()
     }
 
-    // MARK: - Running
+    /// Stop the shell. The guest's shell exits when its stdin sees EOF, which
+    /// happens when the app tears the transport down.
+    func shutdown() {
+        shell?.stop()
+        shell = nil
+        running = false
+        revision += 1
+    }
 
-    /// Run whatever has been typed.
+    // MARK: - Input
+
+    /// Send the composed line to the shell.
     func submit() {
-        let command = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !command.isEmpty else { return }
+        let line = input
         input = ""
         historyIndex = nil
-        history.append(command)
-        if history.count > 200 { history.removeFirst(history.count - 200) }
-        save()
-        enqueue(TerminalCommand(text: command, label: nil))
-    }
-
-    /// Hand a command to the terminal from another screen. It runs as soon as
-    /// the current one finishes; the terminal shows who asked for it.
-    func enqueue(_ command: TerminalCommand) {
-        pending.append(command)
-        startNextIfIdle()
-    }
-
-    func enqueue(_ command: String, label: String? = nil) {
-        enqueue(TerminalCommand(text: command, label: label))
-    }
-
-    private func startNextIfIdle() {
-        guard !running, !booting, !pending.isEmpty else { return }
-        if !didAttemptBoot {
-            // The terminal has not booted yet: boot first, then the queue drains.
-            Task { await boot() }
-            return
+        if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+            history.append(line)
+            if history.count > 200 { history.removeFirst(history.count - 200) }
+            save()
         }
-        guard isBooted else {
-            // Booting failed earlier. Keep the queue, and report why on screen.
-            buffer.appendLine("[waiting] the guest is not running; \(pending.count) command(s) queued",
-                              style: TerminalStyle(foreground: .index(3)))
+        sendToShell(line + "\n", label: nil)
+    }
+
+    /// Hand a line to the shell from another screen. It is written to the shell's
+    /// stdin like anything else, so it runs in the same session — with the same
+    /// environment, the same directory, and after whatever is already queued.
+    func enqueue(_ line: String, label: String? = nil) {
+        pending.append(QueuedLine(text: line, label: label))
+        drainQueue()
+    }
+
+    func enqueue(_ line: QueuedLine) {
+        pending.append(line)
+        drainQueue()
+    }
+
+    private func drainQueue() {
+        guard running, shell?.isRunning == true, !pending.isEmpty else { return }
+        let next = pending.removeFirst()
+        // A command from another screen is announced, because the user did not
+        // type it and needs to know where it came from. The echo of the command
+        // itself comes from the shell.
+        if let label = next.label, !label.isEmpty {
+            buffer.appendLine("↑ requested by \(label)",
+                              style: TerminalStyle(foreground: .index(8)))
+            revision += 1
+        }
+        sendToShell(next.text + "\n", label: next.label)
+    }
+
+    private func sendToShell(_ text: String, label: String?) {
+        guard let shell, shell.isRunning else {
+            // Nothing to write to. Report it rather than dropping the line, since
+            // a queued install that silently never runs is worse than an error.
+            buffer.appendLine("[error] the shell is not running; \(text.count) character(s) not sent",
+                              style: TerminalStyle(foreground: .index(1)))
             revision += 1
             return
         }
-        let next = pending.removeFirst()
-        run(next)
-    }
-
-    private func run(_ command: TerminalCommand) {
-        running = true
-        activeLabel = command.label
-        markerSeen = false
-        holdback = ""
-        let currentGeneration = generation
-
-        let promptLine = "\(prompt) \(command.text)"
-        // A command handed over by another screen is echoed with a note saying so,
-        // because the user did not type it and needs to know where it came from.
-        if let label = command.label, !label.isEmpty {
-            buffer.appendLine(promptLine, style: TerminalStyle(foreground: .index(14)))
-            buffer.appendLine("  ↑ requested by \(label)",
-                              style: TerminalStyle(foreground: .index(8)))
-        } else {
-            buffer.appendLine(promptLine, style: TerminalStyle(foreground: .index(10)))
-        }
-        revision += 1
-
-        Task { [weak self] in
-            guard let self else { return }
-            // Hold the app awake while the guest works, for the whole task
-            // including its early exit when the command is detached.
-            let keepAwake = InstallAssertion.begin(reason: "terminal command")
-            defer { keepAwake.end() }
-            var status: Int32 = -1
-            do {
-                let vm = XForgeEnvironment.makeVM()
-                status = try await vm.runLoginStreaming(
-                    self.script(for: command.text),
-                    environment: nil
-                ) { [weak self] chunk in
-                    Task { @MainActor in self?.consume(chunk, generation: currentGeneration) }
-                }
-            } catch {
-                if currentGeneration == self.generation {
-                    self.flushHoldback()
-                    self.buffer.appendLine("[error] \(error.localizedDescription)",
-                                           style: TerminalStyle(foreground: .index(1)))
-                }
-            }
-
-            // Let the last streamed chunks reach the main actor before the
-            // marker is stripped from the screen.
-            try? await Task.sleep(for: .milliseconds(150))
-            guard currentGeneration == self.generation else { return }
-            self.finishStreaming()
-            self.lastExit = status
-            if status != 0 {
-                self.buffer.appendLine("[exit \(status)]",
-                                       style: TerminalStyle(foreground: .index(9)))
-            }
-            self.revision += 1
-            self.running = false
-            self.activeLabel = nil
-            self.save()
-            self.startNextIfIdle()
+        activeLabel = label
+        if !shell.send(text) {
+            buffer.appendLine("[error] the guest did not accept input",
+                              style: TerminalStyle(foreground: .index(1)))
+            revision += 1
         }
     }
 
-    /// Stop watching the running command.
+    /// Type text at the current position: it goes into the local line, and is
+    /// sent with the newline so the shell renders it in context.
+    func insert(_ text: String) {
+        input += text
+    }
+
+    /// Interrupt the foreground program with a real `SIGINT`.
     ///
-    /// The guest command itself is not signalled — the engine's command
-    /// primitive has no way to deliver a signal to a running child — so this
-    /// detaches the screen and lets the command finish on its own. `running`
-    /// goes false so the next command can be typed meanwhile.
+    /// Not a Ctrl-C byte on stdin: that only becomes a signal when the program's
+    /// stdin is a tty, and this session's stdin is a pipe from a file, so the
+    /// byte would be read as ordinary input. The signal is delivered directly,
+    /// which reaches the program whatever it is doing.
     func interrupt() {
-        guard running else { return }
-        generation += 1
-        detachRunningCommand()
-        buffer.appendLine("^C",
-                          style: TerminalStyle(foreground: .index(9)))
-        buffer.appendLine("[stopped watching; the command keeps running in the guest]",
-                          style: TerminalStyle(foreground: .index(8)))
-        revision += 1
-    }
-
-    private func detachRunningCommand() {
-        running = false
-        activeLabel = nil
-        holdback = ""
-        save()
-    }
-
-    // MARK: - Output handling
-
-    private func consume(_ chunk: String, generation currentGeneration: Int) {
-        guard currentGeneration == generation else { return }
-        // Anything after the marker is the directory report itself, not output.
-        guard !markerSeen else { return }
-        holdback += chunk
-
-        if let range = holdback.range(of: Self.marker) {
-            // Everything before the marker is the command's real output; what
-            // follows it on the same line is the directory it ended in.
-            buffer.feed(String(holdback[..<range.lowerBound]))
-            let rest = String(holdback[range.upperBound...])
-            let directory = rest
-                .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-                .first
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
-            if directory.hasPrefix("/") { cwd = directory }
-            holdback = ""
-            markerSeen = true
-        } else {
-            // Keep the tail that could be the start of a marker from reaching the
-            // screen, so a marker split across two chunks is still stripped.
-            let keep = Self.marker.count
-            guard holdback.count > keep else { return }
-            let cut = holdback.index(holdback.endIndex, offsetBy: -keep)
-            buffer.feed(String(holdback[..<cut]))
-            holdback = String(holdback[cut...])
-        }
-        revision += 1
-    }
-
-    private func finishStreaming() {
-        if !markerSeen { flushHoldback() }
-        if buffer.current.isEmpty {
-            // The command printed a trailing newline of its own; nothing to add.
+        guard let shell, shell.isRunning else { return }
+        Task { [weak self] in
+            await shell.interruptForeground()
+            self?.activeLabel = nil
+            self?.revision += 1
         }
     }
 
-    private func flushHoldback() {
-        guard !holdback.isEmpty else { return }
-        buffer.feed(holdback)
-        holdback = ""
-        revision += 1
+    func pasteFromClipboard() {
+        guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+        // Hand it straight to the shell: it may be multi-line, or contain control
+        // characters the key bar cannot produce.
+        sendToShell(text, label: nil)
     }
 
-    /// The script fed to the login shell: replay `cd`, run the command, report
-    /// the directory it ended in, and preserve the command's exit status.
-    private func script(for command: String) -> String {
-        """
-        cd \(GuestShell.quote(cwd)) 2>/dev/null
-        \(command)
-        __xf_rc=$?
-        printf '\\n\(Self.marker)%s\\n' "$PWD"
-        exit $__xf_rc
-        """
+    // MARK: - Output
+
+    private func consume(_ chunk: String) {
+        // Straight to the screen: the shell prints its own prompt, echoes what it
+        // reads, and emits its own escape sequences — and the buffer understands
+        // carriage returns, backspaces and SGR colour, so there is nothing to
+        // interpret here.
+        buffer.feed(chunk)
+        revision += 1
     }
 
     // MARK: - Editing
@@ -299,18 +252,6 @@ final class TerminalSession: ObservableObject {
         let next = max(0, min(history.count, current + offset))
         historyIndex = next == history.count ? nil : next
         input = historyIndex.map { history[$0] } ?? ""
-    }
-
-    /// Insert text from the key bar at the end of the input line.
-    func insert(_ text: String) {
-        input += text
-    }
-
-    func pasteFromClipboard() {
-        guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
-        // A pasted multi-line command should run as typed, not be squashed onto
-        // one line, so keep its newlines.
-        input += text
     }
 
     func clear() {
@@ -327,9 +268,9 @@ final class TerminalSession: ObservableObject {
     private func banner() {
         buffer.appendLine("XForge terminal — a shell into the embedded Alpine aarch64 Linux.",
                           style: TerminalStyle(foreground: .index(11)))
-        buffer.appendLine("Commands run one at a time; output streams here live.",
+        buffer.appendLine("Type at the prompt. The shell is persistent, and programs that read",
                           style: TerminalStyle(foreground: .index(8)))
-        buffer.appendLine("Try: uname -a · cat /etc/alpine-release · ls /root · apk --version",
+        buffer.appendLine("stdin receive what you type. Ctrl-C interrupts the foreground program.",
                           style: TerminalStyle(foreground: .index(8)))
         buffer.appendLine("")
         revision += 1

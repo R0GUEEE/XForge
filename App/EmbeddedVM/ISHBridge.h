@@ -81,8 +81,42 @@ int xf_ish_is_booted(void);
 /// stdout+stderr. `shell` is an absolute guest path (e.g. "/bin/sh") or NULL for
 /// `/bin/sh`. `timeout_ms` of 0 means no timeout. Returns 0 if the command was
 /// launched (inspect `result`), or a negative errno if it could not start.
+///
+/// This call blocks until the command exits.
 int xf_ish_run(const char *command, const char *shell, int timeout_ms,
                size_t max_output, xf_guest_result *result);
+
+/// Start a command and return its guest pid immediately, without waiting for it.
+///
+/// This exists because `xf_ish_run` blocks until the child exits, and the guest
+/// engine may only be driven from one thread at a time — so a long-lived process
+/// (an interactive shell) started through `xf_ish_run` would hold that thread
+/// forever and nothing else could ever run. Starting it detached leaves the
+/// engine free, and the caller polls the pid instead.
+///
+/// Returns the guest pid (> 0) on success, or a negative errno.
+///
+/// The process reads its stdin from `stdin_path` when that is not NULL: it is
+/// opened once, when the child is created. Output is *not* captured — a detached
+/// command is expected to redirect its own stdout/stderr (that is how the
+/// terminal's transport works), so pass a path in the command itself.
+int xf_ish_run_detached(const char *command, const char *shell, const char *stdin_path);
+
+/// Whether a detached process is still running. Returns 1 while it is alive,
+/// 0 once it has exited, or a negative errno for an unknown pid.
+int xf_ish_process_alive(int pid);
+
+// There is deliberately no blocking "wait for a detached process": the engine
+// may only be driven from one thread, and a wait would hold it for the process's
+// whole lifetime — the starvation that detached runs exist to avoid. Callers poll
+// `xf_ish_process_alive` instead, which answers without blocking.
+
+/// Ask a detached process to stop, by delivering `signal` to it. Returns 0 if the
+/// signal was delivered or a negative errno.
+///
+/// This is a real guest signal, so Ctrl-C on an interactive shell reaches the
+/// foreground program rather than merely detaching the screen.
+int xf_ish_kill_process(int pid, int signal);
 
 /// Free `result->output` and zero the struct.
 void xf_guest_result_free(xf_guest_result *result);

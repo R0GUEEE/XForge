@@ -168,6 +168,38 @@ final class ISHEmulator: LinuxEmulator {
         }
     }
 
+    func startDetached(
+        _ command: String,
+        shell: String?,
+        stdinPath: String?
+    ) async throws -> DetachedProcess {
+        if !isRunning { try await boot() }
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<DetachedProcess, Error>) in
+            guestThread.submit {
+                let rc: Int32 = command.withCString { cCommand in
+                    let run: (UnsafePointer<CChar>?) -> Int32 = { cShell in
+                        if let stdinPath {
+                            return stdinPath.withCString { cStdin in
+                                xf_ish_run_detached(cCommand, cShell, cStdin)
+                            }
+                        }
+                        return xf_ish_run_detached(cCommand, cShell, nil)
+                    }
+                    if let shell { return shell.withCString { run($0) } }
+                    return run(nil)
+                }
+                guard rc > 0 else {
+                    // Negative: the process never started. Report it rather than
+                    // handing back a handle to something that does not exist.
+                    continuation.resume(throwing: LinuxVMError.notImplemented(
+                        ishLastError(fallback: "The process could not start (errno \(rc)).")))
+                    return
+                }
+                continuation.resume(returning: GuestProcess(pid: rc, thread: self.guestThread))
+            }
+        }
+    }
+
     func shutdown() async {
         guard isRunning else { return }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
@@ -177,6 +209,63 @@ final class ISHEmulator: LinuxEmulator {
             }
         }
         isRunning = false
+    }
+}
+
+/// A guest process started by `ISHEmulator.startDetached`.
+///
+/// Every call hops onto the one guest thread, because the engine may only be
+/// driven from there. The thread is free precisely because the process was
+/// *started* detached rather than run to completion — which is the whole reason
+/// this exists: a blocking run would have held that thread for the process's
+/// lifetime and starved everything else in the app.
+private final class GuestProcess: DetachedProcess, @unchecked Sendable {
+    let pid: Int32
+    private let thread: GuestThreadExecutor
+
+    init(pid: Int32, thread: GuestThreadExecutor) {
+        self.pid = pid
+        self.thread = thread
+    }
+
+    var isRunning: Bool {
+        // A status read that has to block on the guest thread would be useless
+        // from a view, so this is answered from the last observation. `waitForExit`
+        // and `signal` refresh it.
+        get async { await checkAlive() }
+    }
+
+    private func checkAlive() async -> Bool {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            thread.submit {
+                continuation.resume(returning: xf_ish_process_alive(pid) == 1)
+            }
+        }
+    }
+
+    func signal(_ number: Int32) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            thread.submit {
+                _ = xf_ish_kill_process(pid, number)
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Poll for exit rather than blocking the guest thread.
+    ///
+    /// A blocking wait would occupy the one thread the engine allows, for as long
+    /// as the process runs — the very starvation that detached processes exist to
+    /// avoid. Polling asks a cheap question repeatedly instead, leaving the thread
+    /// free between asks.
+    @discardableResult
+    func waitForExit(timeout: TimeInterval) async -> Bool {
+        let deadline = timeout > 0 ? Date().addingTimeInterval(timeout) : nil
+        while true {
+            if !(await checkAlive()) { return true }
+            if let deadline, Date() >= deadline { return false }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
     }
 }
 

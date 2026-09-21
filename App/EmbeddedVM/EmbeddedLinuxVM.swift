@@ -307,6 +307,73 @@ final class EmbeddedLinuxVM: LinuxVM {
         }
     }
 
+    // MARK: - Interactive shell
+
+    /// Start an interactive shell in the guest.
+    ///
+    /// The shell is started with the engine's one-shot primitive, but it does not
+    /// exit: it reads its stdin forever. That call therefore stays in flight for
+    /// the life of the session, which is why it runs in a detached task rather
+    /// than being awaited by the caller — await it and the terminal would block
+    /// until the user types `exit`.
+    func startInteractiveShell(
+        onOutput: @escaping @Sendable (String) -> Void,
+        onExit: @escaping @MainActor () -> Void
+    ) async throws -> any InteractiveShellSession {
+        try await boot()
+        guard let share = hostShare else {
+            throw LinuxVMError.notImplemented(
+                "An interactive shell needs the shared folder, which this build has no access to.")
+        }
+
+        let transfer = share.appendingPathComponent(Self.transferDir, isDirectory: true)
+        try FileManager.default.createDirectory(at: transfer, withIntermediateDirectories: true)
+        let tag = UUID().uuidString
+        let inputURL = transfer.appendingPathComponent("stdin-\(tag)")
+        let outputURL = transfer.appendingPathComponent("stdout-\(tag)")
+        // Both must exist before the guest touches them: the shell is told to read
+        // a path that must already be a regular file, and the tailer opens the
+        // output immediately.
+        FileManager.default.createFile(atPath: inputURL.path, contents: nil)
+        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+
+        let guestInput = "\(Self.guestShare)/\(Self.transferDir)/\(inputURL.lastPathComponent)"
+        let guestOutput = "\(Self.guestShare)/\(Self.transferDir)/\(outputURL.lastPathComponent)"
+
+        let session = SharedFolderShellSession(
+            inputURL: inputURL,
+            outputURL: outputURL,
+            guestInput: guestInput,
+            guestOutput: guestOutput,
+            onOutput: onOutput
+        )
+
+        // The shell reads its stdin *directly from the host's file* — no pipe, no
+        // `tail -f`, no second process:
+        //   /bin/sh -i  < /host/.xforge-transfer/stdin-…      → reads what we append
+        //               > /host/.xforge-transfer/stdout-… 2>&1 → writes what we tail
+        //
+        // An earlier attempt used `tail -f <file> | /bin/sh -i`, which works but
+        // starts two processes and leaves the shell reading from a pipe rather
+        // than a file — so `read` and interactive prompts behaved subtly
+        // differently from a real terminal. Handing the file descriptor straight
+        // to the shell is simpler and truer to what a terminal is.
+        //
+        // Note the shell is started DETACHED. `runCapturedAfterBoot` would block
+        // the engine's one guest thread until the shell exited — which never
+        // happens — so every other command in the app (a build, a component
+        // install, the boot check) would starve behind it forever.
+        let command = """
+        exec /bin/sh -i < \(GuestShell.quote(guestInput)) > \(GuestShell.quote(guestOutput)) 2>&1
+        """
+
+        let process = try await emulator.startDetached(command, shell: "/bin/sh", stdinPath: nil)
+        session.attach(process: process, onExit: onExit)
+        XForgeLog.note(
+            "terminal: interactive shell started (pid \(process.pid), \(inputURL.lastPathComponent))")
+        return session
+    }
+
     // MARK: - File transfer
 
     /// Copy a file out of the guest into a host URL.
@@ -415,7 +482,7 @@ enum LinuxVMError: LocalizedError {
 /// primitive: the guest writes its output into the shared folder, and this reads
 /// it back while the command is still running. `onChunk` runs on a private queue
 /// and must not block (hop to the main actor asynchronously instead).
-private final class FileTailer: @unchecked Sendable {
+final class FileTailer: @unchecked Sendable {
     private let url: URL
     private let onChunk: @Sendable (String) -> Void
     private let queue = DispatchQueue(label: "org.xforge.terminal.tail")

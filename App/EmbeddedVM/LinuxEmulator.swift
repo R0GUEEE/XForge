@@ -47,7 +47,42 @@ protocol LinuxEmulator: AnyObject {
         timeout: TimeInterval,
         maxOutput: Int
     ) async throws -> GuestCommandResult
+
+    /// Start a command and return immediately, without waiting for it to exit.
+    ///
+    /// `stdinPath` is a *guest* path the child reads its stdin from (NULL for
+    /// `/dev/null`). A detached command redirects its own stdout/stderr, so the
+    /// caller supplies a complete command line.
+    ///
+    /// Returns a handle for waiting on and signalling the process.
+    func startDetached(
+        _ command: String,
+        shell: String?,
+        stdinPath: String?
+    ) async throws -> DetachedProcess
+
     func shutdown() async
+}
+
+/// A guest process started with `startDetached`.
+///
+/// It is deliberately thin: the engine reports no exit *status* for a process
+/// nobody waits on, so a detached command communicates its result through
+/// whatever its command line redirects to. This handle answers the two questions
+/// the host actually needs — is it still running, and how do I stop it.
+@MainActor
+protocol DetachedProcess: AnyObject {
+    /// Guest pid, for logging and for `kill`.
+    var pid: Int32 { get }
+    /// False once it has exited.
+    var isRunning: Bool { get }
+    /// Send a real guest signal. `SIGINT` (2) interrupts the foreground program,
+    /// `SIGTERM` (15) asks it to stop, `SIGKILL` (9) cannot be caught.
+    func signal(_ number: Int32) async
+    /// Wait for exit, up to `timeout` seconds (0 waits indefinitely).
+    /// Returns true if it exited.
+    @discardableResult
+    func waitForExit(timeout: TimeInterval) async -> Bool
 }
 
 /// Fallback used if the ish-arm64 core is not linked into the app. Keeps the UI
@@ -71,6 +106,13 @@ final class PendingLinuxEmulator: LinuxEmulator {
         timeout: TimeInterval,
         maxOutput: Int
     ) async throws -> GuestCommandResult {
+        throw LinuxVMError.notImplemented("No guest is running.")
+    }
+    func startDetached(
+        _ command: String,
+        shell: String?,
+        stdinPath: String?
+    ) async throws -> DetachedProcess {
         throw LinuxVMError.notImplemented("No guest is running.")
     }
     func shutdown() async {}

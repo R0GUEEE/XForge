@@ -85,6 +85,7 @@ void xf_ish_shutdown(void) {}
 #include "kernel/fs.h"     // struct fs_ops, do_mount, fs_register, fakefs/procfs/...
 #include "kernel/task.h"   // struct task, current, task_start, exit_hook
 #include "kernel/calls.h"  // do_execve
+#include "kernel/signal.h" // send_signal, SIGINFO_NIL
 #include "fs/real.h"       // realfs
 #include "fs/fd.h"         // adhoc_fd_create, realfs_fdops
 #include "fs/devices.h"    // MEM_MAJOR, DEV_NULL_MINOR, TTY_ALTERNATE_MAJOR, ...
@@ -209,13 +210,40 @@ static pthread_cond_t s_exit_cond = PTHREAD_COND_INITIALIZER;
 static pid_t_ s_wait_pid = 0;
 static int s_wait_status = 0;
 static bool s_wait_done = false;
+/// Pids observed to exit, so a detached process can be distinguished from one
+/// still running. A small fixed ring: the app starts a handful of detached
+/// processes at most (one terminal shell, occasionally an install), and an
+/// over-full ring only means an old entry is forgotten — which degrades to
+/// asking the engine, not to a wrong answer.
+#define XF_EXITED_MAX 16
+static pid_t_ s_exited[XF_EXITED_MAX];
+static int s_exited_count = 0;
+
+static bool xf_exit_was_seen(pid_t_ pid) {
+    for (int i = 0; i < s_exited_count; i++) {
+        if (s_exited[i] == pid) return true;
+    }
+    return false;
+}
 
 static void xf_exit_hook(struct task *task, int code) {
     pthread_mutex_lock(&s_exit_lock);
-    if (s_wait_pid != 0 && task != NULL && task->pid == s_wait_pid) {
-        s_wait_status = code;
-        s_wait_done = true;
-        pthread_cond_broadcast(&s_exit_cond);
+    if (task != NULL) {
+        if (!xf_exit_was_seen(task->pid)) {
+            if (s_exited_count < XF_EXITED_MAX) {
+                s_exited[s_exited_count++] = task->pid;
+            } else {
+                // Drop the oldest to make room; see the comment above.
+                for (int i = 1; i < XF_EXITED_MAX; i++)
+                    s_exited[i - 1] = s_exited[i];
+                s_exited[XF_EXITED_MAX - 1] = task->pid;
+            }
+        }
+        if (s_wait_pid != 0 && task->pid == s_wait_pid) {
+            s_wait_status = code;
+            s_wait_done = true;
+            pthread_cond_broadcast(&s_exit_cond);
+        }
     }
     pthread_mutex_unlock(&s_exit_lock);
 }
@@ -341,6 +369,101 @@ int xf_ish_boot(const char *root_dir, const char *host_dir) {
     xf_logf("boot: guest is up");
     return 0;
 }
+// --- spawning a guest child --------------------------------------------------
+//
+// Shared by the blocking and the detached entry points below: everything up to
+// and including `task_start`, which is the point where the two diverge (one waits
+// for the child, the other returns its pid and lets it run).
+//
+// `stdout_fd` is where the child's stdout and stderr go; pass -1 for none (a
+// detached command redirects its own output in its command line).
+// `stdin_path` is opened for the child's stdin; NULL means /dev/null.
+// On success the child's pid is written to `*pid_out` and 0 is returned; on
+// failure a negative errno is returned and nothing has been started.
+static int xf_spawn_child(const char *command, const char *shell,
+                          int stdout_fd, const char *stdin_path,
+                          pid_t_ *pid_out) {
+    struct task *saved_current = current;
+
+    int err = become_new_init_child();
+    if (err < 0) {
+        current = saved_current;
+        xf_fail("become_new_init_child failed: %s (%d)", strerror(-err), err);
+        return err;
+    }
+    struct task *task = current;
+
+    // stdin. A detached interactive shell is given a real file here: that file is
+    // its standard input for as long as it lives, which is what lets the host
+    // feed it a byte stream.
+    struct fd *stdin_fd = adhoc_fd_create(&realfs_fdops);
+    if (stdin_fd != NULL) {
+        const char *path = (stdin_path != NULL && stdin_path[0] != '\0')
+                         ? stdin_path : "/dev/null";
+        int fd = open(path, O_RDONLY);
+        if (fd < 0 && stdin_path != NULL) {
+            // Falling back to /dev/null would leave a shell reading EOF and
+            // exiting immediately, so report it instead of starting something
+            // that cannot work.
+            int open_err = errno;
+            current = saved_current;
+            xf_fail("could not open stdin %s: %s", path, strerror(open_err));
+            return -open_err;
+        }
+        stdin_fd->real_fd = fd;
+        task->files->files[0] = stdin_fd;
+    }
+
+    for (int idx = 1; idx <= 2; idx++) {
+        if (stdout_fd < 0)
+            break;
+        struct fd *out_fd = adhoc_fd_create(&realfs_fdops);
+        if (out_fd != NULL) {
+            out_fd->real_fd = dup(stdout_fd);
+            task->files->files[idx] = out_fd;
+        }
+    }
+
+    // argv, as the NUL-separated, double-NUL-terminated block do_execve wants.
+    // `-c` is what turns the command into something /bin/sh runs and reports the
+    // exit status of.
+    static const char *const argv0 = "sh";
+    static const char *const flag = "-c";
+    size_t argv_len = strlen(argv0) + 1 + strlen(flag) + 1 + strlen(command) + 1 + 1;
+    char *argv_buf = calloc(1, argv_len);
+    if (argv_buf == NULL) {
+        current = saved_current;
+        xf_fail("out of memory building argv");
+        return -ENOMEM;
+    }
+    size_t pos = 0;
+    memcpy(argv_buf + pos, argv0, strlen(argv0) + 1); pos += strlen(argv0) + 1;
+    memcpy(argv_buf + pos, flag, strlen(flag) + 1);   pos += strlen(flag) + 1;
+    memcpy(argv_buf + pos, command, strlen(command) + 1); pos += strlen(command) + 1;
+    argv_buf[pos] = '\0';
+
+    // A build environment needs a real PATH, and HOME for the toolchains. TERM is
+    // set so an interactive shell does not refuse to prompt.
+    static const char *const envp =
+        "TERM=xterm-256color\0"
+        "HOME=/root\0"
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0";
+
+    err = do_execve(shell, 3, argv_buf, envp);
+    if (err < 0) {
+        free(argv_buf);
+        current = saved_current;
+        xf_fail("do_execve(%s) failed: %s (%d)", shell, strerror(-err), err);
+        return err;
+    }
+    free(argv_buf);
+
+    *pid_out = task->pid;
+    task_start(task);
+    current = saved_current;
+    return 0;
+}
+
 int xf_ish_run(const char *command, const char *shell, int timeout_ms,
                size_t max_output, xf_guest_result *result) {
     if (command == NULL || result == NULL) return -EINVAL;
@@ -360,74 +483,16 @@ int xf_ish_run(const char *command, const char *shell, int timeout_ms,
         return -errno;
     }
 
-    struct task *saved_current = current;
-
-    int err = become_new_init_child();
-    if (err < 0) {
-        close(pipe_fds[0]);
-        close(pipe_fds[1]);
-        current = saved_current;
-        xf_fail("become_new_init_child failed: %s (%d)", strerror(-err), err);
-        return err;
-    }
-    struct task *task = current;
-
-    // stdin: /dev/null. stdout+stderr: the pipe, merged — XForge presents one
-    // combined transcript, and separating them would need a second reader
-    // thread for no gain here.
-    struct fd *stdin_fd = adhoc_fd_create(&realfs_fdops);
-    if (stdin_fd != NULL) {
-        stdin_fd->real_fd = open("/dev/null", O_RDONLY);
-        task->files->files[0] = stdin_fd;
-    }
-    for (int idx = 1; idx <= 2; idx++) {
-        struct fd *out_fd = adhoc_fd_create(&realfs_fdops);
-        if (out_fd != NULL) {
-            out_fd->real_fd = dup(pipe_fds[1]);
-            task->files->files[idx] = out_fd;
-        }
-    }
+    // stdout+stderr to the pipe, merged — XForge presents one combined
+    // transcript, and separating them would need a second reader thread for no
+    // gain here.
+    pid_t_ pid = 0;
+    int err = xf_spawn_child(command, exec_path, pipe_fds[1], NULL, &pid);
     close(pipe_fds[1]);
-
-    // argv, as the NUL-separated, double-NUL-terminated block do_execve wants.
-    // `-c` is what turns the command into something /bin/sh runs and reports the
-    // exit status of.
-    static const char *const argv0 = "sh";
-    static const char *const flag = "-c";
-    char *argv_buf = NULL;
-    size_t argv_len = strlen(argv0) + 1 + strlen(flag) + 1 + strlen(command) + 1 + 1;
-    argv_buf = calloc(1, argv_len);
-    if (argv_buf == NULL) {
-        close(pipe_fds[0]);
-        current = saved_current;
-        xf_fail("out of memory building argv");
-        return -ENOMEM;
-    }
-    size_t pos = 0;
-    memcpy(argv_buf + pos, argv0, strlen(argv0) + 1); pos += strlen(argv0) + 1;
-    memcpy(argv_buf + pos, flag, strlen(flag) + 1);   pos += strlen(flag) + 1;
-    memcpy(argv_buf + pos, command, strlen(command) + 1); pos += strlen(command) + 1;
-    argv_buf[pos] = '\0';
-
-    // A build environment needs a real PATH, and HOME for the toolchains.
-    static const char *const envp =
-        "TERM=dumb\0"
-        "HOME=/root\0"
-        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0";
-
-    err = do_execve(exec_path, 3, argv_buf, envp);
     if (err < 0) {
-        free(argv_buf);
         close(pipe_fds[0]);
-        current = saved_current;
-        xf_fail("do_execve(%s) failed: %s (%d)", exec_path, strerror(-err), err);
         return err;
     }
-    free(argv_buf);
-
-    pid_t_ pid = task->pid;
-    task_start(task);
-    current = saved_current;
 
     result->launched = 1;
 
@@ -558,6 +623,64 @@ int xf_ish_run(const char *command, const char *shell, int timeout_ms,
             "code=%d signal=%d)",
             length, truncated, result->timed_out, result->exited,
             result->exit_code, result->term_signal);
+    return 0;
+}
+
+// --- detached processes ------------------------------------------------------
+
+int xf_ish_run_detached(const char *command, const char *shell, const char *stdin_path) {
+    if (command == NULL) return -EINVAL;
+    if (!s_booted) {
+        xf_fail("guest is not booted");
+        return -ENODEV;
+    }
+
+    const char *exec_path = (shell != NULL && shell[0] != '\0') ? shell : "/bin/sh";
+    xf_logf("run-detached: %.200s", command);
+
+    // No stdout fd: a detached command redirects its own output, because there is
+    // no reader here to drain a pipe. That matters — a child writing into a pipe
+    // nobody reads fills the pipe buffer and blocks forever.
+    pid_t_ pid = 0;
+    int err = xf_spawn_child(command, exec_path, -1, stdin_path, &pid);
+    if (err < 0)
+        return err;
+
+    xf_logf("run-detached: started pid %d", (int) pid);
+    return (int) pid;
+}
+
+int xf_ish_process_alive(int pid) {
+    if (pid <= 0) return -EINVAL;
+
+    pthread_mutex_lock(&s_exit_lock);
+    bool known_exited = xf_exit_was_seen((pid_t_) pid);
+    pthread_mutex_unlock(&s_exit_lock);
+    if (known_exited) return 0;
+
+    // The engine gives no waitpid for guest pids, so ask the task table directly.
+    // A pid that has exited but not been reaped still appears here as a zombie,
+    // which is why the flag above is checked first: the exit hook is the only
+    // place that observes an exit reliably.
+    struct task *task = pid_get_task_zombie((dword_t) pid);
+    if (task == NULL) return 0;
+    return task->zombie ? 0 : 1;
+}
+
+int xf_ish_kill_process(int pid, int signal) {
+    if (pid <= 0) return -EINVAL;
+
+    struct task *task = pid_get_task_zombie((dword_t) pid);
+    if (task == NULL) {
+        xf_fail("no such process: %d", pid);
+        return -ESRCH;
+    }
+    // A real guest signal, not a byte on stdin. Sending the Ctrl-C *character*
+    // would need a tty to interpret it — the terminal's transport is a plain
+    // pipe, so the byte would simply be read as input. This reaches the process
+    // regardless of what its stdin is.
+    xf_logf("kill: pid %d signal %d", pid, signal);
+    send_signal(task, signal, SIGINFO_NIL);
     return 0;
 }
 
