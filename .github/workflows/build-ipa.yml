@@ -277,9 +277,13 @@ jobs:
       - name: Package the unsigned IPA
         run: |
           set -euo pipefail
-          IPA="dist/XForge-unsigned.ipa"
           VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")"
           IPA="dist/XForge-$VERSION-unsigned.ipa"
+          # Start from an empty dist/. A leftover IPA here would be uploaded
+          # alongside the new one (they have different names, so `--clobber`
+          # would not replace it), and a release offering two builds of different
+          # versions is worse than one that offers none.
+          rm -rf dist
           mkdir -p dist/Payload
           ditto "$APP_PATH" dist/Payload/XForge.app
           ditto -c -k --keepParent dist/Payload "$IPA"
@@ -290,6 +294,13 @@ jobs:
           unzip -Z1 "$IPA" > /tmp/ipa-contents.txt
           grep -q 'Payload/XForge.app/alpine-rootfs\.zip$' /tmp/ipa-contents.txt \
             || { echo '::error::the IPA does not contain the rootfs'; exit 1; }
+
+          # Exactly one IPA, and it is the version the app says it is.
+          count="$(find dist -maxdepth 1 -name '*.ipa' | wc -l | tr -d ' ')"
+          [ "$count" = "1" ] \
+            || { echo "::error::expected exactly one IPA in dist/, found $count:"; ls -la dist; exit 1; }
+          test -f "$IPA" || { echo "::error::$IPA was not produced"; exit 1; }
+
           echo "IPA: $IPA ($(du -h "$IPA" | cut -f1))"
           echo "ipa=$IPA" >> "$GITHUB_ENV"
 
@@ -297,7 +308,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: XForge-unsigned-ipa
-          path: dist/XForge-*-unsigned.ipa
+          path: dist/XForge-${{ env.EXPECTED_VERSION }}-unsigned.ipa
           if-no-files-found: error
           retention-days: 14
 
@@ -305,9 +316,18 @@ jobs:
         if: ${{ inputs.release }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: xforge-${{ github.run_number }}
-          name: XForge — unsigned IPA
-          files: dist/XForge-*-unsigned.ipa
+          # Not `xforge-<run_number>`. `run_number` restarts at 1 whenever a
+          # workflow file is renamed or recreated, and this file has been renamed
+          # before — so those tags collided with releases from the previous cycle
+          # and a build quietly attached its IPA to a month-old release that still
+          # held a stale asset. The date plus the run number is unique across
+          # renames, and sorts sensibly.
+          tag_name: xforge-${{ github.run_number }}-${{ github.run_id }}
+          name: XForge ${{ env.EXPECTED_VERSION }} — unsigned IPA
+          # The exact file, not `dist/XForge-*-unsigned.ipa`: the glob matches
+          # whatever happens to be in dist/, which is how a stale second IPA
+          # survived in a release.
+          files: dist/XForge-${{ env.EXPECTED_VERSION }}-unsigned.ipa
           body_path: CHANGELOG.md
           draft: false
           prerelease: false
