@@ -28,6 +28,7 @@
 #     XFORGE_ROOTFS_SHA256    checksum for a custom rootfs URL
 #     XFORGE_INCLUDE_SDK      auto | 1 | 0 — bake the darwin Swift SDK in too
 #                             (default: auto = include when a release has one)
+#     XFORGE_INSTALL_XTOOL   1 | 0 — install xtool in the payload (default: 1)
 #     XFORGE_SDK_URL          explicit darwin.artifactbundle.tar.xz URL (implies 1)
 #     XFORGE_SDK_TAG_PREFIX   release series holding the SDK (default: darwin-sdk-)
 #     XFORGE_REPOSITORY       owner/repo whose releases hold the SDK (R0GUEEE/XForge)
@@ -53,6 +54,7 @@ ROOTFS_SHA256="${XFORGE_ROOTFS_SHA256:-}"
 BASE_NAME="$(basename "$ROOTFS_URL" .tar.gz)"
 PAYLOAD_NAME="${XFORGE_PAYLOAD_NAME:-$BASE_NAME-provisioned.tar.gz}"
 INCLUDE_SDK="${XFORGE_INCLUDE_SDK:-auto}"
+INSTALL_XTOOL="${XFORGE_INSTALL_XTOOL:-1}"
 SDK_TAG_PREFIX="${XFORGE_SDK_TAG_PREFIX:-darwin-sdk-}"
 REPOSITORY="${XFORGE_REPOSITORY:-R0GUEEE/XForge}"
 SDK_ASSET="darwin.artifactbundle.tar.xz"
@@ -168,7 +170,7 @@ install -m 0755 "$HERE/install-toolchain.sh" "$ROOTFS/root/install-toolchain.sh"
 # ---------------------------------------------------------------------------
 log "Running install-toolchain.sh all inside the chroot (this is the slow part)"
 set +e
-chroot "$ROOTFS" /bin/sh -c "export PATH=$GUEST_PATH HOME=/root; sh /root/install-toolchain.sh all" 2>&1 | tee "$LOG"
+chroot "$ROOTFS" /bin/sh -c "export PATH=$GUEST_PATH HOME=/root XFORGE_INSTALL_XTOOL=$INSTALL_XTOOL; sh /root/install-toolchain.sh all" 2>&1 | tee "$LOG"
 status="${PIPESTATUS[0]}"
 set -e
 [ "$status" -eq 0 ] || die "install-toolchain.sh failed with exit $status — see $LOG"
@@ -178,7 +180,9 @@ set -e
 # here — a payload whose swift traps on the device is worse than no payload.
 # swift-sdk is a separate binary (`swift sdk list`) and is what installs the
 # darwin SDK, so it has to run before the SDK step can be trusted.
-for tool in xtool swift swiftly swift-sdk; do
+verify_tools="swift swiftly swift-sdk"
+[ "$INSTALL_XTOOL" = "0" ] || verify_tools="xtool $verify_tools"
+for tool in $verify_tools; do
     grep -qE "^XFORGE-VERIFY[[:space:]]+$tool[[:space:]]+ok" "$LOG" \
         || die "$tool did not verify inside the chroot — see $LOG"
 done
@@ -189,13 +193,14 @@ done
 log "Checking the provisioned rootfs from the outside"
 probe() { chroot "$ROOTFS" /bin/sh -c "export PATH=$GUEST_PATH HOME=/root; $1" 2>&1 || true; }
 SWIFT_VERSION="$(probe 'swift --version' | sed -n 1p)"
-XTOOL_VERSION="$(probe 'xtool --version' | sed -n 1p)"
+XTOOL_VERSION="not bundled"
+[ "$INSTALL_XTOOL" = "0" ] || XTOOL_VERSION="$(probe 'xtool --version' | sed -n 1p)"
 SWIFTLY_VERSION="$(probe 'swiftly --version' | sed -n 1p)"
 APK_PROBE="$(probe 'apk info -e clang lld cmake ninja git && echo present')"
 GLIBC_LD="$(probe 'ls -l /lib/ld-linux-aarch64.so.1' | sed 's/.*-> //')"
 
 [ -n "$SWIFT_VERSION" ] || die "swift --version printed nothing in the provisioned rootfs"
-[ -n "$XTOOL_VERSION" ] || die "xtool --version printed nothing in the provisioned rootfs"
+[ "$INSTALL_XTOOL" = "0" ] || [ -n "$XTOOL_VERSION" ] || die "xtool --version printed nothing in the provisioned rootfs"
 case "$APK_PROBE" in
     *present*) ;;
     *) die "the build dependencies (clang lld cmake ninja git) are not in the provisioned rootfs" ;;
@@ -355,9 +360,11 @@ fi
 CONTENTS="$WORK/payload-contents.txt"
 tar -tzf "$PAYLOAD" > "$CONTENTS" || die "the packed payload is not a readable .tar.gz"
 grep -qE "(^|/)usr/local/bin/swift$"    "$CONTENTS" || die "the payload is missing /usr/local/bin/swift"
-grep -qE "(^|/)usr/local/bin/xtool$"    "$CONTENTS" || die "the payload is missing /usr/local/bin/xtool"
 grep -qE "(^|/)usr/local/share/xforge/glibc.env$" "$CONTENTS" || die "the payload is missing the glibc layer"
-grep -qE "(^|/)opt/xtool/usr/bin/xtool$" "$CONTENTS" || die "the payload has no unpacked xtool"
+[ "$INSTALL_XTOOL" = "0" ] || {
+    grep -qE "(^|/)usr/local/bin/xtool$" "$CONTENTS" || die "the payload is missing /usr/local/bin/xtool"
+    grep -qE "(^|/)opt/xtool/usr/bin/xtool$" "$CONTENTS" || die "the payload has no unpacked xtool"
+}
 grep -qE "(^|/)swiftly/toolchains/"      "$CONTENTS" || die "the payload has no Swift toolchain"
 grep -qE "(^|/)usr/local/share/xforge/payload-manifest.txt$" "$CONTENTS" || die "the payload has no manifest"
 

@@ -9,6 +9,8 @@
 #     sh /root/install-toolchain.sh            # every step
 #     sh /root/install-toolchain.sh deps       # one step
 #
+# Set XFORGE_INSTALL_XTOOL=0 for a base build root that leaves xtool for the
+# app's on-device component installer.
 # Steps: deps | glibc | xtool | swiftly | swift | verify
 #
 # Every step is idempotent: re-running it is a no-op once it has succeeded.
@@ -36,6 +38,7 @@ GLIBC_LD="$GLIBC_LIB/ld-linux-aarch64.so.1"
 SHARE=/usr/local/share/xforge
 SWIFTLY_HOME_DIR="${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}"
 export SWIFTLY_HOME_DIR
+INSTALL_XTOOL="${XFORGE_INSTALL_XTOOL:-1}"
 
 # Ubuntu release whose glibc the Swift toolchains are built against.
 UBUNTU_SUITE="${XFORGE_UBUNTU_SUITE:-noble}"
@@ -541,7 +544,9 @@ step_swift() {
 step_verify() {
     log "Verifying the tools"
     failed=0
-    for tool in xtool swift swiftly; do
+    verify_tools="swift swiftly"
+    [ "$INSTALL_XTOOL" = "0" ] || verify_tools="xtool $verify_tools"
+    for tool in $verify_tools; do
         if ! command -v "$tool" >/dev/null 2>&1; then
             echo "    $tool: not installed"
             printf 'XFORGE-VERIFY\t%s\tmissing\tnot installed\n' "$tool"
@@ -622,7 +627,11 @@ case "${1:-all}" in
     all)
         step_deps
         step_glibc
-        step_xtool
+        if [ "$INSTALL_XTOOL" = "0" ]; then
+            log "Skipping xtool (XFORGE_INSTALL_XTOOL=0; the app installs it on demand)"
+        else
+            step_xtool
+        fi
         step_swiftly
         step_swift
         step_verify

@@ -27,7 +27,7 @@ named `darwin`. All three heavyweight pieces are self-contained Linux artifacts:
 | Provisioned Alpine aarch64 rootfs | `alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz` | **bundled in the app**, imported directly by the terminal on first boot |
 | Swift aarch64 Linux toolchain | swift.org, via `swiftly` | installed in the bundled Alpine guest |
 | `darwin` Swift SDK (arm64-apple-ios) | built from Xcode in CI, hosted as a release | optional, user-installed in Alpine |
-| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | installed in the bundled Alpine guest |
+| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | installed on demand in the bundled Alpine guest |
 
 The IPA build provisions Alpine on a native arm64 Linux runner before packaging it.
 That guest root includes the Alpine build dependencies, Swift, and `xtool`; the
@@ -119,8 +119,8 @@ Or build the unsigned IPA for sideloading via GitHub Actions
 1. **Embedded Linux** — iSH-AOK boots the bundled provisioned Alpine aarch64 rootfs (imported
    into its `fakefs` format on first terminal use).
 2. **Toolchain** — the payload build runs `EmbeddedLinux/install-toolchain.sh` inside
-   Alpine before packaging, installing project dependencies, Swift, and xtool in the guest;
-   the darwin SDK is likewise an explicit in-guest install.
+   Alpine before packaging, installing project dependencies and Swift in the guest;
+   xtool and the darwin SDK remain explicit in-guest installs.
 3. **Build** — `xtool dev build -s -i` runs in the guest; the `.ipa` is copied back out.
 4. **Signing** — export the unsigned `.ipa` to SideStore/AltStore or another signing
    service. Direct free-Apple-ID signing through XKit remains planned.
@@ -129,8 +129,8 @@ Or build the unsigned IPA for sideloading via GitHub Actions
 
 - [x] Embedded Linux engine: iSH-AOK built for iOS, running in-process
 - [x] Alpine aarch64 rootfs bundled in the app and imported on first boot
-- [x] Provisioned Alpine rootfs — bundled with project dependencies, Swift, and xtool
-      inside the guest; the optional in-guest Darwin SDK installer remains available
+- [x] Provisioned Alpine rootfs — bundled with project dependencies and Swift inside
+      the guest; xtool and the optional Darwin SDK installer remain available in-guest
 - [ ] XKit signing (free Apple ID) wired into the export flow
 - [ ] Hand-off of built `.ipa` to SideStore/AltStore for install
 - [ ] `RemoteExecutor` (build server) for fast compilation of real apps

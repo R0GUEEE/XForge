@@ -15,12 +15,9 @@ All notable changes to **XForge** are documented here.
 - **The app now ships a *provisioned* Alpine rootfs, so there is nothing to
   install on the device.** The IPA bundles
   `alpine-minirootfs-3.24.2-aarch64-provisioned.tar.gz`: the Alpine aarch64
-  release with the whole guest toolchain already in it — apk build dependencies
-  (clang, lld, cmake, ninja, git, …), the glibc compatibility layer under
-  `/opt/glibc`, the swift/swiftc/xtool wrappers, xtool unpacked in `/opt/xtool`,
-  swiftly and the Swift toolchain. Importing it during the first launch is the
-  only setup left, and the compiler, the toolchain and the build requirements are
-  all already there.
+  release with the Alpine build dependencies (clang, lld, cmake, ninja, git, …),
+  the glibc compatibility layer under `/opt/glibc`, swiftly and the Swift
+  toolchain. xtool and the Darwin SDK remain explicit on-device installs.
 - **The `darwin` Swift SDK is not bundled.** It is a ~200 MB release asset that
   the app fetches on first use, so it stays out of the IPA. Pass
   `include_darwin_sdk=1` to the IPA (or the payload) workflow to bake it in as

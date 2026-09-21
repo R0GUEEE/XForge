@@ -2,7 +2,8 @@ name: Build unsigned XForge IPA
 
 # The Alpine rootfs is assembled on native arm64 Linux before the macOS archive.
 # `install-toolchain.sh all` runs inside that Alpine filesystem, so its apk build
-# dependencies, Swift, and xtool are installed in the root the terminal boots.
+# dependencies and Swift are installed in the root the terminal boots. xtool and
+# the Darwin SDK remain on-demand guest components.
 
 on:
   workflow_dispatch:
@@ -20,24 +21,25 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
     env:
-      # The release contains the project build environment and xtool. The Darwin
-      # SDK stays an explicit in-guest component instead of adding it implicitly.
+      # The release contains Alpine build dependencies and Swift only. xtool and
+      # the Darwin SDK are explicit in-guest components installed on demand.
       XFORGE_INCLUDE_SDK: "0"
+      XFORGE_INSTALL_XTOOL: "0"
     steps:
       - uses: actions/checkout@v4
 
       - name: Install payload build tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq pigz
 
-      - name: Install project dependencies and xtool into Alpine
+      - name: Install project dependencies and Swift into Alpine
         run: |
           set -euo pipefail
           # This chroots into Alpine and runs the same guest installer exposed by
-          # the app. It installs apk build dependencies, glibc, xtool, swiftly,
-          # and Swift in the guest root, never on the iOS host.
+          # the app. It installs apk build dependencies, glibc, swiftly, and Swift
+          # in the guest root, never on the iOS host. xtool is intentionally deferred.
           # `sudo` otherwise drops this setting and the payload builder's
           # default `auto` mode tries to install the Darwin SDK as well.
-          sudo --preserve-env=XFORGE_INCLUDE_SDK \
+          sudo --preserve-env=XFORGE_INCLUDE_SDK,XFORGE_INSTALL_XTOOL \
             bash EmbeddedLinux/build-rootfs-payload.sh dist/rootfs
 
       - name: Validate provisioned Alpine payload
@@ -47,7 +49,6 @@ jobs:
           test -n "$archive"
           tar -tzf "$archive" > /tmp/rootfs-contents.txt
           for path in \
-            usr/local/bin/xtool \
             usr/local/bin/swift \
             usr/local/share/xforge/build-environment-v2 \
             usr/local/share/xforge/payload-manifest.txt; do
@@ -60,7 +61,8 @@ jobs:
           tar -xzOf "$archive" "$manifest" | tee /tmp/payload-manifest.txt
           grep -qE '^base:[[:space:]]+alpine-minirootfs-3\.24\.2-aarch64\.tar\.gz$' /tmp/payload-manifest.txt
           grep -qE '^rootfs:[[:space:]]+3\.24\.2$' /tmp/payload-manifest.txt
-          grep -qE '^xtool:[[:space:]]+xtool ' /tmp/payload-manifest.txt
+          ! grep -qE '(^|/)xtool|darwin\.artifactbundle' /tmp/rootfs-contents.txt
+          grep -qE '^xtool:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
           echo "payload=$archive" >> "$GITHUB_OUTPUT"
 
       - name: Upload provisioned Alpine payload
@@ -145,7 +147,6 @@ jobs:
           test -f "$ARCHIVE"
           tar -tzf "$ARCHIVE" > /tmp/rootfs-contents.txt
           for path in \
-            usr/local/bin/xtool \
             usr/local/bin/swift \
             usr/local/share/xforge/build-environment-v2 \
             usr/local/share/xforge/payload-manifest.txt; do
@@ -156,7 +157,8 @@ jobs:
             || { echo '::error::bundled rootfs has no Swift toolchain'; exit 1; }
           manifest="$(grep -E '/usr/local/share/xforge/payload-manifest.txt$' /tmp/rootfs-contents.txt | head -1)"
           tar -xzOf "$ARCHIVE" "$manifest" | tee /tmp/payload-manifest.txt
-          grep -qE '^xtool:[[:space:]]+xtool ' /tmp/payload-manifest.txt
+          ! grep -qE '(^|/)xtool|darwin\.artifactbundle' /tmp/rootfs-contents.txt
+          grep -qE '^xtool:[[:space:]]+not bundled$' /tmp/payload-manifest.txt
           {
             echo '### Bundled Alpine build root'
             echo

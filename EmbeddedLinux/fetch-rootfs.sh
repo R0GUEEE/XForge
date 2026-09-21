@@ -9,7 +9,8 @@
 #       Built by EmbeddedLinux/build-rootfs-payload.sh: the minirootfs with the
 #       whole toolchain already installed in it (apk build environment, the glibc
 #       layer, xtool, swiftly + the Swift toolchain, optionally the darwin SDK).
-#       An app built with this needs nothing installed on the device.
+#       An app built with this has the Alpine dependencies and Swift ready;
+#       xtool and the Darwin SDK remain explicit on-device installs.
 #
 #   alpine-minirootfs-3.24.2-aarch64.tar.gz
 #       The plain Alpine minirootfs. Small, and the user runs
