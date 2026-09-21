@@ -220,37 +220,57 @@ jobs:
       - name: Verify entitlements
         run: |
           set -e
-          FILE="Support/XForge.entitlements"
-          test -f "$FILE" || { echo "::error::no entitlements file"; exit 1; }
-          /usr/libexec/PlistBuddy -c "Print" "$FILE" >/dev/null \
-            || { echo "::error::$FILE does not parse"; exit 1; }
+          # plistlib rather than PlistBuddy: the key "get-task-allow" contains a
+          # dash, which PlistBuddy's :key path syntax does not accept, and a check
+          # that cannot read the file it is checking is worse than no check.
+          python3 - <<'PY'
+          import plistlib, sys
 
-          # The engine needs both kernel entitlements — without the addressing one
-          # the guest cannot map its address space, and without the memory one a
-          # compile is killed by jetsam. The other two are what a development
-          # signature carries.
-          for key in "get-task-allow" "application-identifier" \
-                     "com.apple.developer.kernel.extended-virtual-addressing" \
-                     "com.apple.developer.kernel.increased-memory-limit"; do
-            /usr/libexec/PlistBuddy -c "Print :$key" "$FILE" >/dev/null \
-              || { echo "::error::entitlements are missing $key"; exit 1; }
-          done
+          path = "Support/XForge.entitlements"
+          required = [
+              "get-task-allow",
+              "application-identifier",
+              "com.apple.developer.kernel.extended-virtual-addressing",
+              "com.apple.developer.kernel.increased-memory-limit",
+          ]
+          with open(path, "rb") as handle:
+              entitlements = plistlib.load(handle)
+
+          missing = [key for key in required if key not in entitlements]
+          if missing:
+              print(f"::error::{path} is missing {', '.join(missing)}")
+              sys.exit(1)
+
+          # The two the engine cannot run without have to be true, not merely
+          # present: a false value reads as "declared" and grants nothing.
+          for key in ("com.apple.developer.kernel.extended-virtual-addressing",
+                      "com.apple.developer.kernel.increased-memory-limit"):
+              if entitlements[key] is not True:
+                  print(f"::error::{key} must be true")
+                  sys.exit(1)
+
+          print("entitlements (the IPA is unsigned, so a sideloader re-applies these):")
+          for key in sorted(entitlements):
+              print(f"  {key} = {entitlements[key]}")
+          PY
 
           # Declaring them is not the same as using them: the target has to have
-          # the file wired as its CODE_SIGN_ENTITLEMENTS, or a normal (signed)
-          # build would ship without any of it.
-          xcodebuild -project XForge.xcodeproj -scheme XForge \
-            -destination 'generic/platform=iOS' -showBuildSettings 2>/dev/null \
-            | grep -Eq "^ *CODE_SIGN_ENTITLEMENTS = .*XForge\.entitlements" \
-            || { echo "::error::CODE_SIGN_ENTITLEMENTS is not wired to Support/XForge.entitlements"; exit 1; }
+          # the file wired as CODE_SIGN_ENTITLEMENTS, or a signed build would
+          # ship without any of it.
+          settings="$(xcodebuild -project XForge.xcodeproj -scheme XForge \
+            -destination 'generic/platform=iOS' -showBuildSettings 2>/dev/null)"
+          echo "$settings" | grep -q "CODE_SIGN_ENTITLEMENTS" \
+            || { echo "::error::the target sets no CODE_SIGN_ENTITLEMENTS"; exit 1; }
+          case "$settings" in
+            *XForge.entitlements*) echo "wired: $(echo "$settings" | grep "CODE_SIGN_ENTITLEMENTS" | head -1 | sed 's/^ *//')" ;;
+            *) echo "::error::CODE_SIGN_ENTITLEMENTS does not point at Support/XForge.entitlements"; exit 1 ;;
+          esac
 
-          echo "entitlements (the IPA is unsigned, so a sideloader re-applies these):"
-          /usr/libexec/PlistBuddy -c "Print" "$FILE" | sed 's/^/  /'
           {
             echo "### Entitlements"
             echo
             echo '```'
-            /usr/libexec/PlistBuddy -c "Print" "$FILE"
+            echo "$settings" | grep "CODE_SIGN_ENTITLEMENTS" | head -1 | sed 's/^ *//'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
