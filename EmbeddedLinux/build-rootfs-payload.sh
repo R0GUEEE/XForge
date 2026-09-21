@@ -189,7 +189,7 @@ set -e
 verify_tools="swift swiftly swift-sdk"
 [ "$INSTALL_XTOOL" = "0" ] || verify_tools="xtool $verify_tools"
 for tool in $verify_tools; do
-    grep -qE "^XFORGE-VERIFY[[:space:]]+$tool[[:space:]]+ok" "$LOG" \
+    grep -qE "^XFORGE-VERIFY[[:space:]]+${tool}[[:space:]]+ok" "$LOG" \
         || die "$tool did not verify inside the chroot — see $LOG"
 done
 [ -f "$ROOTFS$STAMP_GUEST" ] || die "the provisioning stamp $STAMP_GUEST was not written"
@@ -317,7 +317,26 @@ fi
 # — this rootfs is provisioned to run as XForge's embedded Linux, not as a
 # general-purpose Alpine desktop.
 log "Slimming the image"
-ROOTFS_SIZE_BEFORE_KIB="$(du -skx "$ROOTFS" | awk '{print $1}')"
+# Measure with the pseudo-filesystems out of the way. `-x` keeps du from
+# *descending* into another filesystem, but it still walks the directory entries
+# of a bind-mounted /proc — and /proc/<pid> and /proc/<pid>/task/<tid>/fd/* exist
+# only for as long as the process they describe, so they vanish mid-traversal and
+# du reports `cannot access …` for them. Under `set -e` a nonzero du inside a
+# command substitution aborts the whole build, which is exactly how a payload
+# that had already provisioned and verified its toolchain died in the slimming
+# step. Sizes are also the one number in the manifest that nothing depends on, so
+# measuring must never be able to fail the build: hence `|| true`, and a fallback
+# to the apparent size when the walk still cannot be completed.
+rootfs_size_kib() {
+    local kib
+    kib="$( { du -skx "$ROOTFS" 2>/dev/null || true; } | awk '{print $1}' )"
+    if [ -z "$kib" ]; then
+        kib="$( { du -sk --apparent-size "$ROOTFS" 2>/dev/null || true; } \
+                | awk 'END {print $1}' )"
+    fi
+    printf '%s' "${kib:-0}"
+}
+ROOTFS_SIZE_BEFORE_KIB="$(rootfs_size_kib)"
 rm -rf "$ROOTFS"/var/cache/apk/* "$ROOTFS"/tmp/* "$ROOTFS"/root/.cache/* \
        "$ROOTFS"/var/cache/misc/* "$ROOTFS"/var/tmp/* "$ROOTFS"/run/* \
        "$ROOTFS"/var/log/* 2>/dev/null || true
@@ -347,7 +366,7 @@ find "$ROOTFS" -type f -name '*.py[co]' -delete 2>/dev/null || true
 # behind — a directory, not sockets, since there is no gpg-agent to leave one.
 rm -rf "$ROOTFS"/root/.gnupg 2>/dev/null || true
 
-ROOTFS_SIZE_AFTER_KIB="$(du -skx "$ROOTFS" | awk '{print $1}')"
+ROOTFS_SIZE_AFTER_KIB="$(rootfs_size_kib)"
 ROOTFS_SAVED_KIB="$((ROOTFS_SIZE_BEFORE_KIB - ROOTFS_SIZE_AFTER_KIB))"
 note "rootfs: ${ROOTFS_SIZE_BEFORE_KIB} KiB → ${ROOTFS_SIZE_AFTER_KIB} KiB (saved ${ROOTFS_SAVED_KIB} KiB)"
 
@@ -371,7 +390,7 @@ log "Recording the payload manifest at $MANIFEST_GUEST"
     echo "stamp:        build-environment-v2"
 } > "$ROOTFS$MANIFEST_GUEST"
 
-note "rootfs  size on disk: $(du -shx "$ROOTFS" | cut -f1)"
+note "rootfs  size on disk: $( { du -shx "$ROOTFS" 2>/dev/null || true; } | cut -f1)"
 du -sh "$ROOTFS"/root/.local/share/swiftly "$ROOTFS"/opt/glibc "$ROOTFS"/opt/xtool 2>/dev/null | sed 's/^/    /' || true
 
 # ---------------------------------------------------------------------------

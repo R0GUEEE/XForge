@@ -14,15 +14,19 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: ipa
-  cancel-in-progress: true
-
 jobs:
   payload:
     name: Provision Alpine build root
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 120
+    # Superseding dispatches cancel an older *payload* run, but only this job:
+    # the payload is the part that is safe to throw away and re-run. The `build`
+    # job below (and the release it publishes) must never be cancelled half-way,
+    # which is why the workflow has no top-level concurrency group — a
+    # `cancel-in-progress: true` there killed IPAs that were already packaged.
+    concurrency:
+      group: ipa-payload
+      cancel-in-progress: true
     env:
       # The release bakes in Alpine build dependencies, Swift and xtool. The
       # Darwin SDK stays an explicit in-guest component installed on demand —
@@ -33,7 +37,23 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install payload build tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq pigz
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq pigz shellcheck
+
+      # The payload builder is a shell script that runs for ~10 minutes behind a
+      # `set -euo pipefail`; a one-line bug in it costs the whole job. These
+      # checks are seconds, and they run before the expensive provisioning.
+      - name: Check the payload builder
+        run: |
+          set -euo pipefail
+          bash -n EmbeddedLinux/build-rootfs-payload.sh
+          shellcheck -S error \
+            EmbeddedLinux/build-rootfs-payload.sh \
+            EmbeddedLinux/fetch-rootfs.sh \
+            EmbeddedLinux/install-toolchain.sh \
+            EmbeddedLinux/payload-key.sh
+          # The size measurement must survive a bind-mounted /proc: the failure
+          # that broke this job was `$(du -skx …)` aborting the build.
+          sudo -E bash Tools/test-payload-sizing.sh
 
       - name: Install project dependencies and Swift into Alpine
         run: |
@@ -88,6 +108,13 @@ jobs:
     needs: payload
     runs-on: macos-15
     timeout-minutes: 90
+    # Serialized, never cancelled: two dispatches may provision payloads at the
+    # same time, but only one may be archiving and publishing at a time. The
+    # release tag is `xforge-${{ github.run_number }}` and every run has its own
+    # number, so a queued run is not lost — it just waits its turn.
+    concurrency:
+      group: ipa-build
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
