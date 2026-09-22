@@ -15,7 +15,6 @@ struct RootTabView: View {
         case projects
         case build
         case terminal
-        case toolchain
         case settings
     }
 
@@ -36,11 +35,6 @@ struct RootTabView: View {
                 .environmentObject(terminal)
                 .tabItem { Label("Terminal", systemImage: "terminal.fill") }
                 .tag(AppTab.terminal)
-
-            ToolchainTab()
-                .environmentObject(terminal)
-                .tabItem { Label("Toolchain", systemImage: "wrench.and.screwdriver") }
-                .tag(AppTab.toolchain)
 
             SettingsTab(preferences: preferences)
                 .environmentObject(terminal)
