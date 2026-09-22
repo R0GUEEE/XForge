@@ -12,8 +12,11 @@ struct SettingsView: View {
     var body: some View {
         List {
             Section {
+                NavigationLink { ToolchainView() } label: {
+                    Label("Toolchain & Alpine", systemImage: "wrench.and.screwdriver")
+                }
                 NavigationLink { DownloadsView() } label: {
-                    Label("Linux Toolchain", systemImage: "terminal")
+                    Label("Downloads", systemImage: "arrow.down.circle")
                 }
                 NavigationLink {
                     SandboxBrowserView(root: XForgeEnvironment.documentDirectory)
@@ -24,10 +27,9 @@ struct SettingsView: View {
                     Label("Build History", systemImage: "clock.arrow.circlepath")
                 }
             } header: {
-                Text("Files & Downloads")
+                Text("System & Files")
             } footer: {
-                Text("User downloads and exported artifacts live in the app sandbox. "
-                     + "Toolchains and SDKs are installed directly in the Alpine rootfs.")
+                Text("Alpine, the compiler toolchain, SDKs, downloads and app files are managed here.")
             }
 
             preferencesSection
