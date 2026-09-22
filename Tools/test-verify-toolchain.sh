@@ -70,7 +70,7 @@ add_toolchain() {
     mkdir -p "$root/usr/local/bin" "$root/opt/xtool/usr/bin" \
              "$root/usr/local/share/xforge" \
              "$root/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/bin" \
-             "$root/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/lib/swift/linux/aarch64" \
+             "$root/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/lib/swift/linux" \
              "$root/root/.swiftpm/swift-sdks/darwin.artifactbundle"
     for tool in xtool swift swiftc swiftly; do
         printf '#!/bin/sh\n' > "$root/usr/local/bin/$tool"
@@ -82,6 +82,7 @@ add_toolchain() {
     chmod +x "$root/opt/xtool/usr/bin/xtool"
     : > "$root/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/bin/swift-frontend"
     : > "$root/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/lib/swift/linux/aarch64/Swift.swiftmodule"
+    : > "$root/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/lib/swift/linux/libswiftCore.so"
     printf '{"name": "darwin"}\n' > "$root/root/.swiftpm/swift-sdks/darwin.artifactbundle/info.json"
     cat > "$root/usr/local/share/xforge/darwin-sdk.txt" <<'EOF'
 tag:      darwin-sdk-7
@@ -167,6 +168,11 @@ rm -rf "$WORK/nostdlib"
 cp -a "$WORK/full" "$WORK/nostdlib"
 rm -f "$WORK/nostdlib/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/lib/swift/linux/aarch64/Swift.swiftmodule"
 check_fails "no stdlib interface" "$WORK/nostdlib" 'no Linux stdlib interface'
+
+rm -rf "$WORK/nostdlibso"
+cp -a "$WORK/full" "$WORK/nostdlibso"
+rm -f "$WORK/nostdlibso/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/lib/swift/linux/libswiftCore.so"
+check_fails "no stdlib library" "$WORK/nostdlibso" 'no Linux stdlib under'
 
 rm -rf "$WORK/nosdkpath"
 cp -a "$WORK/full" "$WORK/nosdkpath"

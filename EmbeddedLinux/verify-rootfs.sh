@@ -380,9 +380,19 @@ case "$TOOLCHAIN_CLAIM" in
         # rather than by a name that changes with every Swift release.
         path_matches 'root/\.local/share/swiftly/toolchains/[^/]+/usr/bin/swift-frontend' \
             || die "there is no Swift toolchain under /root/.local/share/swiftly/toolchains"
-        path_matches 'root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/linux/[^/]+/Swift\.swiftmodule' \
+        # Its stdlib, wherever this release keeps it: `linux`, `linux-musl`, or a
+        # per-architecture directory under either, which is why the pattern has a
+        # `.*` where the first version of this check named one exact path and
+        # failed a perfectly good toolchain. The interface files (.swiftmodule) are
+        # the half a too-thorough slimming would take, and the shared library is
+        # the half that would still look present.
+        path_matches 'root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/libswiftCore\.so' \
+            || die "the Swift toolchain has no Linux stdlib under
+       /root/.local/share/swiftly/toolchains/*/usr/lib/swift"
+        path_matches 'root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/Swift\.swiftmodule' \
             || die "the Swift toolchain has no Linux stdlib interface under
-       /root/.local/share/swiftly/toolchains/*/usr/lib/swift/linux"
+       /root/.local/share/swiftly/toolchains/*/usr/lib/swift — without it nothing
+       can be compiled against the stdlib"
         note "a Swift toolchain with its stdlib is installed"
 
         if path_exists "usr/local/share/xforge/darwin-sdk.txt"; then

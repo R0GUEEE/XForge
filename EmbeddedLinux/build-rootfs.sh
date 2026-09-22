@@ -213,6 +213,20 @@ guest_umount() {
     GUEST_MOUNTS=""
 }
 
+# The environment every chrooted step starts from.
+#
+# HOME is what makes swiftly and SwiftPM install into /root — the tree's own
+# /root, inside the root being built — and the XDG directories are *unset* on top
+# of it, because SwiftPM's SDK store follows them: with the runner's
+# XDG_CONFIG_HOME inherited, `swift sdk install` put the SDK in
+# <XDG_CONFIG_HOME>/swiftpm/swift-sdks inside the root being built, where the
+# guest's own SwiftPM (which has no XDG set) would never look for it. Both the
+# provisioning steps and the verification use this, so they agree on where things
+# are.
+GUEST_ENV="unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME; \
+     export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/root SWIFTLY_HOME_DIR=/root/.local/share/swiftly"
+
 cleanup() {
     local status=$?
     guest_umount
@@ -500,19 +514,20 @@ else
     guest_mount
 
     # One guest process per provisioning step, through the guest's own installer.
+    #
     # `HOME=/root` is what makes swiftly and SwiftPM install into /root (the
     # tree's own /root, so it is inside the root being built) rather than into
-    # whatever the build machine's environment has in mind.
+    # whatever the build machine's environment has in mind — and the XDG
+    # directories are *unset* on top of it, because SwiftPM's SDK store follows
+    # them: with the runner's XDG_CONFIG_HOME inherited, `swift sdk install` put
+    # the SDK in <XDG_CONFIG_HOME>/swiftpm/swift-sdks inside the root being built,
+    # where the guest's own SwiftPM (which has no XDG set) would never look.
     provision() {
         local step="$1"
         shift
         note "install-toolchain.sh $step"
         chroot "$DATA" /bin/sh -c \
-            "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-                    HOME=/root \
-                    SWIFTLY_HOME_DIR=/root/.local/share/swiftly \
-                    $*; \
-             sh /root/install-toolchain.sh $step" \
+            "$GUEST_ENV $*; sh /root/install-toolchain.sh $step" \
             || die "the '$step' provisioning step failed in the chroot"
     }
 
@@ -593,9 +608,7 @@ else
     log "Verifying the provisioned toolchain"
     verify_log="$WORK/verify-toolchain.log"
     chroot "$DATA" /bin/sh -c \
-        "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-                HOME=/root SWIFTLY_HOME_DIR=/root/.local/share/swiftly \
-                XFORGE_VERIFY_COMPILE=${XFORGE_VERIFY_COMPILE:-1}; \
+        "$GUEST_ENV XFORGE_VERIFY_COMPILE=${XFORGE_VERIFY_COMPILE:-1}; \
          sh /root/install-toolchain.sh verify 2>&1" | tee "$verify_log"
     if grep -qE 'XFORGE-VERIFY	(swift|swiftly|xtool|swift-sdk|swift-compile)	(missing|broken)' \
         "$verify_log"; then
