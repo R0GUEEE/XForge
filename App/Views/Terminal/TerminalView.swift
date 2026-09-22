@@ -266,7 +266,11 @@ private final class TerminalTextView: UITextView {
         alwaysBounceVertical = true
         keyboardDismissMode = .interactive
         textContainerInset = UIEdgeInsets(top: 6, left: 8, bottom: 8, right: 8)
-        textContainer.lineFragmentPadding = 0
+        // `self.` is required: inside this initializer the parameter named
+        // `textContainer` shadows the property of the same name, and the
+        // parameter is optional — `textContainer.lineFragmentPadding` reads as
+        // an optional member access and does not compile.
+        self.textContainer.lineFragmentPadding = 0
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(focusTerminal)))
     }
 
