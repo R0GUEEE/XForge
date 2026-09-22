@@ -40,12 +40,10 @@ protocol LinuxVM: AnyObject {
     func copyOut(guestPath: String, to hostURL: URL) async throws
     /// Stage a host file into the guest filesystem.
     func copyIn(hostURL: URL, to guestPath: String) async throws
-    /// Start (or return) the long-lived interactive shell whose stdin the host
-    /// writes to and whose output the host tails. See the concrete
-    /// implementation for why this exists alongside `run`.
+    /// Attach the screen to the guest's console shell: the login `/sbin/init`
+    /// respawns there. Output is delivered as the guest writes it.
     func startInteractiveShell(
-        onOutput: @Sendable @escaping (String) -> Void,
-        onExit: @escaping @MainActor () -> Void
+        onOutput: @Sendable @escaping (String) -> Void
     ) async throws -> any InteractiveShellSession
     var isBooted: Bool { get }
 }

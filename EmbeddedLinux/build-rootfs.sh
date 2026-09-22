@@ -301,6 +301,55 @@ cat > "$DATA/etc/motd" <<'EOF'
 
 EOF
 
+# ---------------------------------------------------------------------------
+# The console.
+#
+# XForge runs /sbin/init as pid 1 and drives exactly one terminal: tty1, which is
+# the same terminal as /dev/console, which is what the app displays.
+#
+# The minirootfs ships an inittab written for a full Alpine installation. It
+# starts openrc — which this root does not contain — and respawns six gettys that
+# have no terminals behind them, so on this guest every one of those lines fails
+# or spins. Replace it with what XForge's guest actually is: a busybox system with
+# one console, where a root shell is the point.
+#
+# `login -f` skips authentication, which is required rather than a convenience:
+# the minirootfs ships root with a *locked* password (`root:*` in /etc/shadow),
+# so getty plus a password login could never get in at all.
+# ---------------------------------------------------------------------------
+cat > "$DATA/etc/inittab" <<'EOF'
+# /etc/inittab — XForge
+#
+# pid 1 is /sbin/init. There is one console: tty1, the same terminal as
+# /dev/console, and the one the app shows.
+::sysinit:/etc/init.d/rcS
+
+# Respawned, so logging out (or a crash) gives a fresh login rather than a dead
+# screen. No password: the guest logs in as root.
+tty1::respawn:/bin/login -f root
+
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/umount -a -r
+EOF
+note "inittab: pid 1 is /sbin/init, /bin/login -f root on tty1"
+
+mkdir -p "$DATA/etc/init.d"
+cat > "$DATA/etc/init.d/rcS" <<'EOF'
+#!/bin/sh
+# XForge: the sysinit step, run by init before it starts the console login.
+#
+# /proc and /dev/pts are already mounted by the engine before pid 1 exists, and
+# this root has no openrc and no services, so there is nothing to start — rcS
+# only has to finish the runtime layout a login expects.
+mkdir -p /run /tmp /dev/pts /dev/shm
+chmod 1777 /tmp
+mount -t proc proc /proc 2>/dev/null
+mount -t devpts devpts /dev/pts 2>/dev/null
+hostname xforge 2>/dev/null
+exit 0
+EOF
+chmod 0755 "$DATA/etc/init.d/rcS"
+
 # apk needs to know where packages come from; this is what makes the in-guest
 # toolchain install (and any `apk add`) work at all.
 mkdir -p "$DATA/etc/apk"
@@ -334,7 +383,11 @@ mkdir -p "$DATA/usr/local/share/xforge"
     echo "engine:    ish-arm64"
     echo "format:    fakefs-zip"
     echo "built-at:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    echo "stamp:     rootfs-v1"
+    # Bump this whenever anything about the guest's own setup changes — the app
+    # compares it with the root it already installed and replaces the root when
+    # they differ (see RootfsInstaller.installedRootIsStale). It must match the
+    # release tag the root is published under.
+    echo "stamp:     rootfs-v3"
 } > "$DATA/usr/local/share/xforge/rootfs-manifest.txt"
 
 # ---------------------------------------------------------------------------

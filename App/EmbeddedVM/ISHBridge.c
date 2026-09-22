@@ -80,6 +80,28 @@ void xf_guest_result_free(xf_guest_result *result) {
     if (result != NULL) memset(result, 0, sizeof(*result));
 }
 
+int xf_ish_start_init(const char *program) {
+    (void) program;
+    return xf_sim_unsupported();
+}
+
+int xf_ish_console_ready(void) { return 0; }
+
+ssize_t xf_ish_console_read(char *buf, size_t len, int timeout_ms) {
+    (void) buf; (void) len; (void) timeout_ms;
+    return xf_sim_unsupported();
+}
+
+ssize_t xf_ish_console_write(const char *buf, size_t len) {
+    (void) buf; (void) len;
+    return xf_sim_unsupported();
+}
+
+int xf_ish_console_resize(int cols, int rows) {
+    (void) cols; (void) rows;
+    return xf_sim_unsupported();
+}
+
 void xf_ish_shutdown(void) {}
 
 #else
@@ -106,7 +128,9 @@ void xf_ish_shutdown(void) {}
 #include "fs/real.h"       // realfs
 #include "fs/fd.h"         // adhoc_fd_create, realfs_fdops
 #include "fs/devices.h"    // MEM_MAJOR, DEV_NULL_MINOR, TTY_ALTERNATE_MAJOR, ...
+#include "fs/tty.h"        // struct tty, tty_drivers, tty_input, tty_set_winsize
 #include "fs/path.h"       // AT_PWD
+#include "util/sync.h"     // lock, unlock
 
 // --- state ------------------------------------------------------------------
 
@@ -265,8 +289,176 @@ static void xf_exit_hook(struct task *task, int code) {
     pthread_mutex_unlock(&s_exit_lock);
 }
 
-// --- guest output reader -----------------------------------------------------
+// --- guest console -----------------------------------------------------------
+//
+// The guest's console is a tty the *host* implements. Everything above the
+// driver — the line discipline, echo, signal generation, job control — is the
+// guest kernel's, so the app gets a real terminal rather than a pipe: Ctrl-C
+// becomes SIGINT for the foreground program, the shell does its own line
+// editing and history, and a full-screen program can put the tty in raw mode.
+//
+// The engine calls the driver's write op from whichever guest thread is doing
+// the writing, so this side is only a byte buffer plus a condition variable. The
+// host reader blocks in xf_ish_console_read on a thread of its own, which is
+// safe: that call touches no per-thread engine state.
 
+#define XF_CONSOLE_BUFFER_BYTES (256 * 1024)
+
+static pthread_mutex_t s_console_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t s_console_cond = PTHREAD_COND_INITIALIZER;
+static char s_console_buffer[XF_CONSOLE_BUFFER_BYTES];
+static size_t s_console_head = 0;    // index of the oldest unread byte
+static size_t s_console_length = 0;  // unread bytes
+static long long s_console_dropped = 0;
+static bool s_console_stopping = false;
+static struct tty *s_console_tty = NULL;
+
+/// Append what the guest wrote, waking the host reader.
+static void xf_console_push(const char *data, size_t len) {
+    pthread_mutex_lock(&s_console_lock);
+    bool first_drop = false;
+    for (size_t i = 0; i < len; i++) {
+        if (s_console_length == sizeof(s_console_buffer)) {
+            // The reader has fallen a quarter of a megabyte behind. Drop the
+            // oldest byte rather than block: a writer blocked inside the kernel
+            // stalls the whole guest, which is much worse than a gap in the
+            // scrollback. Only report the first loss, to keep this cheap.
+            s_console_head = (s_console_head + 1) % sizeof(s_console_buffer);
+            s_console_length--;
+            s_console_dropped++;
+            first_drop = first_drop || s_console_dropped == 1;
+        }
+        s_console_buffer[(s_console_head + s_console_length) % sizeof(s_console_buffer)] = data[i];
+        s_console_length++;
+    }
+    pthread_cond_broadcast(&s_console_cond);
+    pthread_mutex_unlock(&s_console_lock);
+    if (first_drop)
+        xf_logf("console: output is arriving faster than it is read; dropping bytes");
+}
+
+static int xf_console_tty_init(struct tty *tty) {
+    // Called from tty_get with ttys_lock held, so record the tty and nothing
+    // else — no behaviour that could take another lock or block.
+    if (tty->num == 1) {
+        pthread_mutex_lock(&s_console_lock);
+        s_console_tty = tty;
+        pthread_mutex_unlock(&s_console_lock);
+        xf_logf("console: tty1 attached");
+    }
+    return 0;
+}
+
+static int xf_console_tty_write(struct tty *tty, const void *buf, size_t len, bool blocking) {
+    (void) blocking;
+    if (tty->num == 1 && len > 0)
+        xf_console_push((const char *) buf, len);
+    // Claim every byte. Under-reporting would leave the kernel waiting for room
+    // that only this side could free.
+    return (int) len;
+}
+
+static void xf_console_tty_cleanup(struct tty *tty) {
+    if (tty->num != 1)
+        return;
+    pthread_mutex_lock(&s_console_lock);
+    if (s_console_tty == tty)
+        s_console_tty = NULL;
+    pthread_cond_broadcast(&s_console_cond);
+    pthread_mutex_unlock(&s_console_lock);
+}
+
+static struct tty_driver_ops xf_console_ops = {
+    .init = xf_console_tty_init,
+    .write = xf_console_tty_write,
+    .cleanup = xf_console_tty_cleanup,
+};
+
+// Major 4 (TTY_CONSOLE_MAJOR), minors 1..7. Only minor 1 has a screen; the rest
+// accept and discard, so a program writing to /dev/tty2 cannot wedge.
+DEFINE_TTY_DRIVER(xf_console_driver, &xf_console_ops, TTY_CONSOLE_MAJOR, 8);
+
+static struct tty *xf_console_tty(void) {
+    pthread_mutex_lock(&s_console_lock);
+    struct tty *tty = s_console_tty;
+    pthread_mutex_unlock(&s_console_lock);
+    return tty;
+}
+
+int xf_ish_console_ready(void) {
+    return xf_console_tty() != NULL ? 1 : 0;
+}
+
+ssize_t xf_ish_console_read(char *buf, size_t len, int timeout_ms) {
+    if (buf == NULL || len == 0)
+        return -EINVAL;
+
+    pthread_mutex_lock(&s_console_lock);
+    if (timeout_ms != 0) {
+        struct timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        if (timeout_ms > 0) {
+            deadline.tv_sec += timeout_ms / 1000;
+            deadline.tv_nsec += (long) (timeout_ms % 1000) * 1000000L;
+            if (deadline.tv_nsec >= 1000000000L) {
+                deadline.tv_sec++;
+                deadline.tv_nsec -= 1000000000L;
+            }
+        }
+        while (s_console_length == 0 && !s_console_stopping) {
+            if (timeout_ms < 0) {
+                pthread_cond_wait(&s_console_cond, &s_console_lock);
+            } else if (pthread_cond_timedwait(&s_console_cond, &s_console_lock, &deadline) == ETIMEDOUT) {
+                break;
+            }
+        }
+    }
+
+    size_t take = s_console_length < len ? s_console_length : len;
+    for (size_t i = 0; i < take; i++)
+        buf[i] = s_console_buffer[(s_console_head + i) % sizeof(s_console_buffer)];
+    s_console_head = (s_console_head + take) % sizeof(s_console_buffer);
+    s_console_length -= take;
+    pthread_mutex_unlock(&s_console_lock);
+    return (ssize_t) take;
+}
+
+ssize_t xf_ish_console_write(const char *buf, size_t len) {
+    if (buf == NULL)
+        return -EINVAL;
+    if (len == 0)
+        return 0;
+
+    struct tty *tty = xf_console_tty();
+    if (tty == NULL)
+        return -ENODEV;
+    // tty_input takes the tty's own lock and reads no per-thread engine state,
+    // so input can be pushed from the UI thread while the guest is running —
+    // which is the whole point of a terminal you can type into.
+    return tty_input(tty, buf, len, false);
+}
+
+int xf_ish_console_resize(int cols, int rows) {
+    if (cols <= 0 || rows <= 0)
+        return -EINVAL;
+
+    struct tty *tty = xf_console_tty();
+    if (tty == NULL)
+        return -ENODEV;
+    // tty_set_winsize does not lock; it also raises SIGWINCH for the foreground
+    // group, which is what makes a full-screen program redraw itself.
+    lock(&tty->lock);
+    tty_set_winsize(tty, (struct winsize_) {
+        .row = (word_t) rows,
+        .col = (word_t) cols,
+    });
+    unlock(&tty->lock);
+    return 0;
+}
+
+// --- command output ----------------------------------------------------------
+
+/// Read chunk for the blocking command runner's pipe.
 #define XF_READ_CHUNK 8192
 
 // --- API --------------------------------------------------------------------
@@ -369,6 +561,18 @@ int xf_ish_boot(const char *root_dir, const char *host_dir) {
     do_mount(&procfs, "proc", "/proc", "", 0);
     do_mount(&devptsfs, "devpts", "/dev/pts", "", 0);
 
+    // The console. Registering the host's tty driver *before* pid 1's stdio is
+    // opened is what makes /dev/console and /dev/tty1 the same terminal, and that
+    // terminal is the app's screen — so init, the login it respawns, and the shell
+    // the user types into all appear there.
+    xf_logf("boot: console tty driver");
+    pthread_mutex_lock(&s_console_lock);
+    s_console_stopping = false;
+    pthread_mutex_unlock(&s_console_lock);
+    tty_drivers[TTY_CONSOLE_MAJOR] = &xf_console_driver;
+    generic_mknodat(AT_PWD, "/dev/tty1", S_IFCHR | 0666, dev_make(TTY_CONSOLE_MAJOR, 1));
+    set_console_device(TTY_CONSOLE_MAJOR, 1);
+
     // Share the app's own container into the guest at /host (realfs) so large
     // artifacts — the darwin Swift SDK is hundreds of megabytes — can be staged
     // by the host instead of being pushed through the command pipe. Not fatal.
@@ -382,8 +586,67 @@ int xf_ish_boot(const char *root_dir, const char *host_dir) {
         }
     }
 
+    // pid 1's stdin/stdout/stderr are the console. Nothing inherits them by
+    // accident — the headless command runner gives every child its own fds — but
+    // init and everything init starts do, which is how the guest's own boot
+    // appears on the screen.
+    int stdio_err = create_stdio("/dev/console", TTY_CONSOLE_MAJOR, 1);
+    if (stdio_err < 0) {
+        // Not fatal for the command runner, which does not use pid 1's stdio.
+        // `xf_ish_start_init` will report the real problem if the console is
+        // missing, and the terminal shows that to the user.
+        xf_logf("boot: could not wire pid 1's stdio to /dev/console: %s",
+                strerror((int) -stdio_err));
+    }
+
     s_booted = true;
-    xf_logf("boot: guest is up");
+    xf_logf("boot: guest is up (pid 1 created; %s)",
+            xf_ish_console_ready() ? "console attached" : "no console");
+    return 0;
+}
+
+int xf_ish_start_init(const char *program) {
+    if (!s_booted) {
+        xf_fail("guest is not booted");
+        return -ENODEV;
+    }
+
+    const char *path = (program != NULL && program[0] != '\0') ? program : "/sbin/init";
+    xf_logf("init: exec %s as pid 1", path);
+
+    // argv, as do_execve wants it: NUL-separated entries and a final NUL.
+    size_t path_len = strlen(path);
+    char *argv = malloc(path_len + 2);
+    if (argv == NULL) {
+        xf_fail("out of memory building init's argv");
+        return -ENOMEM;
+    }
+    memcpy(argv, path, path_len + 1);
+    argv[path_len + 1] = '\0';
+
+    // init gets the environment a console login expects; the login it starts
+    // replaces TERM/HOME/PATH with its own from /etc/profile anyway.
+    static const char *const envp =
+        "TERM=xterm-256color\0"
+        "HOME=/root\0"
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0";
+
+    int err = do_execve(path, 1, argv, envp);
+    free(argv);
+    if (err < 0) {
+        xf_logf("init: do_execve(%s) failed: %s (%d)", path, strerror(-err), err);
+        xf_fail("do_execve(%s) failed: %s (%d)", path, strerror(-err), err);
+        return err;
+    }
+    // init runs on a thread of its own, like every other guest task, so the
+    // engine thread is free again as soon as this returns.
+    int start_err = task_start(current);
+    if (start_err != 0) {
+        // task_start reports a guest errno (negative), like the rest of the engine.
+        xf_logf("init: could not start pid 1: %s (%d)", strerror(-start_err), start_err);
+        xf_fail("could not start pid 1: %s (%d)", strerror(-start_err), start_err);
+        return start_err;
+    }
     return 0;
 }
 // --- spawning a guest child --------------------------------------------------
@@ -709,7 +972,13 @@ void xf_guest_result_free(xf_guest_result *result) {
 
 void xf_ish_shutdown(void) {
     // The engine cannot boot a second machine inside the same process, so there
-    // is nothing to tear down beyond forgetting that we booted.
+    // is nothing to tear down beyond forgetting that we booted — but a reader
+    // blocked in xf_ish_console_read has to be let go, or it would outlive the
+    // session it was reading for.
+    pthread_mutex_lock(&s_console_lock);
+    s_console_stopping = true;
+    pthread_cond_broadcast(&s_console_cond);
+    pthread_mutex_unlock(&s_console_lock);
     s_booted = false;
 }
 

@@ -1,62 +1,52 @@
 import Foundation
 
-/// A long-lived interactive shell into the embedded Linux, whose stdin the host
-/// writes to and whose output the host reads as the guest produces it.
+/// A live shell in the embedded Linux: what the terminal types into.
 ///
-/// The engine's command primitive runs one command to completion and returns its
-/// output, so it cannot host a shell you type into. This is the shape that can:
-/// the guest runs a shell reading from a file the host appends to, and writing to
-/// a file the host tails, both in the shared folder.
+/// The shell runs on the guest's **console**, which the host implements as a tty
+/// (`GuestConsole`). That is the whole design, and it is what makes the terminal a
+/// terminal rather than a pipe:
+///  - the host writes keystrokes into the guest's tty, so the guest kernel's line
+///    discipline supplies echo, backspace, line editing, `Ctrl-D` and the rest;
+///  - `Ctrl-C` is a *byte* again, turned into `SIGINT` for the foreground program
+///    by the tty — so an interrupt reaches whatever is running, including
+///    `Ctrl-Z`'s job control;
+///  - output appears as the guest writes it, including prompts that do not end in
+///    a newline, which is what makes a password prompt or a progress bar usable.
 ///
-/// What that buys over one `/bin/sh -c` per line:
-///  - the shell is persistent, so `cd`, variables, functions and shell options
-///    survive between lines — no replaying `cd` on every command;
-///  - the program can *read stdin*: `read`, `cat`, `sort`, or anything with a
-///    prompt gets the bytes you type at the moment it asks for them;
-///  - output appears as it is written, including partial lines and prompts that
-///    do not end in a newline, which is what makes a password prompt usable.
-///
-/// What it does not buy: signals and job control. The engine has no way to
-/// deliver a signal to a running child, so an interrupt detaches the screen
-/// rather than stopping the guest, and the session says so instead of pretending.
+/// The guest's `/sbin/init` owns that console and respawns `/bin/login -f root` on
+/// it, so the shell is login's child: logging out gives a fresh login rather than
+/// a dead screen.
 @MainActor
 protocol InteractiveShellSession: AnyObject {
-    /// Guest path of the regular input file the host appends keystrokes to; the
-    /// guest's `tail -f` turns it into the shell's stdin stream.
-    var guestInput: String { get }
-    /// Guest path of the file the shell's output is written to.
-    var guestOutput: String { get }
-    /// Guest pid of the shell, for logging and signalling.
+    /// Guest pid the session speaks for. For a console login this is init, which
+    /// owns the console; the shell itself is init's child and may be replaced.
     var pid: Int32 { get }
     /// False once the session has stopped; `send` reports failure rather than
     /// appearing to accept input nobody will read.
     var isRunning: Bool { get }
 
-    /// Hand the session the guest process it is driving, once that process has
-    /// been started. Until this is called the session is not usable. `onExit`
-    /// fires if the shell ends on its own, so the UI can stop pretending a live
-    /// prompt is there.
-    func attach(process: any DetachedProcess, onExit: @escaping @MainActor () -> Void)
-
-    /// Mark the session dead after the guest shell exits on its own.
-    func markStopped()
-
-    /// Send text to the shell's stdin. Returns false when the session is gone or
-    /// the write failed, so a caller can say so instead of silently dropping it.
+    /// Send text to the console. Returns false when the session is gone or there
+    /// is no console to write to, so a caller can say so instead of silently
+    /// dropping it.
     @discardableResult
     func send(_ text: String) -> Bool
 
-    /// Interrupt whatever the shell is running, with a real `SIGINT`.
-    ///
-    /// Not a Ctrl-C *byte*: that only becomes a signal when the program's stdin is
-    /// a tty, and this transport is a pipe. The signal is delivered directly.
-    func interruptForeground() async
-
-    /// Send a single control byte — `0x04` for Ctrl-D (EOF), or any character the
-    /// key bar cannot produce.
+    /// Send a single control byte — `0x03` for Ctrl-C, `0x04` for Ctrl-D — or any
+    /// character the key bar cannot produce.
     @discardableResult
     func sendControl(_ scalar: UInt8) -> Bool
 
-    /// Stop the guest shell and tailing, and mark the session finished.
+    /// Interrupt whatever is running in the foreground, with a real `SIGINT`.
+    ///
+    /// This is the Ctrl-C *character* written to the console: the guest's tty
+    /// turns it into the signal for the foreground process group, which is exactly
+    /// what a terminal is supposed to do.
+    func interruptForeground() async
+
+    /// Tell the guest how big the screen is, so its programs wrap and lay out
+    /// correctly.
+    func resize(cols: Int, rows: Int)
+
+    /// Stop the session and its console reader.
     func stop()
 }

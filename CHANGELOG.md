@@ -2,6 +2,42 @@
 
 All notable changes to **XForge** are documented here.
 
+## The Terminal is the guest's console: /sbin/init + login -f root
+
+### Changed
+- **The Terminal tab is now the guest's real console.** XForge boots `/sbin/init`
+  as pid 1, and the root's `/etc/inittab` respawns `/bin/login -f root` on tty1 —
+  which is the same terminal as `/dev/console`, the one the app displays. Log in,
+  run commands, log out, and init gives you a fresh login instead of a dead
+  screen.
+- **The host implements that console as a tty, not a pipe.** The previous transport
+  was `tail -f | /bin/sh` over files in the shared folder, which is why it had no
+  line editing, no echo from the guest, and an interrupt that had to be sent as a
+  signal because `0x03` on a pipe is just a byte. Now the guest's *own* line
+  discipline does the work: echo, backspace, `Ctrl-C` and `Ctrl-Z` (signal
+  generation for the foreground process group), `Ctrl-D`, and raw mode for
+  full-screen programs. The host writes keystrokes into the tty and reads what the
+  tty produces.
+- **The terminal tells the guest how big the screen is.** Without a window size the
+  guest believes it is 0×0, which makes `ls` print one name per line and any
+  full-screen program draw into a corner.
+- **The key bar's character keys actually type.** `-`, `.`, `/`, `:`, `!`, `|`,
+  `Tab` and `Esc` were being appended to a local line buffer that nothing read;
+  they are now raw bytes for the console, as are the arrow keys (the shell's own
+  line editor handles history).
+- **The rootfs is replaced when it is a different revision.** The app compares the
+  `stamp:` in the root it has installed with the one in the root it bundles, so an
+  update that changes the guest's own configuration — this one changes its
+  `/etc/inittab` — actually reaches a device that has booted before.
+
+### Fixed
+- **The bundled root's `/etc/inittab` is XForge's, not a full Alpine install's.** The
+  minirootfs ships an inittab that starts `openrc` (which this root does not
+  contain) and respawns six gettys on terminals that do not exist behind the
+  engine's single console. It is replaced with a busybox `rcS` step and one console
+  login; `login -f root` skips authentication, which the root needs because the
+  minirootfs ships root with a *locked* password.
+
 ## ish-arm64 engine, a plain Alpine root, and glibc preinstalled
 
 ### Changed

@@ -33,8 +33,56 @@ enum RootfsInstaller {
     /// directory, so the paths are relative and unzip into Documents directly).
     private static let archiveEntryPrefix = "alpine-rootfs"
 
+    /// The manifest the builder writes into every root, relative to `data/`.
+    /// Its `stamp:` line names the revision — see `EmbeddedLinux/build-rootfs.sh`.
+    private static let manifestPath = "usr/local/share/xforge/rootfs-manifest.txt"
+
     static func bundledArchiveURL() -> URL? {
         Bundle.main.url(forResource: archiveName, withExtension: archiveExtension)
+    }
+
+    /// Whether the installed root is a different revision from the one bundled in
+    /// this build of the app, and therefore has to be replaced.
+    ///
+    /// Only a root that carries a manifest — which is every root XForge has ever
+    /// installed itself — can be compared, so anything unidentified is left in
+    /// place rather than replaced by something that might be worse.
+    private static func installedRootIsStale(_ root: URL) -> Bool {
+        let manifest = root.appendingPathComponent("data/\(manifestPath)")
+        guard let installed = stamp(inManifestAt: manifest) else { return false }
+        guard let bundled = bundledStamp() else { return false }
+        return installed != bundled
+    }
+
+    /// The revision named by the manifest inside the bundled ZIP, read straight
+    /// out of the archive so asking the question costs no unpacking.
+    private static func bundledStamp() -> String? {
+        guard let archiveURL = bundledArchiveURL(),
+              let zip = try? Archive(url: archiveURL, accessMode: .read),
+              let entry = zip["\(archiveEntryPrefix)/\(manifestPath)"] else {
+            return nil
+        }
+        var contents = Data()
+        guard (try? zip.extract(entry, consumer: { contents.append($0) })) != nil else {
+            return nil
+        }
+        guard let text = String(data: contents, encoding: .utf8) else { return nil }
+        return stamp(inManifestText: text)
+    }
+
+    private static func stamp(inManifestAt url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        return stamp(inManifestText: text)
+    }
+
+    private static func stamp(inManifestText text: String) -> String? {
+        for line in text.split(separator: "\n") where line.hasPrefix("stamp:") {
+            let value = line.dropFirst("stamp:".count)
+                .trimmingCharacters(in: .whitespaces)
+            if !value.isEmpty { return value }
+        }
+        return nil
     }
 
     static func installedRoot(in rootsDirectory: URL) -> URL {
@@ -62,14 +110,23 @@ enum RootfsInstaller {
     }
 
     /// Returns the ready-to-boot fakefs root, unpacking the bundled archive the
-    /// first time.
+    /// first time — or when the bundled archive is a newer revision than the one
+    /// already installed.
     @discardableResult
     static func installIfNeeded(into rootsDirectory: URL,
                                 progress: RootfsImportProgress? = nil) throws -> URL {
         let root = installedRoot(in: rootsDirectory)
         if isInstalled(in: rootsDirectory) {
-            removeLegacyRoots(in: rootsDirectory, fileManager: .default)
-            return root
+            if installedRootIsStale(root) {
+                // The guest's own setup lives in the root — its /etc/inittab, its
+                // default shell, its profile. Without this check, a device that
+                // had booted once would keep the first root it ever installed and
+                // never see any of that change.
+                XForgeLog.note("rootfs: the installed root is not the bundled revision; reinstalling")
+            } else {
+                removeLegacyRoots(in: rootsDirectory, fileManager: .default)
+                return root
+            }
         }
 
         guard let archive = bundledArchiveURL() else {

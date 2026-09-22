@@ -133,13 +133,12 @@ final class StubLinuxVM: LinuxVM {
 
     // MARK: - Interactive shell
 
-    /// A fake shell that records what is sent to it and can be made to emit
-    /// output, so the terminal's behaviour is testable without a guest.
+    /// A fake console session that records what is sent to it and can be made to
+    /// emit output, so the terminal's behaviour is testable without a guest.
     func startInteractiveShell(
-        onOutput: @Sendable @escaping (String) -> Void,
-        onExit: @escaping @MainActor () -> Void
+        onOutput: @Sendable @escaping (String) -> Void
     ) async throws -> any InteractiveShellSession {
-        let shell = StubShellSession(onOutput: onOutput, onExit: onExit)
+        let shell = StubShellSession(onOutput: onOutput)
         startedShells.append(shell)
         return shell
     }
@@ -147,25 +146,22 @@ final class StubLinuxVM: LinuxVM {
     private(set) var startedShells: [StubShellSession] = []
 }
 
-/// Records what the terminal writes to a shell, and can emit output back.
+/// Records what the terminal writes to the console, and can emit output back.
 @MainActor
 final class StubShellSession: InteractiveShellSession {
-    let guestInput = "/host/.xforge-transfer/stdin-stub"
-    let guestOutput = "/host/.xforge-transfer/stdout-stub"
+    /// init owns the console the fake session speaks for.
     let pid: Int32 = 4242
     private(set) var isRunning = false
-    /// Everything written to the shell's stdin, in order.
+    /// Everything written to the console, in order.
     private(set) var received: [String] = []
     private(set) var interrupts = 0
     private(set) var stopped = false
+    private(set) var sizes: [(cols: Int, rows: Int)] = []
 
     private let onOutput: @Sendable (String) -> Void
-    private let onExit: @MainActor () -> Void
 
-    init(onOutput: @escaping @Sendable (String) -> Void,
-         onExit: @escaping @MainActor () -> Void) {
+    init(onOutput: @escaping @Sendable (String) -> Void) {
         self.onOutput = onOutput
-        self.onExit = onExit
         self.isRunning = true
     }
 
@@ -176,7 +172,12 @@ final class StubShellSession: InteractiveShellSession {
         return true
     }
 
-    func interruptForeground() async { interrupts += 1 }
+    /// Ctrl-C is the byte again: the guest's tty is what turns it into SIGINT, so
+    /// the session records it as a byte and counts the intent.
+    func interruptForeground() async {
+        interrupts += 1
+        received.append(String(UnicodeScalar(0x03)))
+    }
 
     @discardableResult
     func sendControl(_ scalar: UInt8) -> Bool {
@@ -185,25 +186,17 @@ final class StubShellSession: InteractiveShellSession {
         return true
     }
 
+    func resize(cols: Int, rows: Int) {
+        sizes.append((cols, rows))
+    }
+
     func stop() {
         isRunning = false
         stopped = true
     }
 
-    /// Simulate the shell producing output.
+    /// Simulate the guest producing output.
     func emit(_ text: String) { onOutput(text) }
-
-    /// Simulate the shell exiting on its own.
-    func simulateExit() {
-        isRunning = false
-        onExit()
-    }
-
-    // `attach` is part of the protocol but meaningless for the fake: it is
-    // already "attached".
-    func attach(process: any DetachedProcess, onExit: @escaping @MainActor () -> Void) {}
-
-    func markStopped() { isRunning = false }
 }
 
 @MainActor

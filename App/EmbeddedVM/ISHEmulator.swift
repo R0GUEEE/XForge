@@ -168,6 +168,32 @@ final class ISHEmulator: LinuxEmulator {
         }
     }
 
+    func startInit(_ program: String) async throws {
+        if !isRunning { try await boot() }
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            guestThread.submit {
+                let rc = program.withCString { xf_ish_start_init($0) }
+                guard rc == 0 else {
+                    continuation.resume(throwing: LinuxVMError.notImplemented(
+                        ishLastError(fallback: "The guest's init could not start (errno \(rc)).")))
+                    return
+                }
+                XForgeLog.note("emulator: \(program) is pid 1")
+                continuation.resume()
+            }
+        }
+    }
+
+    func openConsole(
+        onOutput: @Sendable @escaping (String) -> Void
+    ) async throws -> any GuestConsole {
+        if !isRunning { try await boot() }
+        let console = BridgeConsole(onOutput: onOutput)
+        console.startReading()
+        XForgeLog.note("emulator: console reader started")
+        return console
+    }
+
     func startDetached(
         _ command: String,
         shell: String?,
@@ -272,6 +298,118 @@ private final class GuestProcess: DetachedProcess, @unchecked Sendable {
             if !(await checkAlive()) { return true }
             if let deadline, Date() >= deadline { return false }
             try? await Task.sleep(for: .milliseconds(200))
+        }
+    }
+}
+
+/// The host end of the guest's console tty.
+///
+/// Two directions, two threads, because that is what a terminal is:
+///  - **out**: a thread of its own blocks in `xf_ish_console_read` and hands each
+///    chunk to `onOutput` as the guest writes it. It is not the engine's thread:
+///    reading the console touches none of the engine's per-thread guest state, and
+///    the engine thread has to stay free to run the guest (and any command
+///    XForge has started) while output streams out.
+///  - **in**: writes are handed to a serial queue. A tty's input buffer is small,
+///    so a paste larger than it has to be pushed in pieces, waiting for the guest
+///    to drain each one — and that waiting must not happen on the thread that is
+///    handling a keystroke.
+final class BridgeConsole: GuestConsole, @unchecked Sendable {
+    /// Big enough that a screenful arrives in a single read, small enough that a
+    /// burst of output does not allocate.
+    private static let readChunk = 32 * 1024
+    /// How long a single read waits before the loop checks whether it should stop.
+    private static let readTimeoutMs: Int32 = 500
+    /// Give up on an input burst the guest has not drained — a tty nobody is
+    /// reading from must not wedge the keyboard.
+    private static let inputDeadline: TimeInterval = 5
+
+    private let onOutput: @Sendable (String) -> Void
+    private let inputQueue = DispatchQueue(label: "org.xforge.console.input")
+    private let state = NSLock()
+    private var stopped = false
+
+    init(onOutput: @escaping @Sendable (String) -> Void) {
+        self.onOutput = onOutput
+    }
+
+    deinit {
+        stop()
+    }
+
+    var isReady: Bool { xf_ish_console_ready() == 1 }
+
+    /// Begin delivering the console's output. Called once, by the emulator.
+    func startReading() {
+        let thread = Thread { [weak self] in self?.readLoop() }
+        thread.name = "org.xforge.console.reader"
+        thread.qualityOfService = .userInitiated
+        thread.stackSize = 256 * 1024
+        thread.start()
+    }
+
+    @discardableResult
+    func write(_ text: String) -> Bool {
+        guard !text.isEmpty, let data = text.data(using: .utf8), !data.isEmpty else {
+            return false
+        }
+        inputQueue.async { [weak self] in self?.push(data) }
+        return true
+    }
+
+    func resize(cols: Int, rows: Int) {
+        guard cols > 0, rows > 0 else { return }
+        let result = xf_ish_console_resize(Int32(cols), Int32(rows))
+        if result != 0 {
+            XForgeLog.note("console: could not set \(cols)x\(rows) (error \(result))")
+        }
+    }
+
+    func stop() {
+        state.lock()
+        stopped = true
+        state.unlock()
+    }
+
+    private var isStopped: Bool {
+        state.lock()
+        defer { state.unlock() }
+        return stopped
+    }
+
+    /// Read until stopped. `xf_ish_console_read` returns 0 when its short wait
+    /// expires, which is what gives this loop the chance to notice `stop()`.
+    private func readLoop() {
+        var buffer = [CChar](repeating: 0, count: Self.readChunk)
+        while !isStopped {
+            let count = buffer.withUnsafeMutableBufferPointer { pointer -> Int in
+                guard let base = pointer.baseAddress else { return 0 }
+                return Int(xf_ish_console_read(base, pointer.count, Self.readTimeoutMs))
+            }
+            guard count > 0 else { continue }
+            let bytes = buffer.prefix(count).map { UInt8(bitPattern: $0) }
+            onOutput(String(decoding: bytes, as: UTF8.self))
+        }
+    }
+
+    /// Push input in pieces, waiting for the guest to drain the tty between them.
+    private func push(_ data: Data) {
+        var offset = 0
+        let deadline = Date().addingTimeInterval(Self.inputDeadline)
+        while offset < data.count, !isStopped, Date() < deadline {
+            let accepted = data.withUnsafeBytes { raw -> Int in
+                guard let base = raw.bindMemory(to: CChar.self).baseAddress else { return -1 }
+                return Int(xf_ish_console_write(base + offset, data.count - offset))
+            }
+            if accepted > 0 {
+                offset += accepted
+                continue
+            }
+            // No console yet, or its buffer is full while the guest reads.
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        if offset < data.count {
+            XForgeLog.note("console: \(data.count - offset) byte(s) of input not delivered")
         }
     }
 }

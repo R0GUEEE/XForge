@@ -78,6 +78,40 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" dist
           ls -la dist/rootfs
 
+      - name: Verify the root boots what XForge expects
+        run: |
+          set -euo pipefail
+          # XForge boots pid 1 as /sbin/init and drives the guest's single console,
+          # where /etc/inittab respawns /bin/login -f root. A root that cannot do
+          # any of that has no usable Terminal, so it fails here rather than on a
+          # device.
+          ZIP=dist/rootfs/alpine-rootfs.zip
+          unzip -Z1 "$ZIP" > /tmp/rootfs-entries.txt
+          for path in \
+            alpine-rootfs/data/sbin/init \
+            alpine-rootfs/data/bin/login \
+            alpine-rootfs/data/bin/sh \
+            alpine-rootfs/data/etc/inittab \
+            alpine-rootfs/data/etc/init.d/rcS \
+            alpine-rootfs/data/etc/passwd \
+            alpine-rootfs/data/etc/shadow ; do
+            grep -qx "$path" /tmp/rootfs-entries.txt \
+              || { echo "::error::the rootfs has no ${path#alpine-rootfs/data/}"; exit 1; }
+          done
+
+          unzip -p "$ZIP" alpine-rootfs/data/etc/inittab > /tmp/inittab.txt
+          grep -qE '^::sysinit:/etc/init.d/rcS$' /tmp/inittab.txt \
+            || { echo '::error::inittab does not run the sysinit step'; exit 1; }
+          grep -qE '^tty1::respawn:/bin/login -f root$' /tmp/inittab.txt \
+            || { echo '::error::inittab does not respawn the root login on tty1'; exit 1; }
+          # The stock inittab starts openrc (not present in this root) and six
+          # gettys on terminals that do not exist. Both were replaced on purpose.
+          ! grep -q 'openrc' /tmp/inittab.txt \
+            || { echo '::error::inittab still starts openrc, which this root has no'; exit 1; }
+          ! grep -qE '^tty[2-6]::' /tmp/inittab.txt \
+            || { echo '::error::inittab still respawns gettys on nonexistent terminals'; exit 1; }
+          echo "inittab: pid 1 is /sbin/init, tty1 respawns /bin/login -f root"
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}

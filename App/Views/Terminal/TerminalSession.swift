@@ -4,22 +4,18 @@ import UIKit
 
 /// The app's one terminal into the embedded Alpine Linux.
 ///
-/// This is a real shell session: a **persistent** shell in the guest whose stdin
-/// the host writes to and whose output the host reads as it is produced. See
-/// `InteractiveShellSession` for the transport and what it does and does not
-/// provide.
+/// This is the guest's own console: `/sbin/init` owns it, and it respawns
+/// `/bin/login -f root` on it, so the shell you type into is a real login session
+/// with a real tty. See `InteractiveShellSession` for what that buys.
 ///
-/// Consequences of it being a real shell, which are the point of the change:
-///  - the working directory is the shell's own, so `cd` persists and there is no
-///    replaying of `cd` before each command;
-///  - a program that reads stdin — `read`, `cat`, `sort`, a REPL, a prompt for
-///    input — receives what you type at the moment it asks;
-///  - the prompt shown is the shell's, printed by the shell, not one the host
-///    synthesises.
-///
-/// Signals are the exception. The engine cannot deliver a signal to a running
-/// child, so an interrupt detaches the screen instead of stopping the guest, and
-/// the session says exactly that rather than pretending otherwise.
+/// Consequences of it being a real console, which are the point of the change:
+///  - the working directory is the shell's own, so `cd` persists;
+///  - the *guest's* line discipline supplies echo, backspace, `Ctrl-D` and
+///    editing — the host does not synthesise any of it;
+///  - `Ctrl-C` is a byte again, so the tty turns it into `SIGINT` for whatever is
+///    running in the foreground, and `Ctrl-Z` suspends it;
+///  - logging out (or killing the shell) gives a fresh login, because init
+///    respawns it rather than leaving a dead screen.
 @MainActor
 final class TerminalSession: ObservableObject {
     /// The screen model. Views render `buffer.lines` and re-render when
@@ -28,18 +24,11 @@ final class TerminalSession: ObservableObject {
 
     /// Bumped whenever the screen changes.
     @Published private(set) var revision = 0
-    /// True while the guest shell is up and input is being forwarded to it.
+    /// True while the guest console is attached and input is being forwarded to it.
     @Published private(set) var running = false
     @Published private(set) var booting = false
-    /// The line being composed locally, before it is handed to the shell.
-    ///
-    /// Typed text is echoed here first so the caret follows what you type even
-    /// before the shell has seen the line; on submit it is written to the shell's
-    /// stdin and the shell echoes it back with its own editing.
-    @Published var input = ""
     @Published private(set) var cwd = "/root"
-    @Published private(set) var history: [String] = []
-    /// Commands handed over by other screens, run through the same shell.
+    /// Commands handed over by other screens, run through the same console.
     @Published private(set) var pending: [QueuedLine] = []
     @Published private(set) var activeLabel: String?
     @Published private(set) var isBooted = false
@@ -54,7 +43,6 @@ final class TerminalSession: ObservableObject {
     }
 
     private var shell: (any InteractiveShellSession)?
-    private var historyIndex: Int?
     private var bootTask: Task<Void, Never>?
     private var didAttemptBoot = false
 
@@ -69,11 +57,6 @@ final class TerminalSession: ObservableObject {
             if !saved.hasSuffix("\n") { buffer.feed(saved + "\n") }
             else { buffer.feed(saved) }
         }
-        history = Self.read(Self.historyURL)?
-            .split(separator: "\n")
-            .map(String.init)
-            .suffix(200)
-            .map { $0 } ?? []
         if buffer.isAtStart { banner() }
     }
 
@@ -105,9 +88,6 @@ final class TerminalSession: ObservableObject {
                 let session = try await vm.startInteractiveShell(
                     onOutput: { [weak self] chunk in
                         Task { @MainActor in self?.consume(chunk) }
-                    },
-                    onExit: { [weak self] in
-                        Task { @MainActor in self?.shellExited() }
                     }
                 )
                 self.shell = session
@@ -115,6 +95,9 @@ final class TerminalSession: ObservableObject {
                 self.running = true
                 self.buffer.appendLine("[guest is up — Alpine aarch64 Linux]",
                                        style: TerminalStyle(foreground: .index(2)))
+                // The console's size is the screen's, but layout may have run
+                // before the shell existed.
+                self.reportSize()
             } catch {
                 self.problem = error.localizedDescription
                 self.buffer.appendLine("[error] \(error.localizedDescription)",
@@ -129,21 +112,8 @@ final class TerminalSession: ObservableObject {
         await task.value
     }
 
-    /// The guest shell ended on its own — `exit`, or it died. Say so, rather
-    /// than leaving a live-looking prompt that silently swallows input.
-    private func shellExited() {
-        guard running else { return }
-        running = false
-        shell = nil
-        buffer.appendLine("", style: TerminalStyle())
-        buffer.appendLine("[the shell exited — reopen the tab to start a new one]",
-                          style: TerminalStyle(foreground: .index(3)))
-        revision += 1
-        save()
-    }
-
-    /// Stop the shell. The guest's shell exits when its stdin sees EOF, which
-    /// happens when the app tears the transport down.
+    /// Stop the shell. The console belongs to the guest's init, which keeps
+    /// running; this only stops this screen from reading and writing to it.
     func shutdown() {
         shell?.stop()
         shell = nil
@@ -151,31 +121,42 @@ final class TerminalSession: ObservableObject {
         revision += 1
     }
 
+    // MARK: - Screen size
+
+    /// The size the terminal is drawn at, in characters. The guest needs it or its
+    /// programs wrap to nothing — `ls` prints one name per line at width 0.
+    private var screenCols = 0
+    private var screenRows = 0
+
+    /// Called by the terminal surface whenever its geometry changes.
+    func consoleResized(cols: Int, rows: Int) {
+        guard cols > 0, rows > 0 else { return }
+        guard cols != screenCols || rows != screenRows else { return }
+        screenCols = cols
+        screenRows = rows
+        shell?.resize(cols: cols, rows: rows)
+    }
+
+    private func reportSize() {
+        guard screenCols > 0, screenRows > 0 else { return }
+        shell?.resize(cols: screenCols, rows: screenRows)
+    }
+
     // MARK: - Input
 
-    /// Send raw keyboard/touch terminal input directly to the live shell.
-    /// This is used by the terminal surface so there is no separate command field.
+    /// Send raw keyboard/terminal input straight to the console.
+    ///
+    /// Nothing is interpreted here: the console is a tty, so the guest's line
+    /// discipline and the shell's own line editor are what echo, erase, complete
+    /// and recall. That is why there is no command field and no host-side prompt.
     func sendRaw(_ text: String) {
         guard !text.isEmpty else { return }
         sendToShell(text, label: nil)
     }
 
-    /// Send the composed line to the shell.
-    func submit() {
-        let line = input
-        input = ""
-        historyIndex = nil
-        if !line.trimmingCharacters(in: .whitespaces).isEmpty {
-            history.append(line)
-            if history.count > 200 { history.removeFirst(history.count - 200) }
-            save()
-        }
-        sendToShell(line + "\n", label: nil)
-    }
-
-    /// Hand a line to the shell from another screen. It is written to the shell's
-    /// stdin like anything else, so it runs in the same session — with the same
-    /// environment, the same directory, and after whatever is already queued.
+    /// Hand a line to the console from another screen. It is written like anything
+    /// else, so it runs in the same session — with the same environment, the same
+    /// directory, and after whatever is already queued.
     func enqueue(_ line: String, label: String? = nil) {
         pending.append(QueuedLine(text: line, label: label))
         drainQueue()
@@ -225,18 +206,11 @@ final class TerminalSession: ObservableObject {
         }
     }
 
-    /// Type text at the current position: it goes into the local line, and is
-    /// sent with the newline so the shell renders it in context.
-    func insert(_ text: String) {
-        input += text
-    }
-
-    /// Interrupt the foreground program with a real `SIGINT`.
+    /// Interrupt the foreground program with Ctrl-C.
     ///
-    /// Not a Ctrl-C byte on stdin: that only becomes a signal when the program's
-    /// stdin is a tty, and this session's stdin is a pipe from a file, so the
-    /// byte would be read as ordinary input. The signal is delivered directly,
-    /// which reaches the program whatever it is doing.
+    /// The byte, not a host-side `kill`: the console is a real tty, so the guest's
+    /// line discipline turns `0x03` into `SIGINT` for the foreground process group
+    /// — which reaches whatever is running, and leaves the shell itself alone.
     func interrupt() {
         guard let shell, shell.isRunning else { return }
         Task { [weak self] in
@@ -264,15 +238,7 @@ final class TerminalSession: ObservableObject {
         revision += 1
     }
 
-    // MARK: - Editing
-
-    func recall(offset: Int) {
-        guard !history.isEmpty else { return }
-        let current = historyIndex ?? history.count
-        let next = max(0, min(history.count, current + offset))
-        historyIndex = next == history.count ? nil : next
-        input = historyIndex.map { history[$0] } ?? ""
-    }
+    // MARK: - Screen
 
     func clear() {
         buffer.clear()
@@ -281,16 +247,14 @@ final class TerminalSession: ObservableObject {
         save()
     }
 
-    func clearInput() {
-        input = ""
-    }
-
     private func banner() {
-        buffer.appendLine("XForge terminal — a shell into the embedded Alpine aarch64 Linux.",
+        buffer.appendLine("XForge terminal — the guest's own console.",
                           style: TerminalStyle(foreground: .index(11)))
-        buffer.appendLine("Type at the prompt. The shell is persistent, and programs that read",
+        buffer.appendLine("Alpine boots /sbin/init as pid 1, which puts a root login on this",
                           style: TerminalStyle(foreground: .index(8)))
-        buffer.appendLine("stdin receive what you type. Ctrl-C interrupts the foreground program.",
+        buffer.appendLine("terminal. Ctrl-C interrupts the foreground program; `exit` logs out",
+                          style: TerminalStyle(foreground: .index(8)))
+        buffer.appendLine("and init gives you a fresh login.",
                           style: TerminalStyle(foreground: .index(8)))
         buffer.appendLine("")
         revision += 1
@@ -302,10 +266,6 @@ final class TerminalSession: ObservableObject {
         XForgeEnvironment.documentDirectory.appendingPathComponent("terminal-transcript.txt")
     }
 
-    private static var historyURL: URL {
-        XForgeEnvironment.documentDirectory.appendingPathComponent("terminal-history.txt")
-    }
-
     private static func read(_ url: URL) -> String? {
         try? String(contentsOf: url, encoding: .utf8)
     }
@@ -313,7 +273,5 @@ final class TerminalSession: ObservableObject {
     private func save() {
         try? String(buffer.plainText.suffix(200_000))
             .write(to: Self.transcriptURL, atomically: true, encoding: .utf8)
-        try? history.suffix(200).joined(separator: "\n")
-            .write(to: Self.historyURL, atomically: true, encoding: .utf8)
     }
 }

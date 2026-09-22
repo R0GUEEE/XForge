@@ -53,7 +53,7 @@ jobs:
       # upgraded; `make rootfs` (or the `rootfs` workflow) builds and publishes
       # a new one. The sha256 is asserted below, so a tag that is moved — or an
       # upload that was truncated — fails the build instead of shipping silently.
-      ROOTFS_TAG: rootfs-v2
+      ROOTFS_TAG: rootfs-v3
       ROOTFS_ASSET: alpine-rootfs.zip
       SPM_CLONES_DIR: .spm
     steps:
@@ -112,6 +112,22 @@ jobs:
           [ "${indexed:-0}" -gt 0 ] \
             || { echo "::error::the glibc layer is not indexed in meta.db ($indexed paths)"; exit 1; }
           echo "glibc layers paths indexed: $indexed"
+
+          # The guest boots /sbin/init, which reads /etc/inittab and respawns
+          # /bin/login -f root on the console — that is the whole Terminal tab, so
+          # a root without it is not shippable.
+          unzip -p "$ROOTFS_ASSET" alpine-rootfs/data/etc/inittab > /tmp/rootfs-inittab.txt
+          grep -qE '^tty1::respawn:/bin/login -f root$' /tmp/rootfs-inittab.txt \
+            || { echo '::error::the rootfs does not respawn a root login on the console'; exit 1; }
+          unzip -Z1 "$ROOTFS_ASSET" > /tmp/rootfs-files.txt
+          for path in \
+            alpine-rootfs/data/sbin/init \
+            alpine-rootfs/data/bin/login \
+            alpine-rootfs/data/etc/inittab \
+            alpine-rootfs/data/etc/init.d/rcS ; do
+            grep -qx "$path" /tmp/rootfs-files.txt \
+              || { echo "::error::the rootfs has no ${path#alpine-rootfs/data/}"; exit 1; }
+          done
 
           echo "rootfs: $(du -h "$ROOTFS_ASSET" | cut -f1), $(wc -l < /tmp/rootfs-entries.txt) entries"
 

@@ -27,6 +27,7 @@
 #define XFORGE_ISH_BRIDGE_H
 
 #include <stddef.h>
+#include <sys/types.h>
 
 /// Outcome of one headless guest command.
 typedef struct xf_guest_result {
@@ -56,6 +57,50 @@ int xf_ish_set_log_file(const char *path);
 /// No-op (returning -ENODEV) when no log file is set.
 int xf_ish_log(const char *text);
 
+/// Console — the guest's own terminal.
+///
+/// XForge implements the guest console as a tty driver, which is what makes the
+/// terminal a *terminal* rather than a pipe: the line discipline lives in the
+/// guest's kernel, so echo, line editing, Ctrl-C (ISIG), Ctrl-D and job control
+/// all behave exactly as they do on a console. The engine calls the driver when
+/// the guest writes to `/dev/tty1` or `/dev/console`; the host pushes input back
+/// with `xf_ish_console_write`.
+///
+/// `/dev/tty1` and `/dev/console` are the same terminal (major `TTY_CONSOLE_MAJOR`,
+/// minor 1), and it is the one pid 1's stdio is wired to — so `/sbin/init` and
+/// everything it starts (login, its shell) talk to the screen in the app.
+///
+/// Read and write are safe from any thread: the write callback only appends to a
+/// host buffer, `xf_ish_console_write` takes the tty's own lock inside the engine,
+/// and neither touches the engine's per-thread state.
+
+/// Start the guest's init as pid 1, giving it the console as its stdio.
+///
+/// This is what turns the mounted root into a *booted system*: `/sbin/init`
+/// reads `/etc/inittab`, which respawns `/bin/login -f root` on the console.
+/// Must be called on the engine thread, after `xf_ish_boot`. Returns 0, or a
+/// negative errno.
+int xf_ish_start_init(const char *program);
+
+/// 1 once the guest console exists (something has opened `/dev/console`).
+int xf_ish_console_ready(void);
+
+/// Copy output produced by the guest console into `buf`, waiting up to
+/// `timeout_ms` for at least one byte (-1 waits indefinitely, 0 returns at once).
+///
+/// Returns the number of bytes copied, 0 if the wait timed out, or a negative
+/// errno. Callers poll this in a loop; it does not touch the engine's thread-
+/// local state, so it may block on a thread of its own.
+ssize_t xf_ish_console_read(char *buf, size_t len, int timeout_ms);
+
+/// Feed host input into the guest console (keystrokes, pastes, control bytes).
+/// Returns the number of bytes accepted, or a negative errno.
+ssize_t xf_ish_console_write(const char *buf, size_t len);
+
+/// Tell the guest console how big the screen is, so the guest's programs wrap
+/// and lay out correctly. Returns 0, or a negative errno.
+int xf_ish_console_resize(int cols, int rows);
+
 /// Boot the guest from an installed fakefs root directory.
 ///
 /// The root is *already* fakefs — a `data/` tree plus `meta.db`, converted on the
@@ -68,10 +113,11 @@ int xf_ish_log(const char *text);
 /// artifacts get in without pushing megabytes through the shell pipe. Returns 0
 /// on success or a negative errno.
 ///
-/// XForge boots deliberately headless: it does NOT exec `/sbin/init`. XForge
-/// only needs a pid 1 that can be the parent of the commands it runs, so it
-/// stops after `become_first_process()` instead of handing over to the guest's
-/// init and its console machinery.
+/// This creates pid 1, mounts the virtual filesystems, wires pid 1's stdio to the
+/// console tty and brings up the host's end of that terminal — but it does not
+/// exec anything: the caller decides when the guest's own `init` takes over, with
+/// `xf_ish_start_init`. Keeping the two apart is what lets XForge verify the
+/// mounted root before handing the machine to `/sbin/init`.
 int xf_ish_boot(const char *root_dir, const char *host_dir);
 
 /// 1 once the guest is booted and commands can be run.

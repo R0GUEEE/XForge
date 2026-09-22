@@ -1,13 +1,14 @@
 import XCTest
 @testable import XForge
 
-/// The terminal is a shell you type into, not a command bar: what is typed goes
-/// to a persistent shell's stdin, and what the shell prints is the screen.
+/// The terminal is the guest's console: what is typed goes into the guest's tty,
+/// the guest's own line discipline and shell do the editing and echoing, and what
+/// the tty produces is the screen.
 ///
 /// These tests pin the parts that are easy to get subtly wrong — that a typed
-/// line is delivered verbatim to the shell's standard input, that a program
-/// reading stdin can therefore be answered, and that an interrupt is a real
-/// signal rather than a character that only a tty would interpret.
+/// line reaches the console verbatim (no host-side shell wrapping, no host-side
+/// echoing), that an interrupt is the Ctrl-C *byte* for the tty to turn into a
+/// signal, and that the guest is told how big the screen is.
 @MainActor
 final class TerminalSessionTests: XCTestCase {
 
@@ -20,36 +21,33 @@ final class TerminalSessionTests: XCTestCase {
     }
 
     private func shell(of vm: StubLinuxVM) throws -> StubShellSession {
-        try XCTUnwrap(vm.startedShells.first, "the terminal should have started a shell")
+        try XCTUnwrap(vm.startedShells.first, "the terminal should have attached to a console")
     }
 
-    func testBootingStartsAShellOnce() async throws {
+    func testBootingAttachesToTheConsoleOnce() async throws {
         let (session, vm) = await makeSession()
         await session.boot()
 
-        XCTAssertEqual(vm.startedShells.count, 1, "booting twice should reuse the shell")
+        XCTAssertEqual(vm.startedShells.count, 1, "booting twice should reuse the session")
         XCTAssertTrue(session.isBooted)
         XCTAssertTrue(try shell(of: vm).isRunning)
     }
 
-    func testTypedLineGoesToTheShellsStandardInput() async throws {
+    func testTypedLineGoesToTheConsoleVerbatim() async throws {
         let (session, vm) = await makeSession()
-        session.input = "echo hello"
-        session.submit()
+        session.sendRaw("echo hello\n")
 
-        // The line is delivered with a newline, which is what makes the shell
-        // treat it as a complete command rather than a fragment.
+        // Exactly what was typed, newline included: the tty and the shell are what
+        // interpret it.
         XCTAssertEqual(try shell(of: vm).received, ["echo hello\n"])
-        XCTAssertEqual(session.input, "", "the field is cleared once the line is sent")
     }
 
     func testTheLineIsNotWrappedInAShellInvocation() async throws {
         // The old design composed `sh -c <command>` per line. Nothing is wrapped
-        // now: the shell receives exactly what was typed, which is what lets
+        // now: the console receives exactly what was typed, which is what lets
         // shell state (cd, variables) persist and lets a program read stdin.
         let (session, vm) = await makeSession()
-        session.input = "cd /tmp && pwd"
-        session.submit()
+        session.sendRaw("cd /tmp && pwd\n")
 
         let sent = try XCTUnwrap(try shell(of: vm).received.first)
         XCTAssertEqual(sent, "cd /tmp && pwd\n")
@@ -58,26 +56,37 @@ final class TerminalSessionTests: XCTestCase {
                        "the host no longer needs to ask the shell where it is")
     }
 
-    func testMultipleLinesAccumulateInOneShell() async throws {
-        // The point of a persistent shell: each line joins the same session, so
-        // the second command could depend on the first.
+    func testKeystrokesReachTheConsoleOneChunkAtATime() async throws {
+        // A terminal sends what was typed, not whole lines: the guest has to see
+        // each keystroke so its line discipline can echo it, and so `read` in a
+        // running program can consume it character by character.
+        let (session, vm) = await makeSession()
+        for text in ["l", "s", "\n"] {
+            session.sendRaw(text)
+        }
+
+        XCTAssertEqual(try shell(of: vm).received, ["l", "s", "\n"])
+    }
+
+    func testMultipleLinesAccumulateInOneSession() async throws {
+        // The console is persistent: each line joins the same login session, so the
+        // second command could depend on the first.
         let (session, vm) = await makeSession()
         for line in ["cd /etc", "cat hostname"] {
-            session.input = line
-            session.submit()
+            session.sendRaw(line + "\n")
         }
 
         XCTAssertEqual(try shell(of: vm).received, ["cd /etc\n", "cat hostname\n"])
     }
 
-    func testOutputFromTheShellReachesTheScreen() async throws {
+    func testOutputFromTheConsoleReachesTheScreen() async throws {
         let (session, vm) = await makeSession()
         let shell = try shell(of: vm)
 
-        // The guest writes from a background queue, and TerminalSession hops that
-        // onto the main actor before touching the screen — so the assertion has to
-        // let that hop run. That asynchrony is deliberate: the tailer must never
-        // block on the UI.
+        // The guest writes from its own thread, and TerminalSession hops that onto
+        // the main actor before touching the screen — so the assertion has to let
+        // that hop run. That asynchrony is deliberate: the reader must never block
+        // on the UI.
         shell.emit("total 8\ndrwxr-xr-x\n")
         try await settle()
         XCTAssertTrue(session.buffer.plainText.contains("total 8"))
@@ -88,49 +97,63 @@ final class TerminalSessionTests: XCTestCase {
         XCTAssertGreaterThan(session.revision, before, "the view must be told to redraw")
     }
 
+    func testOutputThatDoesNotEndInANewlineIsShown() async throws {
+        // A prompt, or a program waiting for input, writes without a trailing
+        // newline. Dropping that would leave the screen looking dead while the
+        // guest waits for an answer.
+        let (session, vm) = await makeSession()
+        try shell(of: vm).emit("Password: ")
+        try await settle()
+
+        XCTAssertTrue(session.buffer.plainText.contains("Password: "))
+    }
+
     /// Let queued main-actor hops from the guest run.
     private func settle() async {
         for _ in 0..<5 { await Task.yield() }
         try? await Task.sleep(for: .milliseconds(20))
     }
 
-    func testInterruptIsASignalNotAControlCharacter() async throws {
+    func testInterruptIsTheCtrlCByte() async throws {
+        // Ctrl-C is a byte again, because the console is a real tty: the guest's
+        // line discipline is what turns 0x03 into SIGINT for the foreground
+        // process group.
         let (session, vm) = await makeSession()
-        session.input = "sleep 100"
-        session.submit()
+        session.sendRaw("sleep 100\n")
         let shell = try shell(of: vm)
         let before = shell.received.count
 
         session.interrupt()
-        // The signal is delivered asynchronously; give it a turn to land.
         try await settle()
 
-        XCTAssertEqual(shell.interrupts, 1, "interrupt should signal the foreground program")
-        XCTAssertEqual(shell.received.count, before,
-                       "no byte should be written: 0x03 is only a signal on a tty")
+        XCTAssertEqual(shell.interrupts, 1)
+        XCTAssertEqual(shell.received.count, before + 1, "the interrupt is one byte")
+        XCTAssertEqual(shell.received.last, "\u{3}", "and it is Ctrl-C")
     }
 
-    func testCommandsFromOtherScreensJoinTheSameShell() async throws {
+    func testCommandsFromOtherScreensJoinTheSameConsole() async throws {
         let (session, vm) = await makeSession()
         session.enqueue("apk add --no-cache git", label: "Toolchain")
         try await settle()
 
         XCTAssertEqual(try shell(of: vm).received, ["apk add --no-cache git\n"])
-        XCTAssertEqual(try shell(of: vm).pid, 4242, "it runs in the terminal's own shell")
+        XCTAssertEqual(try shell(of: vm).pid, 4242, "it runs on the console the terminal is on")
     }
 
-    func testShellExitIsReportedInsteadOfSwallowingInput() async throws {
+    func testTheGuestIsToldHowBigTheScreenIs() async throws {
+        // A guest that believes its terminal is 0×0 wraps everything to one column,
+        // so the size has to reach it — and only when it actually changes, since
+        // each report raises SIGWINCH in the guest.
         let (session, vm) = await makeSession()
-        let shell = try shell(of: vm)
-        shell.simulateExit()
-        try await settle()
+        session.consoleResized(cols: 80, rows: 24)
+        session.consoleResized(cols: 80, rows: 24)
+        session.consoleResized(cols: 120, rows: 40)
 
-        XCTAssertFalse(session.running)
-        XCTAssertTrue(session.buffer.plainText.contains("the shell exited"),
-                      "the screen should say the shell is gone")
+        XCTAssertEqual(try shell(of: vm).sizes.map { "\($0.cols)x\($0.rows)" },
+                       ["80x24", "120x40"])
     }
 
-    func testSendingWithNoShellReportsRatherThanDroppingTheLine() async throws {
+    func testSendingWithNoConsoleReportsRatherThanDroppingTheLine() async throws {
         let (session, _) = await makeSession()
         session.shutdown()
         session.enqueue("echo lost")

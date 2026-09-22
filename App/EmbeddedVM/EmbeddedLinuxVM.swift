@@ -43,10 +43,19 @@ final class EmbeddedLinuxVM: LinuxVM {
     private static let guestShare = "/host"
     /// Staging subdirectory inside the share used for transfers.
     private static let transferDir = ".xforge-transfer"
-    /// Launch command for an interactive terminal session: a login shell for
-    /// root. Commands are fed to it on stdin, so they run with a login
-    /// environment rather than a bare `sh -c`.
+    /// Launch shell for probes and one-shot commands. Not the guest's boot: pid 1
+    /// is `/sbin/init` (see `initCommand`), which is what puts a login on the
+    /// console.
     static let launchCommand = "/bin/sh"
+    /// The program XForge boots pid 1 with. It reads `/etc/inittab`, which starts
+    /// `/bin/login -f root` on the console — the shell the Terminal tab shows.
+    static let initCommand = "/sbin/init"
+
+    /// Why the guest's init did not start, if it did not. Kept rather than thrown
+    /// from `boot()` because the rest of the app — builds, file transfers — runs
+    /// as children of pid 1 whatever it is, and works either way; it is the
+    /// terminal that cannot exist without a console, so the terminal reports it.
+    private var initProblem: String?
 
     init(root: URL, hostShare: URL? = nil, emulator: LinuxEmulator) {
         self.root = root
@@ -76,6 +85,7 @@ final class EmbeddedLinuxVM: LinuxVM {
             try await verifyRootfs()
             try await verifyCommandBridge()
             await configureGuestResolver()
+            await startInit()
             isBooted = true
             XForgeLog.note("boot: verified Alpine guest is ready")
         }
@@ -98,6 +108,25 @@ final class EmbeddedLinuxVM: LinuxVM {
             try await emulator.prepareRootfs()
         } catch {
             XForgeLog.note("rootfs: pre-install failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Bring up the guest's own init, which is what turns the mounted root into a
+    /// booted system: `/sbin/init` reads `/etc/inittab` and respawns
+    /// `/bin/login -f root` on the console.
+    ///
+    /// A failure is recorded, not thrown. Everything except the terminal works
+    /// without it — the command runner makes its own children of pid 1, who that
+    /// is makes no difference — so failing the whole boot would take the build
+    /// pipeline down with the terminal.
+    private func startInit() async {
+        do {
+            try await emulator.startInit(Self.initCommand)
+            initProblem = nil
+            XForgeLog.note("boot: \(Self.initCommand) is pid 1")
+        } catch {
+            initProblem = error.localizedDescription
+            XForgeLog.note("boot: \(Self.initCommand) did not start: \(error.localizedDescription)")
         }
     }
 
@@ -309,68 +338,22 @@ final class EmbeddedLinuxVM: LinuxVM {
 
     // MARK: - Interactive shell
 
-    /// Start an interactive shell in the guest.
+    /// Start the terminal's shell.
     ///
-    /// The shell is started with the engine's one-shot primitive, but it does not
-    /// exit: it reads its stdin forever. That call therefore stays in flight for
-    /// the life of the session, which is why it runs in a detached task rather
-    /// than being awaited by the caller — await it and the terminal would block
-    /// until the user types `exit`.
+    /// The shell is not a process this code launches: it is the guest's own
+    /// console session, started by `/sbin/init` from `/etc/inittab`, which
+    /// respawns `/bin/login -f root` on the console. So all this does is attach
+    /// the screen to the console the guest is already driving.
     func startInteractiveShell(
-        onOutput: @escaping @Sendable (String) -> Void,
-        onExit: @escaping @MainActor () -> Void
+        onOutput: @escaping @Sendable (String) -> Void
     ) async throws -> any InteractiveShellSession {
         try await boot()
-        guard let share = hostShare else {
-            throw LinuxVMError.notImplemented(
-                "An interactive shell needs the shared folder, which this build has no access to.")
+        if let initProblem {
+            throw LinuxVMError.initFailed(initProblem)
         }
-
-        let transfer = share.appendingPathComponent(Self.transferDir, isDirectory: true)
-        try FileManager.default.createDirectory(at: transfer, withIntermediateDirectories: true)
-        let tag = UUID().uuidString
-        let inputURL = transfer.appendingPathComponent("stdin-\(tag)")
-        let outputURL = transfer.appendingPathComponent("stdout-\(tag)")
-
-        // The input is a regular file followed by `tail -f` inside the guest.
-        // A shell reading the regular file directly would hit EOF and exit; the
-        // tail process keeps the pipe open and turns later appends into a live
-        // stream. This avoids opening a FIFO from the iOS host (which can block
-        // until a guest reader appears) while preserving the same stdin behavior.
-        FileManager.default.createFile(atPath: inputURL.path, contents: nil)
-        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
-
-        let guestInput = "\(Self.guestShare)/\(Self.transferDir)/\(inputURL.lastPathComponent)"
-        let guestOutput = "\(Self.guestShare)/\(Self.transferDir)/\(outputURL.lastPathComponent)"
-
-        let session = SharedFolderShellSession(
-            inputURL: inputURL,
-            outputURL: outputURL,
-            guestInput: guestInput,
-            guestOutput: guestOutput,
-            onOutput: onOutput
-        )
-
-        // The shell's stdin is fed by `tail -f` over a pipe, and its output goes
-        // to a file the host follows:
-        //   tail -f <input file> | /bin/sh  → a persistent stdin stream
-        //                         > output   → a file the host tails
-        //
-        // A regular file cannot be redirected directly to sh: it reaches EOF and
-        // exits. `tail -f` keeps the pipe's write end alive and turns later host
-        // appends into input bytes without requiring the iOS host to open a FIFO.
-        // The shell has no `-i`, because that flag asks it to claim a controlling
-        // tty and produces the user's "can't access tty" warning; stdin itself
-        // still works without it.
-        let command = """
-        tail -f \(GuestShell.quote(guestInput)) | /bin/sh > \(GuestShell.quote(guestOutput)) 2>&1
-        """
-
-        let process = try await emulator.startDetached(command, shell: "/bin/sh", stdinPath: nil)
-        session.attach(process: process, onExit: onExit)
-        XForgeLog.note(
-            "terminal: interactive shell started (pid \(process.pid), \(inputURL.lastPathComponent))")
-        return session
+        let console = try await emulator.openConsole(onOutput: onOutput)
+        XForgeLog.note("terminal: attached to the guest console")
+        return ConsoleShellSession(console: console)
     }
 
     // MARK: - File transfer
@@ -459,6 +442,7 @@ enum LinuxVMError: LocalizedError {
     case guestDidNotStart
     case guestHealthCheckFailed(String)
     case commandBridgeFailed(String)
+    case initFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -471,6 +455,10 @@ enum LinuxVMError: LocalizedError {
             return "The Alpine system started but is not usable: \(detail)"
         case .commandBridgeFailed(let detail):
             return "Linux started, but XForge could not communicate with it: \(detail)"
+        case .initFailed(let detail):
+            return "The guest's init did not start, so there is no console to type "
+                + "into: \(detail)\nThe bundled rootfs has to provide /sbin/init and "
+                + "/etc/inittab — an older rootfs is replaced on next launch."
         }
     }
 }

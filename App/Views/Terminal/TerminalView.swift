@@ -2,12 +2,13 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// The Terminal tab: a shell into the embedded Alpine Linux.
+/// The Terminal tab: the guest's console.
 ///
-/// The screen *is* the terminal. The shell prints its own prompt, echoes what it
-/// reads, and prints its own results, so there is no host-side prompt to draw and
-/// no command bar to type into — the field at the bottom is the keyboard's target
-/// and its contents are handed to the shell's stdin on return.
+/// The screen *is* the terminal. Alpine boots `/sbin/init` as pid 1, which puts a
+/// root login on the console, and the console is this view: what you type goes
+/// into the guest's tty, and what the tty produces is drawn here. The shell prints
+/// its own prompt and echoes its own input, so there is nothing host-side to draw
+/// or interpret.
 struct TerminalView: View {
     @EnvironmentObject private var session: TerminalSession
 
@@ -129,10 +130,9 @@ struct TerminalView: View {
                     Button { session.clear() } label: {
                         Label("Clear", systemImage: "eraser")
                     }
-                    Button { session.recall(offset: -1) } label: {
+                    Button { session.sendRaw("\u{1b}[A") } label: {
                         Label("Previous command", systemImage: "chevron.up")
                     }
-                    .disabled(session.history.isEmpty)
                 }
 
                 Section("Keys") {
@@ -278,6 +278,30 @@ private final class TerminalTextView: UITextView {
 
     @objc private func focusTerminal() { becomeFirstResponder() }
 
+    /// Report the terminal's size in characters to the guest.
+    ///
+    /// Without this the guest believes its terminal is 0×0 and every program that
+    /// lays out by width breaks: `ls` prints one name per line, and anything
+    /// full-screen draws in a corner. The cell size comes from the same
+    /// monospaced font the text is drawn in.
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        reportSize()
+    }
+
+    private func reportSize() {
+        guard let session, let font,
+              bounds.width > 0, bounds.height > 0 else { return }
+        let advance = ("W" as NSString).size(withAttributes: [.font: font]).width
+        guard advance > 0 else { return }
+        let usableWidth = bounds.width - textContainerInset.left - textContainerInset.right
+        let usableHeight = bounds.height - textContainerInset.top - textContainerInset.bottom
+        let cols = Int(usableWidth / advance)
+        let rows = Int(usableHeight / font.lineHeight)
+        guard cols > 0, rows > 0 else { return }
+        session.consoleResized(cols: cols, rows: rows)
+    }
+
     func refresh(from session: TerminalSession) {
         guard lastRevision != session.revision else { return }
         lastRevision = session.revision
@@ -399,16 +423,20 @@ private struct TerminalKeyBar: View {
     private func activate(_ key: TerminalKey) {
         switch key {
         case .interrupt: session.interrupt()
-        case .escape: session.insert("\u{1b}")
-        case .tab: session.insert("\t")
-        case .previous: session.recall(offset: -1)
-        case .next: session.recall(offset: 1)
-        case .dash: session.insert("-")
-        case .dot: session.insert(".")
-        case .slash: session.insert("/")
-        case .colon: session.insert(":")
-        case .bang: session.insert("!")
-        case .pipe: session.insert("|")
+        // Everything else is a raw byte sequence for the console. The guest owns
+        // the editing — its line discipline and the shell's own line editor — so
+        // the key bar only has to produce the characters a phone keyboard cannot,
+        // and the shell's history is reached with the arrow keys it understands.
+        case .escape: session.sendRaw("\u{1b}")
+        case .tab: session.sendRaw("\t")
+        case .previous: session.sendRaw("\u{1b}[A")
+        case .next: session.sendRaw("\u{1b}[B")
+        case .dash: session.sendRaw("-")
+        case .dot: session.sendRaw(".")
+        case .slash: session.sendRaw("/")
+        case .colon: session.sendRaw(":")
+        case .bang: session.sendRaw("!")
+        case .pipe: session.sendRaw("|")
         case .files: onFiles()
         case .paste: session.pasteFromClipboard()
         case .hideKeyboard: onHideKeyboard()

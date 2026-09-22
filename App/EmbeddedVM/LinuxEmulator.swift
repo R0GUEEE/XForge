@@ -18,6 +18,27 @@ struct GuestCommandResult: Sendable {
     }
 }
 
+/// The host end of the guest's console — a real tty, so what the host writes goes
+/// through the guest kernel's line discipline: it echoes, it edits, it turns
+/// Ctrl-C into a signal for the foreground program, and it lets a full-screen
+/// program put the terminal in raw mode.
+///
+/// Deliberately not main-actor isolated: reading blocks until the guest writes,
+/// so it happens on a thread of its own, and the calls it makes touch no
+/// per-thread engine state.
+protocol GuestConsole: AnyObject, Sendable {
+    /// Whether the guest has opened its console yet.
+    var isReady: Bool { get }
+    /// Push host input into the guest's console. Returns false only when there is
+    /// no console to write to.
+    @discardableResult func write(_ text: String) -> Bool
+    /// Tell the guest how big the screen is, so its programs wrap and lay out
+    /// correctly (and redraw when the size changes).
+    func resize(cols: Int, rows: Int)
+    /// Stop reading. Idempotent.
+    func stop()
+}
+
 /// An in-process Linux execution engine.
 ///
 /// iOS cannot spawn subprocesses, so the embedded Linux runs as a **library**
@@ -29,7 +50,9 @@ struct GuestCommandResult: Sendable {
 ///
 /// The engine's primitive is "run this command line, give me its merged output
 /// and exit status" — the engine's guest command runner — not a byte
-/// pipe. Conformers boot a guest and then execute commands through that.
+/// pipe. Conformers boot a guest and then execute commands through that. The one
+/// exception is the guest console, which *is* a byte pipe in both directions (see
+/// `GuestConsole`), because a terminal has to be a tty to behave like one.
 @MainActor
 protocol LinuxEmulator: AnyObject {
     var name: String { get }
@@ -47,6 +70,15 @@ protocol LinuxEmulator: AnyObject {
         timeout: TimeInterval,
         maxOutput: Int
     ) async throws -> GuestCommandResult
+
+    /// Start the guest's own init as pid 1, giving it the console as its stdio.
+    /// This is what boots the guest as a *system*: init reads /etc/inittab, which
+    /// puts a login on the console. Safe to call once per boot.
+    func startInit(_ program: String) async throws
+
+    /// Attach to the guest console, delivering its output as the guest produces
+    /// it. Returns the host end, which is what the terminal types into.
+    func openConsole(onOutput: @Sendable @escaping (String) -> Void) async throws -> any GuestConsole
 
     /// Start a command and return immediately, without waiting for it to exit.
     ///
@@ -112,6 +144,14 @@ final class PendingLinuxEmulator: LinuxEmulator {
         timeout: TimeInterval,
         maxOutput: Int
     ) async throws -> GuestCommandResult {
+        throw LinuxVMError.notImplemented("No guest is running.")
+    }
+    func startInit(_ program: String) async throws {
+        throw LinuxVMError.notImplemented("No guest is running.")
+    }
+    func openConsole(
+        onOutput: @Sendable @escaping (String) -> Void
+    ) async throws -> any GuestConsole {
         throw LinuxVMError.notImplemented("No guest is running.")
     }
     func startDetached(
