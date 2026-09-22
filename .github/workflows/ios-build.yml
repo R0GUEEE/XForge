@@ -251,7 +251,10 @@ jobs:
         # a repository that has no such script.
         run: |
           set -e
-          if [ -x EmbeddedLinux/fetch-rootfs.sh ]; then
+          # -f, not -x: a script that lost its executable bit must still run rather
+          # than make this step a silent no-op (which is how an app with no Linux
+          # guest got built and shipped to an artifact once already).
+          if [ -f EmbeddedLinux/fetch-rootfs.sh ]; then
             bash EmbeddedLinux/fetch-rootfs.sh
           fi
 
