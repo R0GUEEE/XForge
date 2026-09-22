@@ -709,15 +709,23 @@ step_sdk() {
         exit 1
     fi
 
-    # Where SwiftPM put it, recorded rather than assumed: the caller writes this
-    # into the root's manifest, and the verification then checks that exact path —
-    # which is the only way a *packed* fakefs root can be asked "is the SDK in
-    # here", since a fakefs root cannot be chrooted and run.
-    sdk_install_dir="$(ls -d "$HOME/.swiftpm/swift-sdks"/*/ 2>"$SILENT" | head -1 || true)"
-    [ -n "$sdk_install_dir" ] || {
-        echo "swift sdk list names a darwin SDK but $HOME/.swiftpm/swift-sdks is empty" >&2
+    # Where SwiftPM put it, found rather than assumed.
+    #
+    # The documented location is `~/.swiftpm/swift-sdks`, and Swift 6.4's
+    # `swift sdk install` puts it elsewhere — this step originally asserted that
+    # path and failed a build whose install had succeeded, which is the sort of
+    # detail that is not worth guessing twice. What is looked for is the bundle
+    # directory itself, with the store's own name as the fallback, and the answer
+    # is what gets recorded and verified.
+    sdk_install_dir="$(find "$HOME" -maxdepth 9 -type d -name '*.artifactbundle' -print 2>"$SILENT" | head -1 || true)"
+    if [ -z "$sdk_install_dir" ]; then
+        sdk_install_dir="$(find "$HOME" -maxdepth 9 -type d -name 'swift-sdks' -print 2>"$SILENT" | head -1 || true)"
+    fi
+    if [ -z "$sdk_install_dir" ]; then
+        echo "swift sdk list names a darwin SDK but it is nowhere under $HOME:" >&2
+        swift sdk list 2>&1 | sed 's/^/    /' >&2
         exit 1
-    }
+    fi
 
     mkdir -p "$SHARE"
     cat > "$SHARE/darwin-sdk.txt" <<EOF
