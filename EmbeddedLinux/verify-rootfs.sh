@@ -99,7 +99,14 @@ path_exists() {
     if [ "$MODE" = "zip" ]; then
         grep -qx "$BASE$1" "$ENTRIES"
     else
-        [ -e "$TREE/$1" ]
+        # `-e` OR `-L`, deliberately. A root tree is full of symlinks whose
+        # targets are absolute *guest* paths — `/usr/local/bin/swiftly` →
+        # `/root/.local/share/swiftly/bin/swiftly`, `/bin/sh` → `/bin/busybox` —
+        # and on the build machine those resolve against the build machine's `/`,
+        # so `-e` alone reports a symlink that is perfectly present as missing.
+        # This is the same trap as the glibc layer's `/lib` entry points: test the
+        # link itself, not where it points.
+        [ -e "$TREE/$1" ] || [ -L "$TREE/$1" ]
     fi
 }
 

@@ -688,7 +688,7 @@ step_sdk() {
     fi
 
     bundle="$SDK_CACHE/darwin.artifactbundle"
-    rm -rf "$bundle"
+    rm -rf "$bundle" "$SDK_CACHE/__MACOSX"
     unzip -q "$archive" -d "$SDK_CACHE"
     [ -f "$bundle/info.json" ] || {
         echo "$archive did not unpack to $bundle/info.json" >&2
@@ -698,11 +698,14 @@ step_sdk() {
     log "Installing the SDK with swift sdk install"
     swift sdk install "$bundle"
 
-    # 400 MB of archive and 1.3 GB of unpacked bundle are no longer needed once
-    # SwiftPM has copied the SDK into ~/.swiftpm/swift-sdks, and in a packaged
-    # rootfs they would be dead weight in the app bundle.
+    # 400 MB of archive, 1.3 GB of unpacked bundle and whatever `unzip` left
+    # beside them are no longer needed once SwiftPM has the SDK, and in a packaged
+    # rootfs they would be dead weight in the app bundle. (The zip carries a macOS
+    # `__MACOSX` sidecar, which unpacks into a directory that *contains* a
+    # `<name>.artifactbundle` — that is what a build once recorded as the
+    # installed SDK, so it is removed here and excluded from the search below.)
     rm -f "$archive"
-    rm -rf "$bundle"
+    rm -rf "$bundle" "$SDK_CACHE/__MACOSX"
 
     if ! swift sdk list 2>&1 | grep -qi darwin; then
         echo "swift sdk install reported success but swift sdk list names no darwin SDK" >&2
@@ -713,16 +716,22 @@ step_sdk() {
     #
     # The documented location is `~/.swiftpm/swift-sdks`, and Swift 6.4's
     # `swift sdk install` puts it elsewhere — this step originally asserted that
-    # path and failed a build whose install had succeeded, which is the sort of
-    # detail that is not worth guessing twice. What is looked for is the bundle
-    # directory itself, with the store's own name as the fallback, and the answer
-    # is what gets recorded and verified.
-    sdk_install_dir="$(find "$HOME" -maxdepth 9 -type d -name '*.artifactbundle' -print 2>"$SILENT" | head -1 || true)"
-    if [ -z "$sdk_install_dir" ]; then
-        sdk_install_dir="$(find "$HOME" -maxdepth 9 -type d -name 'swift-sdks' -print 2>"$SILENT" | head -1 || true)"
-    fi
+    # path and failed a build whose install had succeeded. What is looked for is
+    # the bundle directory itself, with the store's own name as the fallback, and
+    # the answer is what gets recorded and verified. The download cache is
+    # excluded: the copy that was just installed *from* is a different bundle, and
+    # `__MACOSX` shadows it in a name search.
+    sdk_find() {
+        find "$HOME" -maxdepth 9 -type d -name "$1" \
+            ! -path '*/__MACOSX/*' ! -path "$SDK_CACHE/*" -print 2>"$SILENT" | head -1 || true
+    }
+    sdk_install_dir="$(sdk_find '*.artifactbundle')"
+    [ -n "$sdk_install_dir" ] || sdk_install_dir="$(sdk_find 'swift-sdks')"
     if [ -z "$sdk_install_dir" ]; then
         echo "swift sdk list names a darwin SDK but it is nowhere under $HOME:" >&2
+        echo "  HOME=$HOME SWIFTLY_HOME_DIR=$SWIFTLY_HOME_DIR" >&2
+        find "$HOME" -maxdepth 9 -type d \( -name '*.artifactbundle' -o -name 'swift-sdks' \) -print 2>&1 \
+            | sed 's/^/    candidate: /' >&2
         swift sdk list 2>&1 | sed 's/^/    /' >&2
         exit 1
     fi

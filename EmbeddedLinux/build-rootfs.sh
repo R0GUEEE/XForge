@@ -150,6 +150,19 @@ log()  { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 die()  { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 
+# Size of a tree in KiB, as a number, always.
+#
+# Measurement must not be able to fail the build, and it must not be able to
+# confuse itself either. `du` over a tree with /proc or /dev mounted inside it
+# walks entries that vanish mid-traversal — the guest's own mounts are still up
+# when this runs — so it can exit non-zero after printing a perfectly good number;
+# and a `|| echo 0` on top of that hands the caller two lines, which arithmetic
+# then reads as "6256892\n0: syntax error in expression". Taking the first field
+# of whatever was printed is what makes both impossible.
+size_kib() {
+    { du -sk "$1" 2>/dev/null || true; } | awk 'NF { print $1; exit }'
+}
+
 # ---------------------------------------------------------------------------
 # Running things *inside* the root being built
 #
@@ -529,7 +542,8 @@ else
     # build on a device.
     # -----------------------------------------------------------------------
     log "Slimming the root"
-    before_kib="$(du -sk "$DATA" 2>/dev/null | awk '{print $1}' || echo 0)"
+    before_kib="$(size_kib "$DATA")"
+    before_kib="${before_kib:-0}"
 
     rm -rf "$DATA/var/cache/apk" "$DATA/tmp/xforge-glibc" "$DATA/tmp/xforge-silent."* \
            "$DATA/root/.cache/xforge-sdk"
@@ -564,7 +578,8 @@ else
         note "slim: keeping the whole Swift toolchain (XFORGE_SLIM_TOOLCHAIN=0)"
     fi
 
-    after_kib="$(du -sk "$DATA" 2>/dev/null | awk '{print $1}' || echo 0)"
+    after_kib="$(size_kib "$DATA")"
+    after_kib="${after_kib:-0}"
     note "tree: $((before_kib / 1024)) MB before slimming, $((after_kib / 1024)) MB after"
 
     # Verification, and this time the verdict is load-bearing.
