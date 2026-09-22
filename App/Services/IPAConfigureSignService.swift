@@ -33,6 +33,11 @@ final class IPAConfigureSignService: ObservableObject {
     func sign() async {
         guard let inputIPA, let provisioningProfile, let p12 else { return }
         let oneShotPassword = password
+        guard !oneShotPassword.contains("\n"), !oneShotPassword.contains("\r") else {
+            password = ""
+            error = "The PKCS#12 password cannot contain a newline."
+            return
+        }
         let ipaScoped = inputIPA.startAccessingSecurityScopedResource()
         let profileScoped = provisioningProfile.startAccessingSecurityScopedResource()
         let p12Scoped = p12.startAccessingSecurityScopedResource()
