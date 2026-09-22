@@ -402,9 +402,22 @@ case "$TOOLCHAIN_CLAIM" in
                 | awk '/^[[:space:]]*tag:/ { print $2; exit }')"
             [ -n "$SDK_PATH" ] \
                 || die "/usr/local/share/xforge/darwin-sdk.txt does not name where the SDK went"
-            path_exists "${SDK_PATH#/}" \
-                || die "the Darwin SDK records itself at $SDK_PATH, which is not in this root
+            # The record names the *directory* SwiftPM installed the bundle into,
+            # and a ZIP listing writes directories with a trailing slash — an
+            # exact-line test for the bare name finds nothing and fails a root
+            # that has the SDK. Ask whether anything is under it instead, which is
+            # the question that matters either way.
+            sdk_rel="${SDK_PATH#/}"
+            if [ "$MODE" = "zip" ]; then
+                sdk_rel_pattern="$(echo "$sdk_rel" | sed 's/\./\\./g')"
+                grep -qE "^$BASE$sdk_rel_pattern/" "$ENTRIES" \
+                    || die "the Darwin SDK records itself at $SDK_PATH, which is not in this root
        — the guest's first build would fail on a missing SDK"
+            else
+                [ -d "$TREE/$sdk_rel" ] \
+                    || die "the Darwin SDK records itself at $SDK_PATH, which is not in this root
+       — the guest's first build would fail on a missing SDK"
+            fi
             note "Darwin SDK $SDK_TAG_LINE at $SDK_PATH"
 
             # And the engine has to be able to see it: the whole reason the
