@@ -278,10 +278,9 @@ private final class TerminalTextView: UITextView, UIKeyInput {
         guard lastRevision != session.revision else { return }
         lastRevision = session.revision
         let wasNearBottom = contentOffset.y + bounds.height >= contentSize.height - 44
-        let selection = selectedRange
         let rendered = session.buffer.plainText
         if text != rendered { text = rendered }
-        if selection.location <= (text as NSString).length { selectedRange = selection }
+        selectedRange = NSRange(location: (text as NSString).length, length: 0)
         if wasNearBottom || !isTracking {
             let end = NSRange(location: (text as NSString).length, length: 0)
             scrollRangeToVisible(end)
