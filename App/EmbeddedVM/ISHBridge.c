@@ -291,6 +291,56 @@ static void xf_exit_hook(struct task *task, int code) {
 
 // --- guest console -----------------------------------------------------------
 //
+// --- pid 1's stdio ----------------------------------------------------------
+//
+// The engine's `create_stdio` opens the file it is given with plain O_RDWR, and
+// for the console that has a consequence the guest can see:
+//   * pid 1 is a session leader when this runs (the engine's `construct_task`
+//     calls `task_setsid`), so the open makes the console *pid 1's* controlling
+//     terminal, pinning the tty's session to pid 1 (`tty_open` in fs/tty.c
+//     hands a tty over only while `tty->session == 0`);
+//   * the login session init later starts does `setsid()` and opens /dev/tty1 —
+//     and by then the tty has a session, so it never gets it. The shell runs with
+//     no controlling terminal, which bash reports on the console as
+//     "cannot set terminal process group (-1): Not a tty" followed by
+//     "no job control in this shell": no Ctrl-C to the foreground program, no
+//     Ctrl-Z, no SIGWINCH to the shell on resize.
+//
+// Linux's init has no controlling terminal either — the console belongs to the
+// login session that opens it — and the only difference is O_NOCTTY. So this is
+// `create_stdio` with that flag, kept here rather than patching the vendored
+// engine: the engine's version is right for every other caller.
+static int xf_create_console_stdio(void) {
+    struct fd *fd = generic_open("/dev/console", O_RDWR_ | O_NOCTTY_, 0);
+    if (!IS_ERR(fd) && !S_ISCHR(fd->stat.mode)) {
+        // Opened a regular file instead of a character device (realfs cannot
+        // create device nodes), so close it and take the same fallback the engine
+        // does.
+        fd_close(fd);
+        fd = ERR_PTR(_ENOENT);
+    }
+    if (IS_ERR(fd)) {
+        fd = adhoc_fd_create(NULL);
+        if (fd == NULL)
+            return _ENOMEM;
+        fd->stat.rdev = dev_make(TTY_CONSOLE_MAJOR, 1);
+        fd->stat.mode = S_IFCHR | S_IRUSR;
+        // O_NOCTTY again: the fallback opens the tty directly, and it must not
+        // claim the session either.
+        fd->flags = O_RDWR_ | O_NOCTTY_;
+        int dev_err = dev_open(TTY_CONSOLE_MAJOR, 1, DEV_CHAR, fd);
+        if (dev_err < 0)
+            return dev_err;
+    }
+
+    fd->refcount = 0;
+    current->files->files[0] = fd_retain(fd);
+    current->files->files[1] = fd_retain(fd);
+    current->files->files[2] = fd_retain(fd);
+    xf_logf("boot: pid 1's stdio is the console (O_NOCTTY — the login session owns it)");
+    return 0;
+}
+
 // The guest's console is a tty the *host* implements. Everything above the
 // driver — the line discipline, echo, signal generation, job control — is the
 // guest kernel's, so the app gets a real terminal rather than a pipe: Ctrl-C
@@ -590,7 +640,10 @@ int xf_ish_boot(const char *root_dir, const char *host_dir) {
     // accident — the headless command runner gives every child its own fds — but
     // init and everything init starts do, which is how the guest's own boot
     // appears on the screen.
-    int stdio_err = create_stdio("/dev/console", TTY_CONSOLE_MAJOR, 1);
+    //
+    // Opened with O_NOCTTY, which is the difference between a console that works
+    // and one whose shell has no job control — see xf_create_console_stdio.
+    int stdio_err = xf_create_console_stdio();
     if (stdio_err < 0) {
         // Not fatal for the command runner, which does not use pid 1's stdio.
         // `xf_ish_start_init` will report the real problem if the console is
