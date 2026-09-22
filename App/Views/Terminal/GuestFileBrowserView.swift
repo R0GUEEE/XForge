@@ -1,34 +1,24 @@
 import SwiftUI
 import UIKit
 
-/// Thread-safe accumulator for guest listing output, because LinuxVM streams from
-/// a background tailer and Swift 6 does not allow a captured mutable local in an
-/// @Sendable callback.
 private final class GuestListingBox: @unchecked Sendable {
     private let lock = NSLock()
     private var value = ""
-
-    func append(_ chunk: String) {
-        lock.lock(); value += chunk; lock.unlock()
-    }
-
-    var text: String {
-        lock.lock(); defer { lock.unlock() }
-        return value
-    }
+    func append(_ chunk: String) { lock.lock(); value += chunk; lock.unlock() }
+    var text: String { lock.lock(); defer { lock.unlock() }; return value }
 }
 
-/// A guest-side file browser, modelled after iSH's shell file browser. It lists
-/// the actual Alpine filesystem rather than the app's host sandbox, so folders
-/// such as `/root`, `/tmp`, `/host` and project files are visible where Linux
-/// sees them. File actions are deliberately small and safe: copy the path or
-/// share a host-visible file.
+/// File explorer for the actual Alpine filesystem.
 struct GuestFileBrowserView: View {
     @State private var path: String
     @State private var entries: [Entry] = []
     @State private var loading = false
     @State private var error: String?
     @State private var vm: (any LinuxVM)?
+    @State private var showHidden = false
+    @State private var pendingAction: FileAction?
+    @State private var destination = ""
+    @State private var deleteTarget: Entry?
     @Environment(\.dismiss) private var dismiss
 
     struct Entry: Identifiable, Hashable {
@@ -37,6 +27,15 @@ struct GuestFileBrowserView: View {
         let isDirectory: Bool
         let size: Int64
         var id: String { path }
+    }
+
+    enum FileAction: Identifiable {
+        case copy(Entry), move(Entry)
+        var id: String {
+            switch self { case .copy(let e): return "copy:" + e.path; case .move(let e): return "move:" + e.path }
+        }
+        var title: String { switch self { case .copy: return "Copy"; case .move: return "Move" } }
+        var entry: Entry { switch self { case .copy(let e), .move(let e): return e } }
     }
 
     init(path: String = "/") { _path = State(initialValue: path) }
@@ -59,38 +58,81 @@ struct GuestFileBrowserView: View {
             }
             .navigationTitle(path)
             .navigationBarTitleDisplayMode(.inline)
+            .refreshable { await load() }
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+                ToolbarItem(placement: .topBarLeading) {
+                    Menu {
+                        Toggle("Show Hidden Files", isOn: $showHidden)
+                        Button("Copy Current Path", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = path
+                        }
+                        Button("Refresh", systemImage: "arrow.clockwise") { Task { await load() } }
+                    } label: { Image(systemName: "ellipsis.circle") }
                 }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
+            .onChange(of: showHidden) { _ in Task { await load() } }
             .task { await load() }
+            .alert(pendingAction?.title ?? "File Action",
+                   isPresented: Binding(get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } })) {
+                TextField("Destination path", text: $destination)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                Button("Cancel", role: .cancel) { pendingAction = nil }
+                Button(pendingAction?.title ?? "Apply") {
+                    guard let action = pendingAction else { return }
+                    Task { await perform(action) }
+                }
+            } message: {
+                Text("Enter an absolute Alpine path or a destination directory.")
+            }
+            .confirmationDialog("Delete \(deleteTarget?.name ?? "item")?",
+                                isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+                                titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    guard let target = deleteTarget else { return }
+                    Task { await remove(target) }
+                }
+                Button("Cancel", role: .cancel) { deleteTarget = nil }
+            }
         }
     }
 
     @ViewBuilder private func row(_ entry: Entry) -> some View {
-        if entry.isDirectory {
-            Button { navigate(to: entry.path) } label: {
-                Label(entry.name, systemImage: "folder.fill")
-                    .foregroundStyle(.primary)
-            }
-            .buttonStyle(.plain)
-        } else {
+        Button {
+            if entry.isDirectory { navigate(to: entry.path) }
+        } label: {
             HStack(spacing: 10) {
-                Image(systemName: icon(entry.name)).foregroundStyle(.secondary)
+                Image(systemName: entry.isDirectory ? "folder.fill" : icon(entry.name))
+                    .foregroundStyle(entry.isDirectory ? .tint : .secondary)
                 VStack(alignment: .leading) {
                     Text(entry.name).lineLimit(1)
-                    Text(ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file))
-                        .font(.caption2).foregroundStyle(.secondary)
+                    if !entry.isDirectory {
+                        Text(ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file))
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
                 Spacer()
-                Button { UIPasteboard.general.string = entry.path } label: {
-                    Image(systemName: "doc.on.doc")
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Copy path")
+                if entry.isDirectory { Image(systemName: "chevron.right").foregroundStyle(.tertiary) }
             }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button("Copy Path", systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.path }
+            Button("Copy…", systemImage: "plus.square.on.square") { begin(.copy(entry)) }
+            Button("Move…", systemImage: "folder") { begin(.move(entry)) }
+            Divider()
+            Button("Delete", systemImage: "trash", role: .destructive) { deleteTarget = entry }
+        }
+        .swipeActions(edge: .trailing) {
+            Button(role: .destructive) { deleteTarget = entry } label: { Label("Delete", systemImage: "trash") }
+        }
+    }
+
+    private func begin(_ action: FileAction) {
+        pendingAction = action
+        destination = path
     }
 
     private func navigate(to value: String) {
@@ -103,23 +145,20 @@ struct GuestFileBrowserView: View {
         do {
             let guest = vm ?? XForgeEnvironment.makeVM()
             vm = guest
+            await guest.prepareRootfs()
             try await guest.boot()
             let box = GuestListingBox()
-            // BusyBox find (the root's /usr/bin/find applet) does not support
-            // GNU `-printf`, so use the shell's glob expansion plus `stat` — no
-            // dependency on a GNU find build that plain Alpine does not ship.
+            let hiddenGlob = showHidden ? " \(GuestShell.quote(path))/.[!.]*" : ""
             let listing = """
-            for item in \(GuestShell.quote(path))/* \(GuestShell.quote(path))/.[!.]*; do
+            for item in \(GuestShell.quote(path))/*\(hiddenGlob); do
                 [ -e "$item" ] || [ -L "$item" ] || continue
                 if [ -d "$item" ]; then kind=d; else kind=f; fi
                 size=$(stat -c %s "$item" 2>/dev/null || echo 0)
                 printf '%s\\t%s\\t%s\\n' "$kind" "$item" "$size"
             done | sort -k2
             """
-            let status = try await guest.run(listing, environment: nil) { chunk in
-                box.append(chunk)
-            }
-            guard status == 0 else { throw BrowserError.readFailed }
+            let status = try await guest.run(listing, environment: nil) { box.append($0) }
+            guard status == 0 else { throw BrowserError.operationFailed("The guest could not list this folder.") }
             entries = box.text.split(separator: "\n").compactMap { line in
                 let parts = line.split(separator: "\t", maxSplits: 2).map(String.init)
                 guard parts.count == 3 else { return nil }
@@ -127,10 +166,36 @@ struct GuestFileBrowserView: View {
                 return Entry(name: URL(fileURLWithPath: full).lastPathComponent,
                              path: full, isDirectory: parts[0] == "d", size: Int64(parts[2]) ?? 0)
             }
-        } catch let caught {
-            self.error = caught.localizedDescription
-        }
+        } catch { self.error = error.localizedDescription }
         loading = false
+    }
+
+    private func perform(_ action: FileAction) async {
+        let target = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard target.hasPrefix("/") else {
+            error = "Destination must be an absolute Alpine path."; pendingAction = nil; return
+        }
+        do {
+            let guest = vm ?? XForgeEnvironment.makeVM()
+            vm = guest
+            let verb = action.title == "Copy" ? "cp -R" : "mv"
+            let command = "\(verb) -- \(GuestShell.quote(action.entry.path)) \(GuestShell.quote(target))"
+            let status = try await guest.run(command, environment: nil) { _ in }
+            guard status == 0 else { throw BrowserError.operationFailed("\(action.title) failed.") }
+            pendingAction = nil
+            await load()
+        } catch { self.error = error.localizedDescription; pendingAction = nil }
+    }
+
+    private func remove(_ entry: Entry) async {
+        do {
+            let guest = vm ?? XForgeEnvironment.makeVM()
+            vm = guest
+            let status = try await guest.run("rm -rf -- \(GuestShell.quote(entry.path))", environment: nil) { _ in }
+            guard status == 0 else { throw BrowserError.operationFailed("Delete failed.") }
+            deleteTarget = nil
+            await load()
+        } catch { self.error = error.localizedDescription; deleteTarget = nil }
     }
 
     private func parent(_ value: String) -> String {
@@ -146,7 +211,7 @@ struct GuestFileBrowserView: View {
     }
 
     enum BrowserError: LocalizedError {
-        case readFailed
-        var errorDescription: String? { "The guest could not list this folder." }
+        case operationFailed(String)
+        var errorDescription: String? { if case .operationFailed(let message) = self { return message }; return nil }
     }
 }
