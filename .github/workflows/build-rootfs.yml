@@ -200,7 +200,10 @@ jobs:
             echo "::error::$ZIP is $((SIZE / 1048576)) MB; an IPA bundling it would not fit in a 2 GiB release asset"
             exit 1
           fi
-          unzip -p "$ZIP" alpine-rootfs/usr/local/share/xforge/rootfs-manifest.txt > /tmp/rootfs-manifest.txt
+          # `data/` because the archive is a fakefs: its tree is under
+          # alpine-rootfs/data/, and the manifest is a file in that tree.
+          unzip -p "$ZIP" alpine-rootfs/data/usr/local/share/xforge/rootfs-manifest.txt \
+            > /tmp/rootfs-manifest.txt
           {
             echo "### Rootfs: $((SIZE / 1048576)) MB"
             echo
