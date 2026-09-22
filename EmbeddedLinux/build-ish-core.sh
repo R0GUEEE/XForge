@@ -246,15 +246,20 @@ if [ -d "$ARCHIVE_PROJ" ]; then
     #
     #     The following build commands failed: CreateBuildDescription
     #
-    # so the inherited layout is cleared and a derived-data directory of this
-    # build's own is used. The output goes to a log rather than /dev/null: a hidden
-    # failure here is a failure nobody can read.
+    # so the inherited layout is cleared and this build gets a products/objects
+    # directory of its own. (`-derivedDataPath` is not usable here: it requires
+    # `-scheme`, and libarchive.xcodeproj has no shared scheme — only the target,
+    # which is why this builds with `-target`.)
+    #
+    # The output goes to a log rather than /dev/null: a hidden failure here is a
+    # failure nobody can read.
     if ! (
         unset SYMROOT OBJROOT BUILD_DIR BUILD_ROOT DERIVED_FILE_DIR PROJECT_TEMP_DIR \
               TARGET_BUILD_DIR CONFIGURATION_BUILD_DIR BUILT_PRODUCTS_DIR
         xcodebuild -project "$ARCHIVE_PROJ" -target libarchive \
             -configuration Release -sdk iphoneos ARCHS=arm64 \
-            -derivedDataPath "$MESON_BUILD/archive-derived" \
+            SYMROOT="$MESON_BUILD/archive" \
+            OBJROOT="$MESON_BUILD/archive-obj" \
             CONFIGURATION_BUILD_DIR="$MESON_BUILD/archive" \
             CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=NO build
     ) > "$ARCHIVE_LOG" 2>&1; then
