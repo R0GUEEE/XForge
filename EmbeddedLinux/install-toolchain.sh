@@ -532,6 +532,21 @@ home="\${SWIFTLY_HOME_DIR:-/root/.local/share/swiftly}"
 
 for candidate in "\$home"/toolchains/*/usr/bin/$name "\$home"/bin/$name; do
     [ -x "\$candidate" ] || continue
+    # The link flags go in front of a *compile* invocation, and in front of
+    # nothing else. The Swift driver decides what it was asked to do from the
+    # first argument, so a flag there turns a subcommand into a filename:
+    #     swift -Xlinker -L... sdk install /path/to.bundle
+    #     <unknown>:0: error: error opening input file 'sdk' (No such file or directory)
+    # That is exactly how a rootfs build failed after installing a toolchain that
+    # worked, and it is why the list below exists rather than a blanket exec: the
+    # SwiftPM subcommands reach the linker through their own \`swiftc\` (which is
+    # this same script), so they are not the invocations that need the flags.
+    # A driver subcommand this list misses fails loudly on its first run rather
+    # than quietly linking the wrong libraries.
+    case "\${1:-}" in
+        sdk|experimental-sdk|package|build|test|run|demangle)
+            exec "\$candidate" "\$@" ;;
+    esac
     exec "\$candidate" $link_dirs "\$@"
 done
 
