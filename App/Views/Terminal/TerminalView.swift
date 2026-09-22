@@ -249,42 +249,20 @@ private final class TerminalTextView: UITextView, UIKeyInput {
     private var lastRevision = -1
 
     override var canBecomeFirstResponder: Bool { true }
-    override var keyboardType: UIKeyboardType {
-        get { .asciiCapable }
-        set { }
-    }
-    override var autocorrectionType: UITextAutocorrectionType {
-        get { .no }
-        set { }
-    }
-    override var autocapitalizationType: UITextAutocapitalizationType {
-        get { .none }
-        set { }
-    }
-    override var spellCheckingType: UITextSpellCheckingType {
-        get { .no }
-        set { }
-    }
-    override var smartQuotesType: UITextSmartQuotesType {
-        get { .no }
-        set { }
-    }
-    override var smartDashesType: UITextSmartDashesType {
-        get { .no }
-        set { }
-    }
-    override var smartInsertDeleteType: UITextSmartInsertDeleteType {
-        get { .no }
-        set { }
-    }
-
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
         backgroundColor = .black
         textColor = UIColor(white: 0.92, alpha: 1)
         tintColor = .systemGreen
-        isEditable = false
+        isEditable = true
         isSelectable = true
+        keyboardType = .asciiCapable
+        autocorrectionType = .no
+        autocapitalizationType = .none
+        spellCheckingType = .no
+        smartQuotesType = .no
+        smartDashesType = .no
+        smartInsertDeleteType = .no
         alwaysBounceVertical = true
         keyboardDismissMode = .interactive
         textContainerInset = UIEdgeInsets(top: 6, left: 8, bottom: 8, right: 8)
@@ -301,7 +279,8 @@ private final class TerminalTextView: UITextView, UIKeyInput {
         lastRevision = session.revision
         let wasNearBottom = contentOffset.y + bounds.height >= contentSize.height - 44
         let selection = selectedRange
-        text = session.buffer.plainText
+        let rendered = session.buffer.plainText
+        if text != rendered { text = rendered }
         if selection.location <= (text as NSString).length { selectedRange = selection }
         if wasNearBottom || !isTracking {
             let end = NSRange(location: (text as NSString).length, length: 0)
