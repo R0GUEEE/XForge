@@ -231,14 +231,41 @@ ar rcs "$OUT/libfakefsify.a" "$MESON_BUILD/xforge-fakefs.o"
 # single libarchive. The iOS SDK ships none.
 log "Building libarchive for iOS"
 ARCHIVE_PROJ="$ISH/deps/libarchive.xcodeproj"
+ARCHIVE_LOG="$MESON_BUILD/archive-build.log"
 if [ -d "$ARCHIVE_PROJ" ]; then
     # One native target. Avoid `xcodebuild -list`, whose target discovery
     # initialises Simulator services and can fail on a headless build host even
     # though the device build is valid.
-    xcodebuild -project "$ARCHIVE_PROJ" -target libarchive \
-        -configuration Release -sdk iphoneos ARCHS=arm64 \
-        CONFIGURATION_BUILD_DIR="$MESON_BUILD/archive" \
-        CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=NO build >/dev/null
+    #
+    # This is a *nested* xcodebuild when the engine is built from Xcode's build
+    # phase (EmbeddedLinux/build-engine-for-xcode.sh) rather than from a shell, and
+    # Xcode exports SYMROOT, OBJROOT, BUILD_DIR and friends to script phases —
+    # which xcodebuild itself honours. Left in place, the inner build tries to
+    # write into the outer build's directories, the outer build already owns that
+    # build description, and the whole thing dies with
+    #
+    #     The following build commands failed: CreateBuildDescription
+    #
+    # so the inherited layout is cleared and a derived-data directory of this
+    # build's own is used. The output goes to a log rather than /dev/null: a hidden
+    # failure here is a failure nobody can read.
+    if ! (
+        unset SYMROOT OBJROOT BUILD_DIR BUILD_ROOT DERIVED_FILE_DIR PROJECT_TEMP_DIR \
+              TARGET_BUILD_DIR CONFIGURATION_BUILD_DIR BUILT_PRODUCTS_DIR
+        xcodebuild -project "$ARCHIVE_PROJ" -target libarchive \
+            -configuration Release -sdk iphoneos ARCHS=arm64 \
+            -derivedDataPath "$MESON_BUILD/archive-derived" \
+            CONFIGURATION_BUILD_DIR="$MESON_BUILD/archive" \
+            CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=NO build
+    ) > "$ARCHIVE_LOG" 2>&1; then
+        printf '\nerror: building libarchive for iOS failed. Last lines:\n' >&2
+        tail -n 30 "$ARCHIVE_LOG" >&2
+        die "xcodebuild could not build $ARCHIVE_PROJ (full log: $ARCHIVE_LOG)"
+    fi
+    [ -f "$MESON_BUILD/archive/libarchive.a" ] || {
+        tail -n 30 "$ARCHIVE_LOG" >&2
+        die "xcodebuild produced no libarchive.a (full log: $ARCHIVE_LOG)"
+    }
     cp "$MESON_BUILD/archive/libarchive.a" "$OUT/libarchive.a"
 else
     die "$ARCHIVE_PROJ missing (init the deps/libarchive submodule)"
