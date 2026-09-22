@@ -645,7 +645,13 @@ step_sdk() {
     # chroot never needs the network for the largest download in the chain.
     if [ -n "${XFORGE_DARWIN_SDK_ARCHIVE:-}" ] && [ -f "$XFORGE_DARWIN_SDK_ARCHIVE" ]; then
         log "Using the staged SDK archive at $XFORGE_DARWIN_SDK_ARCHIVE"
-        cp -f "$XFORGE_DARWIN_SDK_ARCHIVE" "$archive"
+        # The caller may well have staged it *at* this path — the rootfs build
+        # does, because that is where this step looks for its cache — and `cp a a`
+        # is an error ("are the same file"), which is how a build failed after
+        # every download and install in it had succeeded.
+        if [ "$XFORGE_DARWIN_SDK_ARCHIVE" != "$archive" ]; then
+            cp -f "$XFORGE_DARWIN_SDK_ARCHIVE" "$archive"
+        fi
     else
         log "Downloading $SDK_ASSET ($SDK_URL)"
         rm -f "$archive.partial"
