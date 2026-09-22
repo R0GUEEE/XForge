@@ -59,6 +59,7 @@ Support/                Info.plist, entitlements, Resources/ (bundled rootfs)
 project.yml             XcodeGen definition
 .github/workflows/      build-ipa.yml (IPA), build-rootfs.yml (the pinned root)
 Docs/DESIGN.md          full architecture write-up
+Docs/ISH-ARM64-INTEGRATION.md   the engine integration vs. its reference implementation
 ```
 
 ## App information

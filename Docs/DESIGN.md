@@ -216,4 +216,5 @@ Vendor/ish-arm64-build/                # core static libs (built, gitignored)
 EmbeddedLinux/                       # build-rootfs.sh, build-ish-core.sh, install-toolchain.sh,
                                      # verify-rootfs.sh, xforge-login (installed into the guest)
 Docs/                                # this design doc + tutorials
+Docs/ISH-ARM64-INTEGRATION.md        # engine integration vs. OpenMinis's reference
 ```

@@ -56,6 +56,47 @@ for tool in meson ninja xcrun python3; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool not found in PATH"
 done
 
+# ---------------------------------------------------------------------------
+# Already built?
+#
+# The libraries are a function of the engine's sources and of the flags this
+# script passes, so the engine revision (the submodule commit) plus a hash of this
+# script and of project.yml — which carries -DGUEST_ARM64=1, and has to agree with
+# the engine or struct layouts differ — is enough to decide. That matters because
+# this script is run from two places now: the IPA workflow, and the app target's
+# first build phase (EmbeddedLinux/build-engine-for-xcode.sh), which runs on every
+# Xcode build. A cold engine build takes minutes; the stamp makes the common case
+# a couple of file reads.
+#
+# XFORGE_REBUILD_ENGINE=1 forces the build. So does deleting the lib directory.
+# ---------------------------------------------------------------------------
+stamp_value() {
+    local revision script_hash project_hash
+    revision="$(git -C "$ISH" rev-parse HEAD 2>/dev/null \
+        || git -C "$REPO" rev-parse HEAD:Vendor/ish-arm64 2>/dev/null \
+        || echo unknown)"
+    script_hash="$(shasum -a 256 "$HERE/build-ish-core.sh" | cut -d' ' -f1)"
+    project_hash="$(shasum -a 256 "$REPO/project.yml" 2>/dev/null | cut -d' ' -f1)"
+    printf '%s %s %s %s %s' "$revision" "$script_hash" "${project_hash:-none}" "$GUEST_ARCH" "$MIN_SDK"
+}
+
+STAMP="$OUT/.engine-stamp"
+WANT_STAMP="$(stamp_value)"
+if [ "${XFORGE_REBUILD_ENGINE:-0}" != "1" ] && [ -f "$STAMP" ] \
+   && [ "$(cat "$STAMP")" = "$WANT_STAMP" ]; then
+    complete=1
+    for lib in libish.a libish_emu.a libfakefs.a libfakefsify.a libarchive.a; do
+        [ -f "$OUT/$lib" ] || complete=""
+    done
+    if [ -n "$complete" ]; then
+        log "The engine is already built ($OUT) — nothing to do"
+        note "engine revision: $(printf '%s' "$WANT_STAMP" | cut -d' ' -f1)"
+        note "force a rebuild with XFORGE_REBUILD_ENGINE=1"
+        exit 0
+    fi
+    note "the stamp matches but libraries are missing — rebuilding"
+fi
+
 # The VDSO step compiles a 32-bit i386-linux object with `-fuse-ld=lld`, which
 # Apple's clang cannot do; it needs an LLVM clang with lld. Put Homebrew's LLVM
 # first and make sure ld.lld is reachable (newer `llvm` bottles ship clang but
@@ -205,3 +246,7 @@ fi
 
 log "Staged into $OUT"
 ls -lh "$OUT"
+
+# Record what was built, so the next run (Xcode's build phase runs this on every
+# build) can tell in a moment that there is nothing to do.
+printf '%s\n' "$WANT_STAMP" > "$STAMP"

@@ -2,6 +2,34 @@
 
 All notable changes to **XForge** are documented here.
 
+## The engine is a prerequisite of the app, so the app builds it
+
+### Changed
+- **The XForge target now builds the embedded Linux engine itself.** A first build
+  phase (`EmbeddedLinux/build-engine-for-xcode.sh`) fetches the engine's submodules
+  if the checkout is empty, installs meson/ninja/llvm/lld/libarchive with Homebrew
+  when they are missing, and runs `EmbeddedLinux/build-ish-core.sh` — which is a
+  no-op unless the engine revision, that script or `project.yml` changed. Until
+  now only the IPA workflow ran the engine build, so any other way of building the
+  project failed part-way through compiling the bridge with
+  `ISHBridge.c:123:10: error: 'kernel/init.h' file not found`, which reads like a
+  missing header rather than a missing engine. Simulator builds skip the phase
+  (they compile the stub branch of the bridge), as do `XFORGE_SKIP_ENGINE=1` and
+  `XFORGE_REBUILD_ENGINE=1` forces a rebuild.
+- **The engine build records what it built** (`.engine-stamp`: the submodule commit,
+  a hash of `build-ish-core.sh` and of `project.yml`, the guest arch and the
+  minimum iOS version) so the phase costs a couple of file reads on every
+  subsequent build instead of minutes.
+- **`Docs/ISH-ARM64-INTEGRATION.md`** (new): the reference integration
+  (`OpenMinis/OpenMinis`'s `deps/ISH_INTEGRATION.md` and its two build scripts) item
+  by item against what XForge does, including the two requirements XForge
+  deliberately does not follow — `-ObjC -all_load`, which exists to preserve
+  Objective-C categories and reachability in a C static library, and
+  `-DISH_INTERNAL`, which the reference needs only because its kernel file includes
+  `fs/fake.h` — and how the console differs from the reference's (the reference makes
+  pid 1 *be* the shell; XForge boots an init that starts a login session, which is
+  why pid 1's stdio had to stop claiming the console).
+
 ## The console starts root's login shell, in a root that has it
 
 ### Changed
