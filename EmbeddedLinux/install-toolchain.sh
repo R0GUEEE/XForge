@@ -722,16 +722,22 @@ step_sdk() {
     # excluded: the copy that was just installed *from* is a different bundle, and
     # `__MACOSX` shadows it in a name search.
     sdk_find() {
-        find "$HOME" -maxdepth 9 -type d -name "$1" \
-            ! -path '*/__MACOSX/*' ! -path "$SDK_CACHE/*" -print 2>"$SILENT" | head -1 || true
+        # The whole filesystem, pruned rather than bounded: SwiftPM's SDK store
+        # lives under the home directory in theory, and a `-maxdepth` guess at its
+        # depth searched every plausible place and found nothing — a search that
+        # reports "nowhere" for something `swift sdk list` can see is worse than a
+        # slow one. /proc, /sys, /dev and the download cache are the only places
+        # worth skipping, and -xdev keeps the virtual filesystems out anyway.
+        find / -xdev \
+            \( -path /proc -o -path /sys -o -path /dev -o -path "$SDK_CACHE" \
+               -o -name '__MACOSX' \) -prune -o \
+            -type d -name "$1" -print 2>"$SILENT" | head -1 || true
     }
     sdk_install_dir="$(sdk_find '*.artifactbundle')"
     [ -n "$sdk_install_dir" ] || sdk_install_dir="$(sdk_find 'swift-sdks')"
     if [ -z "$sdk_install_dir" ]; then
-        echo "swift sdk list names a darwin SDK but it is nowhere under $HOME:" >&2
+        echo "swift sdk list names a darwin SDK but no bundle is anywhere on this filesystem:" >&2
         echo "  HOME=$HOME SWIFTLY_HOME_DIR=$SWIFTLY_HOME_DIR" >&2
-        find "$HOME" -maxdepth 9 -type d \( -name '*.artifactbundle' -o -name 'swift-sdks' \) -print 2>&1 \
-            | sed 's/^/    candidate: /' >&2
         swift sdk list 2>&1 | sed 's/^/    /' >&2
         exit 1
     fi
