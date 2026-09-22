@@ -40,6 +40,11 @@
 # Usage:
 #     EmbeddedLinux/verify-rootfs.sh <alpine-rootfs.zip | rootfs-dir>
 #
+# A root built with XFORGE_PROVISION=all also carries the build toolchain (xtool,
+# the Swift toolchain and the Darwin SDK), and its own manifest says so — that
+# claim is checked here too, because a half-provisioned root looks exactly like a
+# working one until someone tries to build with it.
+#
 set -euo pipefail
 
 TARGET="${1:-dist/rootfs/alpine-rootfs.zip}"
@@ -105,6 +110,26 @@ path_contents() {
     else
         cat "$TREE/$1"
     fi
+}
+
+# path_matches <extended regex on a root-relative path>
+#
+# For the paths that cannot be named exactly — a Swift toolchain lives under a
+# versioned directory that changes with every release. The listing is written to a
+# file before it is searched on purpose: `find … | grep -q` closes the pipe at the
+# first match, the producer dies of SIGPIPE, and under `set -o pipefail` the
+# pipeline then reports failure for a check that passed.
+path_matches() {
+    local listing rc
+    listing="$(mktemp)"
+    if [ "$MODE" = "zip" ]; then
+        grep -E "^$BASE$1" "$ENTRIES" > "$listing" || true
+    else
+        find "$TREE" -mindepth 1 -print 2>/dev/null | sed "s|^$TREE/||" > "$listing" || true
+    fi
+    if [ -s "$listing" ]; then rc=0; else rc=1; fi
+    rm -f "$listing"
+    return "$rc"
 }
 
 # path_link_target <root-relative symlink path>
@@ -303,6 +328,82 @@ if [ -n "$META_DB" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 4b. The provisioned toolchain, when the manifest says there is one
+#
+# A root built with XFORGE_PROVISION=all carries xtool, the Swift toolchain and
+# the Darwin SDK, and its manifest says so. That claim is checked here rather than
+# trusted, for the same reason as everything else in this script: the failure mode
+# is quiet. A root whose toolchain is half-installed boots perfectly, gives a
+# working console, reports the toolchain as "installed" in the app, and fails on
+# the user's first build — which is the most expensive place to find out.
+#
+# What cannot be done here is *run* the tools: a fakefs root cannot be chrooted
+# (its symlinks are files, and only the engine resolves them), and the tree the
+# verification ran on during the build no longer exists by then. So the checks are
+# structural — the paths exist, and for a fakefs root the engine can see them —
+# and the "it actually compiles" check happened on the tree, in the build, where
+# install-toolchain.sh verify could run a real compile.
+# ---------------------------------------------------------------------------
+TOOLCHAIN_CLAIM="$(path_contents "$MANIFEST" | awk '/^[[:space:]]*toolchain:/ { sub(/^[[:space:]]*toolchain:[[:space:]]*/, ""); print; exit }')"
+case "$TOOLCHAIN_CLAIM" in
+    ""|"not provisioned"*)
+        note "no toolchain in this root (the guest installs it on demand)" ;;
+    *)
+        log "Toolchain: $TOOLCHAIN_CLAIM"
+
+        for path in \
+            usr/local/bin/xtool \
+            usr/local/bin/swift \
+            usr/local/bin/swiftc \
+            usr/local/bin/swiftly \
+            opt/xtool/usr/bin/xtool \
+            usr/local/share/xforge/glibc.env ; do
+            path_exists "$path" \
+                || die "the manifest promises a toolchain but /$path is missing"
+        done
+        note "xtool, swift, swiftly and the glibc layer are present"
+
+        # The toolchain itself lives in a versioned directory
+        # (swiftly/toolchains/<version>/usr/bin/...), so it is looked for by shape
+        # rather than by a name that changes with every Swift release.
+        path_matches 'root/\.local/share/swiftly/toolchains/[^/]+/usr/bin/swift-frontend' \
+            || die "there is no Swift toolchain under /root/.local/share/swiftly/toolchains"
+        path_matches 'root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/linux/[^/]+/Swift\.swiftmodule' \
+            || die "the Swift toolchain has no Linux stdlib interface under
+       /root/.local/share/swiftly/toolchains/*/usr/lib/swift/linux"
+        note "a Swift toolchain with its stdlib is installed"
+
+        if path_exists "usr/local/share/xforge/darwin-sdk.txt"; then
+            SDK_PATH="$(path_contents "usr/local/share/xforge/darwin-sdk.txt" \
+                | awk '/^[[:space:]]*path:/ { print $2; exit }')"
+            SDK_TAG_LINE="$(path_contents "usr/local/share/xforge/darwin-sdk.txt" \
+                | awk '/^[[:space:]]*tag:/ { print $2; exit }')"
+            [ -n "$SDK_PATH" ] \
+                || die "/usr/local/share/xforge/darwin-sdk.txt does not name where the SDK went"
+            path_exists "${SDK_PATH#/}" \
+                || die "the Darwin SDK records itself at $SDK_PATH, which is not in this root
+       — the guest's first build would fail on a missing SDK"
+            note "Darwin SDK $SDK_TAG_LINE at $SDK_PATH"
+
+            # And the engine has to be able to see it: the whole reason the
+            # toolchain is installed before the conversion is that a file in data/
+            # with no row in `paths` does not exist as far as the guest is concerned.
+            if [ -n "$META_DB" ]; then
+                sdk_indexed="$(sqlite3 "$META_DB" \
+                    "SELECT COUNT(*) FROM paths WHERE CAST(path AS TEXT) LIKE '${SDK_PATH%/}/%';")"
+                [ "${sdk_indexed:-0}" -gt 0 ] \
+                    || die "the Darwin SDK is on disk but not indexed in meta.db
+       ($sdk_indexed paths under $SDK_PATH) — the guest would not see it. It has to
+       be installed before the fakefs conversion."
+                note "Darwin SDK paths indexed in meta.db: $sdk_indexed"
+            fi
+        else
+            note "no Darwin SDK in this root (XFORGE_PROVISION_SDK=0)"
+        fi
+        ;;
+esac
+
+# ---------------------------------------------------------------------------
 # 5. Run it — a tree only, and say plainly why it cannot be done otherwise
 # ---------------------------------------------------------------------------
 log "The console path"
@@ -316,6 +417,19 @@ if [ "$MODE" != "tree" ]; then
     exit 0
 fi
 
+# An explicit skip is answered before the requirements of the thing being skipped:
+# "set XFORGE_VERIFY_SKIP_CONSOLE=1" is the advice this script gives a caller who
+# cannot chroot (not root, or not on aarch64), and it has to work for them —
+# otherwise the advice is a dead end and a check that was meant to be skipped
+# fails the caller anyway.
+if [ "${XFORGE_VERIFY_SKIP_CONSOLE:-0}" = "1" ]; then
+    note "the console is not run (XFORGE_VERIFY_SKIP_CONSOLE=1): the file checks above are all"
+    note "that was asked for"
+    log "Done"
+    note "$TARGET checks out"
+    exit 0
+fi
+
 [ "$(id -u)" -eq 0 ] || die "checking the console needs root (it chroots into the
        root). Re-run with sudo, or set XFORGE_VERIFY_SKIP_CONSOLE=1."
 case "$(uname -m)" in
@@ -324,13 +438,6 @@ case "$(uname -m)" in
        run here. Run this on an aarch64 machine, or set XFORGE_VERIFY_SKIP_CONSOLE=1
        to check only the files." ;;
 esac
-
-if [ "${XFORGE_VERIFY_SKIP_CONSOLE:-0}" = "1" ]; then
-    note "skipped (XFORGE_VERIFY_SKIP_CONSOLE=1)"
-    log "Done"
-    note "$TARGET checks out"
-    exit 0
-fi
 
 # A working /dev/null is not optional: every shell opens it, and a chroot without
 # /dev is a chroot where commands fail for reasons that have nothing to do with what

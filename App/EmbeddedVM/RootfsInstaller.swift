@@ -13,8 +13,12 @@ import ZIPFoundation
 /// the conversion touches thousands of files, and doing it here means first
 /// launch is a plain unzip instead of a multi-minute import on a phone.
 ///
-/// The root is a plain Alpine userspace. Swift, xtool and the rest are installed
-/// *by the guest*, on demand, by `install-toolchain.sh` — see the Toolkit screen.
+/// The root is a full Alpine userspace. The published root also carries the build
+/// toolchain — xtool, swiftly, the Swift toolchain and the Darwin SDK — installed
+/// at build time by `EmbeddedLinux/install-toolchain.sh`, run in a chroot of the
+/// root before the fakefs conversion (see `EmbeddedLinux/build-rootfs.sh`). A root
+/// built without it (`XFORGE_PROVISION=none`) is provisioned *by the guest*
+/// instead, on demand, with the same script — see the Toolkit screen.
 enum RootfsInstaller {
     /// The ZIP of the pre-converted fakefs, built by `EmbeddedLinux/build-rootfs.sh`.
     static let archiveName = "alpine-rootfs"

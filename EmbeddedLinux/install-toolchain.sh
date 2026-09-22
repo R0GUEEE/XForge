@@ -11,7 +11,7 @@
 #
 # Set XFORGE_INSTALL_XTOOL=0 for a base build root that leaves xtool for the
 # app's on-device component installer.
-# Steps: deps | glibc | xtool | swiftly | swift | verify
+# Steps: deps | glibc | xtool | swiftly | swift | sdk | verify
 #
 # Every step is idempotent: re-running it is a no-op once it has succeeded.
 #
@@ -39,6 +39,24 @@ SHARE=/usr/local/share/xforge
 SWIFTLY_HOME_DIR="${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}"
 export SWIFTLY_HOME_DIR
 INSTALL_XTOOL="${XFORGE_INSTALL_XTOOL:-1}"
+
+# Where the Darwin Swift SDK comes from, and where it is unpacked on the way in.
+#
+# The SDK is the one component XForge cannot generate: it is Apple's, and either
+# the user's own Xcode.xip or a bundle someone already built from one. XForge
+# publishes its own (`darwin-sdk-<n>`, built with xtool) so a guest with no .xip
+# still gets a working SDK — the app's Downloads screen installs exactly this
+# asset, and this step installs the same thing when the rootfs is built.
+#
+# The tag is pinned rather than resolved through the API: the rootfs is packaged
+# once and shipped, so "which SDK is in this root" has to be answerable from the
+# build log, not from whatever `releases/latest` answered that minute. Set
+# XFORGE_DARWIN_SDK_URL to install a bundle from somewhere else entirely.
+SDK_REPO="${XFORGE_DARWIN_SDK_REPO:-R0GUEEE/XForge}"
+SDK_TAG="${XFORGE_DARWIN_SDK_TAG:-darwin-sdk-7}"
+SDK_ASSET="${XFORGE_DARWIN_SDK_ASSET:-darwin.artifactbundle.zip}"
+SDK_URL="${XFORGE_DARWIN_SDK_URL:-https://github.com/$SDK_REPO/releases/download/$SDK_TAG/$SDK_ASSET}"
+SDK_CACHE="${XFORGE_SDK_CACHE:-/root/.cache/xforge-sdk}"
 
 # Ubuntu release whose glibc the Swift toolchains are built against.
 UBUNTU_SUITE="${XFORGE_UBUNTU_SUITE:-noble}"
@@ -583,6 +601,116 @@ step_swift() {
     fi
 }
 
+# ---------------------------------------------------------------------------
+# The Darwin SDK
+#
+# The last piece of the toolchain, and the only one that is not on swift.org:
+# the arm64-apple-ios Swift SDK xtool compiles iOS apps against. XForge publishes
+# its own bundle (`darwin-sdk-<n>`), built with xtool from an Xcode.xip, and this
+# installs that bundle with SwiftPM's own `swift sdk install` — the same command
+# the Toolchain screen runs, so a root provisioned here and a guest provisioned by
+# hand end up with the SDK in the same place (`~/.swiftpm/swift-sdks`).
+#
+# This step is deliberately NOT part of `all`: it is a 400 MB download and a
+# 1.3 GB install, and a user with their own Xcode.xip is better served by
+# `xtool sdk install <xip>`. The rootfs build runs it explicitly.
+# ---------------------------------------------------------------------------
+step_sdk() {
+    log "Installing the Darwin Swift SDK ($SDK_TAG)"
+    if ! command -v swift >/dev/null 2>&1; then
+        echo "the Swift toolchain is required first: sh $0 swift" >&2
+        exit 1
+    fi
+
+    # Idempotence, answered by SwiftPM rather than by a marker file: an SDK that
+    # was installed and then removed must be reinstalled, and only SwiftPM knows.
+    sdk_listing="/tmp/xforge-sdk-list.$$"
+    if timeout 180 swift sdk list >"$sdk_listing" 2>&1 \
+       && grep -qi 'darwin' "$sdk_listing"; then
+        log "a Darwin SDK is already installed: $(grep -i darwin "$sdk_listing" | head -1)"
+        rm -f "$sdk_listing"
+        return 0
+    fi
+    rm -f "$sdk_listing"
+
+    command -v unzip >/dev/null 2>&1 || {
+        echo "unzip is required to install the SDK (run: sh $0 deps)" >&2
+        exit 1
+    }
+
+    mkdir -p "$SDK_CACHE"
+    archive="$SDK_CACHE/$SDK_ASSET"
+    # A caller that already has the archive (the rootfs build downloads it on the
+    # host, where it can be checked) stages it and points this at it, so the
+    # chroot never needs the network for the largest download in the chain.
+    if [ -n "${XFORGE_DARWIN_SDK_ARCHIVE:-}" ] && [ -f "$XFORGE_DARWIN_SDK_ARCHIVE" ]; then
+        log "Using the staged SDK archive at $XFORGE_DARWIN_SDK_ARCHIVE"
+        cp -f "$XFORGE_DARWIN_SDK_ARCHIVE" "$archive"
+    else
+        log "Downloading $SDK_ASSET ($SDK_URL)"
+        rm -f "$archive.partial"
+        curl -fL --retry 3 --retry-delay 2 --no-progress-meter \
+            -o "$archive.partial" "$SDK_URL" \
+            || { echo "could not download $SDK_URL" >&2; exit 1; }
+        mv "$archive.partial" "$archive"
+    fi
+    [ -s "$archive" ] || { echo "the SDK archive is empty: $archive" >&2; exit 1; }
+
+    # Recorded here, written into the root's manifest by the caller, and worth
+    # having: "which SDK is in this root" is otherwise unanswerable from a
+    # published artifact.
+    sdk_sha="$(sha256sum "$archive" | cut -d' ' -f1)"
+    if [ -n "${XFORGE_DARWIN_SDK_SHA256:-}" ] && [ "$XFORGE_DARWIN_SDK_SHA256" != "$sdk_sha" ]; then
+        echo "the SDK archive does not match XFORGE_DARWIN_SDK_SHA256" >&2
+        printf '    expected %s\n    got      %s\n' "$XFORGE_DARWIN_SDK_SHA256" "$sdk_sha" >&2
+        exit 1
+    fi
+
+    bundle="$SDK_CACHE/darwin.artifactbundle"
+    rm -rf "$bundle"
+    unzip -q "$archive" -d "$SDK_CACHE"
+    [ -f "$bundle/info.json" ] || {
+        echo "$archive did not unpack to $bundle/info.json" >&2
+        exit 1
+    }
+
+    log "Installing the SDK with swift sdk install"
+    swift sdk install "$bundle"
+
+    # 400 MB of archive and 1.3 GB of unpacked bundle are no longer needed once
+    # SwiftPM has copied the SDK into ~/.swiftpm/swift-sdks, and in a packaged
+    # rootfs they would be dead weight in the app bundle.
+    rm -f "$archive"
+    rm -rf "$bundle"
+
+    if ! swift sdk list 2>&1 | grep -qi darwin; then
+        echo "swift sdk install reported success but swift sdk list names no darwin SDK" >&2
+        exit 1
+    fi
+
+    # Where SwiftPM put it, recorded rather than assumed: the caller writes this
+    # into the root's manifest, and the verification then checks that exact path —
+    # which is the only way a *packed* fakefs root can be asked "is the SDK in
+    # here", since a fakefs root cannot be chrooted and run.
+    sdk_install_dir="$(ls -d "$HOME/.swiftpm/swift-sdks"/*/ 2>"$SILENT" | head -1 || true)"
+    [ -n "$sdk_install_dir" ] || {
+        echo "swift sdk list names a darwin SDK but $HOME/.swiftpm/swift-sdks is empty" >&2
+        exit 1
+    }
+
+    mkdir -p "$SHARE"
+    cat > "$SHARE/darwin-sdk.txt" <<EOF
+tag:      $SDK_TAG
+asset:    $SDK_ASSET
+url:      $SDK_URL
+sha256:   $sdk_sha
+path:     ${sdk_install_dir%/}
+installed-at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
+    log "Darwin SDK installed from $SDK_TAG (sha256 $sdk_sha)"
+    log "                     at ${sdk_install_dir%/}"
+}
+
 # Report what actually runs, and do not pretend. Each tool is checked through
 # the same path a user's command would take.
 step_verify() {
@@ -667,6 +795,7 @@ case "${1:-all}" in
     xtool)   step_xtool ;;
     swiftly) step_swiftly ;;
     swift)   step_swift ;;
+    sdk)     step_sdk ;;
     verify)  step_verify ;;
     all)
         step_deps
@@ -686,7 +815,7 @@ case "${1:-all}" in
         touch "$SHARE/build-environment-v2"
         ;;
     *)
-        echo "usage: $0 [deps|glibc|xtool|swiftly|swift|verify|all]" >&2
+        echo "usage: $0 [deps|glibc|xtool|swiftly|swift|sdk|verify|all]" >&2
         exit 2
         ;;
 esac

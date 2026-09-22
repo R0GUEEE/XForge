@@ -12,10 +12,13 @@
 #      (NOT cross-compiled: it runs here, on this host)
 #   3. unpack it as a plain tree, install the glibc layer into it, and install the
 #      packages the console session needs (bash/coreutils/less/terminfo)
-#   4. configure the root in place (passwd, profile, motd, inittab, DNS, apk repos)
+#   4. provision the build toolchain into it — xtool, swiftly, Swift and the
+#      Darwin Swift SDK — by running EmbeddedLinux/install-toolchain.sh in the
+#      chroot, so the guest arrives ready to build iOS apps
+#   5. configure the root in place (passwd, profile, motd, inittab, DNS, apk repos)
 #      — including the console program, EmbeddedLinux/xforge-login
-#   5. convert the configured tree to fakefs — a `data/` tree + `meta.db`
-#   6. `zip -r` the result, excluding the SQLite WAL/SHM sidecars
+#   6. convert the configured tree to fakefs — a `data/` tree + `meta.db`
+#   7. `zip -r` the result, excluding the SQLite WAL/SHM sidecars
 #
 # Why a ZIP of a fakefs and not a tarball the app imports at runtime: the
 # conversion is the expensive part (thousands of files into SQLite), and doing it
@@ -23,13 +26,23 @@
 # a phone. This is the same reason OpenMinis ships `alpine-rootfs.zip` and its
 # app only calls unzip + mount_root.
 #
-# The root is deliberately SMALL: plain Alpine, no Swift toolchain, no xtool. The
-# guest installs tooling itself on demand (EmbeddedLinux/install-toolchain.sh, run
-# inside the guest), which is what keeps this under a size that can be stored and
-# fetched cheaply. Baking a toolchain in made the payload ~1.4 GB. What the root
-# does carry beyond plain Alpine is the shell session the app opens onto (see
-# XFORGE_CONSOLE_PACKAGES below) — a few MB, and the difference between a console
-# that works on first launch and one that has to be provisioned first.
+# What is *in* the root is XFORGE_PROVISION's decision, and it is the whole
+# difference between a small root and a complete one:
+#
+#     XFORGE_PROVISION=all    plain Alpine plus the whole build toolchain:
+#                             xtool, swiftly, the Swift toolchain and the Darwin
+#                             Swift SDK, all installed before the conversion and
+#                             therefore visible to the engine. The app then boots
+#                             into a guest that can build an iOS app immediately,
+#                             at the cost of ~1.6 GB of artifact.
+#     XFORGE_PROVISION=none   plain Alpine only. The guest installs the toolchain
+#                             itself on demand (`sh /root/install-toolchain.sh
+#                             all`), which is what a few-MB root buys.
+#
+# Both are the same script, the same installer and the same layout: this decides
+# only *when* install-toolchain.sh runs, on the build machine or in the guest. The
+# small root exists so the choice is available; the provisioned one is what the
+# release ships.
 #
 # Output:
 #     dist/rootfs/alpine-rootfs.zip        the root (data/ + meta.db)
@@ -46,6 +59,24 @@
 #     XFORGE_WORK_DIR         scratch dir (default: <repo>/.rootfs-work)
 #     XFORGE_KEEP_WORK        1 to keep the scratch dir
 #     XFORGE_SKIP_GLIBC       1 to build a root without the glibc layer
+#     XFORGE_PROVISION        all (default) to bake the build toolchain into the
+#                             root; none to ship plain Alpine and let the guest
+#                             install it. See above.
+#     XFORGE_PROVISION_SDK    1 (default) to include the Darwin Swift SDK in a
+#                             provisioned root; 0 to stop after the Swift
+#                             toolchain. The SDK is ~400 MB of download and
+#                             ~1.3 GB installed, so this is the size lever.
+#     XFORGE_DARWIN_SDK_TAG   release tag the SDK comes from (default:
+#                             darwin-sdk-7). Pinned, not resolved: the published
+#                             root has to name the SDK it contains.
+#     XFORGE_DARWIN_SDK_URL   the SDK asset itself, overriding repo/tag/asset
+#     XFORGE_DARWIN_SDK_SHA256
+#                             refuse to use a downloaded SDK with any other hash
+#     XFORGE_SLIM_TOOLCHAIN   1 (default) to drop the parts of the Swift
+#                             toolchain an iOS build never loads (the static
+#                             Linux stdlib, lldb, the editor tooling). The
+#                             provisioning verification runs *after* this, so a
+#                             toolchain that stopped working fails the build.
 #     XFORGE_DEFAULT_SHELL    login shell root's console starts (default:
 #                             /bin/bash). Must be a shell the package list below
 #                             installs; if it is not, the build falls back to
@@ -93,6 +124,24 @@ WORK="${XFORGE_WORK_DIR:-$REPO/.rootfs-work}"
 #                         terminal
 DEFAULT_SHELL="${XFORGE_DEFAULT_SHELL:-/bin/bash}"
 CONSOLE_PACKAGES="${XFORGE_CONSOLE_PACKAGES:-bash coreutils less ncurses-terminfo}"
+
+# Whether the build toolchain is provisioned into the root (see the header). The
+# guest's installer is the only implementation of that, and it is run here in a
+# chroot of the tree, so a provisioned root and a hand-provisioned guest differ
+# in nothing but when the work happened.
+PROVISION="${XFORGE_PROVISION:-all}"
+PROVISION_SDK="${XFORGE_PROVISION_SDK:-1}"
+SLIM_TOOLCHAIN="${XFORGE_SLIM_TOOLCHAIN:-1}"
+
+# The Darwin Swift SDK: which release it comes from, and what the asset is called.
+# Kept in step with the app's XForgeReleases (the Toolchain screen downloads the
+# same asset) — the tag is pinned here, not resolved through the API, because the
+# published root has to name the exact SDK a device is booting.
+DARWIN_SDK_REPO="${XFORGE_DARWIN_SDK_REPO:-R0GUEEE/XForge}"
+DARWIN_SDK_TAG="${XFORGE_DARWIN_SDK_TAG:-darwin-sdk-7}"
+DARWIN_SDK_ASSET="${XFORGE_DARWIN_SDK_ASSET:-darwin.artifactbundle.zip}"
+DARWIN_SDK_URL="${XFORGE_DARWIN_SDK_URL:-https://github.com/$DARWIN_SDK_REPO/releases/download/$DARWIN_SDK_TAG/$DARWIN_SDK_ASSET}"
+DARWIN_SDK_SHA256="${XFORGE_DARWIN_SDK_SHA256:-}"
 
 ROOTFS_NAME="alpine-rootfs"
 ZIP_NAME="$ROOTFS_NAME.zip"
@@ -174,9 +223,20 @@ trap cleanup EXIT
     "the engine's deps/libarchive submodule is missing (fakefsify needs it)
        run: git -C Vendor/ish-arm64 submodule update --init --depth 1 deps/libarchive"
 
+case "$PROVISION" in
+    all|none) ;;
+    *) die "XFORGE_PROVISION must be 'all' or 'none', not '$PROVISION'" ;;
+esac
+
 for tool in curl meson ninja python3 zip; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
 done
+if [ "$PROVISION" = "all" ] && [ "$PROVISION_SDK" = "1" ]; then
+    for tool in unzip sha256sum; do
+        command -v "$tool" >/dev/null 2>&1 \
+            || die "$tool is required to stage the Darwin Swift SDK"
+    done
+fi
 
 mkdir -p "$WORK"
 
@@ -348,6 +408,195 @@ done
 note "$(chroot "$DATA" /bin/sh -c 'apk info 2>/dev/null | wc -l' | tr -d ' ') packages in the root"
 
 # ---------------------------------------------------------------------------
+# 5b. Provision the build toolchain into the root
+#
+# This is the difference between a root that can build an iOS app and one that
+# first has to provision itself. The work is the guest's own installer, run in a
+# chroot of this very tree — the same steps, the same order, the same result a
+# user would get from `sh /root/install-toolchain.sh all` in the Terminal, except
+# that it happens on a build machine with a fast network and a real CPU, once,
+# instead of on a phone under emulation.
+#
+# Order matters and is not the installer's own:
+#   * glibc before anything else (xtool and the Swift toolchain are glibc
+#     binaries), which the build already did in step 4 — the step is idempotent
+#     and returns immediately;
+#   * `deps` before the tools that need it (xtool unpacks with `tar`, the SDK
+#     installs with `unzip`);
+#   * the SDK *after* Swift, because `swift sdk install` is a Swift program;
+#   * the slimming pass after the SDK and *before* verify, so what the
+#     verification checks is what ships;
+#   * verify last, and its verdict is load-bearing (see below).
+#
+# Everything is installed before the fakefs conversion in step 7: the conversion
+# indexes the tree, and anything added afterwards would be on disk and invisible
+# to the engine. That is not a detail — it is how a previous attempt shipped a
+# glibc layer the guest could not see.
+# ---------------------------------------------------------------------------
+SDK_SHA256=""
+if [ "$PROVISION" = "none" ]; then
+    log "Skipping the build toolchain (XFORGE_PROVISION=none)"
+    note "the root will provision itself: sh /root/install-toolchain.sh all"
+else
+    [ "${XFORGE_SKIP_GLIBC:-0}" != "1" ] || die \
+        "XFORGE_PROVISION=all needs the glibc layer (xtool and the Swift
+       toolchain are glibc binaries), but XFORGE_SKIP_GLIBC=1. Drop one of the two."
+
+    log "Provisioning the build toolchain into the root (long: ~2 GB of downloads)"
+
+    install -m 0755 "$HERE/install-toolchain.sh" "$DATA/root/install-toolchain.sh"
+
+    # The Darwin SDK is the largest download by far, and it is fetched *here*
+    # rather than inside the chroot: on the build machine a failure is a line in
+    # the log, the archive is cached between runs, and the hash of what went in
+    # can be written into the published root's manifest — which is otherwise the
+    # only way to answer "which SDK is in this root" from the artifact alone.
+    SDK_GUEST_PATH=""
+    if [ "$PROVISION_SDK" = "1" ]; then
+        SDK_ARCHIVE="$WORK/$DARWIN_SDK_ASSET"
+        log "Fetching the Darwin Swift SDK: $DARWIN_SDK_TAG/$DARWIN_SDK_ASSET"
+        if [ -s "$SDK_ARCHIVE" ]; then
+            note "using the cached copy"
+        else
+            rm -f "$SDK_ARCHIVE.partial"
+            curl -fL --retry 3 --retry-delay 2 --no-progress-meter \
+                -o "$SDK_ARCHIVE.partial" "$DARWIN_SDK_URL" \
+                || die "could not download $DARWIN_SDK_URL
+       (set XFORGE_DARWIN_SDK_URL, or XFORGE_PROVISION_SDK=0 to build a root
+       with the Swift toolchain but no Darwin SDK)"
+            mv "$SDK_ARCHIVE.partial" "$SDK_ARCHIVE"
+        fi
+        [ -s "$SDK_ARCHIVE" ] || die "$SDK_ARCHIVE is empty"
+        SDK_SHA256="$(sha256sum "$SDK_ARCHIVE" | cut -d' ' -f1)"
+        if [ -n "$DARWIN_SDK_SHA256" ] && [ "$DARWIN_SDK_SHA256" != "$SDK_SHA256" ]; then
+            die "the SDK archive does not match XFORGE_DARWIN_SDK_SHA256
+       expected $DARWIN_SDK_SHA256
+       got      $SDK_SHA256
+       (remove $SDK_ARCHIVE to download it again)"
+        fi
+        note "$DARWIN_SDK_ASSET: $(du -h "$SDK_ARCHIVE" | cut -f1), sha256 $SDK_SHA256"
+        # Staged inside the tree, where the chroot can see it. The sdk step
+        # removes it again once SwiftPM has the SDK.
+        SDK_GUEST_PATH="/root/.cache/xforge-sdk/$DARWIN_SDK_ASSET"
+        mkdir -p "$DATA/root/.cache/xforge-sdk"
+        install -m 0644 "$SDK_ARCHIVE" "$DATA$SDK_GUEST_PATH"
+    else
+        note "the Darwin SDK is not included (XFORGE_PROVISION_SDK=0)"
+    fi
+
+    guest_mount
+
+    # One guest process per provisioning step, through the guest's own installer.
+    # `HOME=/root` is what makes swiftly and SwiftPM install into /root (the
+    # tree's own /root, so it is inside the root being built) rather than into
+    # whatever the build machine's environment has in mind.
+    provision() {
+        local step="$1"
+        shift
+        note "install-toolchain.sh $step"
+        chroot "$DATA" /bin/sh -c \
+            "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                    HOME=/root \
+                    SWIFTLY_HOME_DIR=/root/.local/share/swiftly \
+                    $*; \
+             sh /root/install-toolchain.sh $step" \
+            || die "the '$step' provisioning step failed in the chroot"
+    }
+
+    provision deps
+    provision glibc
+    provision xtool
+    provision swiftly
+    provision swift
+    if [ -n "$SDK_GUEST_PATH" ]; then
+        provision sdk \
+            "XFORGE_DARWIN_SDK_ARCHIVE=$SDK_GUEST_PATH" \
+            "XFORGE_DARWIN_SDK_SHA256=$SDK_SHA256" \
+            "XFORGE_DARWIN_SDK_TAG=$DARWIN_SDK_TAG" \
+            "XFORGE_DARWIN_SDK_ASSET=$DARWIN_SDK_ASSET" \
+            "XFORGE_DARWIN_SDK_URL=$DARWIN_SDK_URL"
+    fi
+
+    # -----------------------------------------------------------------------
+    # Slimming.
+    #
+    # Everything removed here is either a download cache (the archive just
+    # installed, the Ubuntu .deb pile the glibc layer was built from, the apk
+    # index) or a part of the Swift toolchain an iOS build never loads: the
+    # *static Linux* stdlib, the debugger and the editor tooling. Nothing here is
+    # guesswork in the sense that matters — the verification below runs after it,
+    # so a toolchain this broke would fail the build rather than a user's first
+    # build on a device.
+    # -----------------------------------------------------------------------
+    log "Slimming the root"
+    before_kib="$(du -sk "$DATA" 2>/dev/null | awk '{print $1}' || echo 0)"
+
+    rm -rf "$DATA/var/cache/apk" "$DATA/tmp/xforge-glibc" "$DATA/tmp/xforge-silent."* \
+           "$DATA/root/.cache/xforge-sdk"
+    # /tmp is scratch, but the directory itself stays: apk, the shells and the
+    # engine's own tools all expect it to exist.
+    find "$DATA/tmp" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
+
+    if [ "$SLIM_TOOLCHAIN" = "1" ]; then
+        removed=0
+        for toolchain in "$DATA"/root/.local/share/swiftly/toolchains/*/; do
+            [ -d "$toolchain" ] || continue
+            note "slim: $(basename "$toolchain")"
+            # The static Linux stdlib: only linked when a *Linux* program asks to
+            # be statically linked against it. xtool builds iOS binaries, whose
+            # stdlib comes from the Darwin SDK.
+            rm -rf "${toolchain}usr/lib/swift_static"
+            # The debugger and the editor tooling: lldb, sourcekit-lsp and the
+            # index stores exist to serve an IDE, not to compile.
+            rm -rf "${toolchain}usr/lib/python3"* \
+                   "${toolchain}usr/share/doc" "${toolchain}usr/share/man" \
+                   "${toolchain}usr/lib/swift/host/plugins" 2>/dev/null || true
+            for path in \
+                usr/bin/lldb usr/bin/lldb-server usr/bin/sourcekit-lsp \
+                usr/lib/liblldb.so usr/lib/libsourcekitdInProc.so \
+                usr/lib/libIndexStore.so ; do
+                rm -rf "${toolchain}${path}"*
+            done
+            removed=1
+        done
+        [ "$removed" = "1" ] || note "slim: no toolchain directory found to slim"
+    else
+        note "slim: keeping the whole Swift toolchain (XFORGE_SLIM_TOOLCHAIN=0)"
+    fi
+
+    after_kib="$(du -sk "$DATA" 2>/dev/null | awk '{print $1}' || echo 0)"
+    note "tree: $((before_kib / 1024)) MB before slimming, $((after_kib / 1024)) MB after"
+
+    # Verification, and this time the verdict is load-bearing.
+    #
+    # install-toolchain.sh verify reports rather than fails (its job in the
+    # Terminal is to explain), so its XFORGE-VERIFY lines are read here: a tool
+    # that is missing or not running means the root being packaged cannot do the
+    # thing it exists to do, and a published artifact is the wrong place to find
+    # that out. XFORGE_VERIFY_COMPILE adds the check that actually matters — that
+    # the toolchain can compile and run a program, not just print a version.
+    log "Verifying the provisioned toolchain"
+    verify_log="$WORK/verify-toolchain.log"
+    chroot "$DATA" /bin/sh -c \
+        "export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                HOME=/root SWIFTLY_HOME_DIR=/root/.local/share/swiftly \
+                XFORGE_VERIFY_COMPILE=${XFORGE_VERIFY_COMPILE:-1}; \
+         sh /root/install-toolchain.sh verify 2>&1" | tee "$verify_log"
+    if grep -qE 'XFORGE-VERIFY	(swift|swiftly|xtool|swift-sdk|swift-compile)	(missing|broken)' \
+        "$verify_log"; then
+        die "the provisioned toolchain does not work in the root being built —
+       see the XFORGE-VERIFY lines above. Packaging it would ship a guest that
+       cannot build anything."
+    fi
+    grep -q 'XFORGE-VERIFY	swift	ok' "$verify_log" \
+        || die "the Swift toolchain did not report ok — see $verify_log"
+
+    guest_umount
+
+    note "toolchain provisioned: xtool, swiftly, swift${SDK_SHA256:+, darwin SDK}"
+fi
+
+# ---------------------------------------------------------------------------
 # 6. Configure the root
 #
 # A bare Alpine minirootfs is not quite bootable as XForge's guest: it has no
@@ -374,6 +623,19 @@ if [ -f "$DATA/etc/passwd" ]; then
     fi
 fi
 note "root's login shell: $DEFAULT_SHELL"
+
+# What the console says about the toolchain, which is the one thing a user
+# notices first: whether the guest can build anything yet, or whether it has to
+# provision itself. It follows XFORGE_PROVISION rather than describing one of the
+# two states as if it were the only one.
+if [ "$PROVISION" = "all" ]; then
+    MOTD_TOOLCHAIN="  The build toolchain is installed: xtool, the Swift toolchain
+  and the Darwin SDK are ready to use. \`xtool --version\` and
+  \`swift sdk list\` answer from this shell with no setup."
+else
+    MOTD_TOOLCHAIN="  Swift and xtool are not installed yet. Install them in the guest with:
+      sh /root/install-toolchain.sh all"
+fi
 
 # /etc/profile: the non-interactive environment is built by XForge's exec layer,
 # but an interactive shell (the terminal tab) reads this.
@@ -402,9 +664,7 @@ cat > "$DATA/etc/motd" <<EOF
   Change it by editing root's shell field in /etc/passwd
   (the login script reads that field — any shell you install will do).
 
-  Swift and xtool are not installed yet. Install them in the guest with:
-      sh /root/install-toolchain.sh all
-
+$MOTD_TOOLCHAIN
 EOF
 
 # ---------------------------------------------------------------------------
@@ -488,6 +748,7 @@ fi
 # A stamp the app can check to know which root this is. XForge's installer reads
 # it to decide whether an existing install can be reused.
 mkdir -p "$DATA/usr/local/share/xforge"
+MANIFEST_PATH="$DATA/usr/local/share/xforge/rootfs-manifest.txt"
 {
     echo "base:      alpine-minirootfs-${ALPINE_VERSION}.${ALPINE_MINOR}-${ALPINE_ARCH}.tar.gz"
     echo "rootfs:    ${ALPINE_VERSION}.${ALPINE_MINOR}"
@@ -495,13 +756,34 @@ mkdir -p "$DATA/usr/local/share/xforge"
     echo "format:    fakefs-zip"
     echo "shell:     $DEFAULT_SHELL"
     echo "console:   /sbin/xforge-login root (tty1, respawned by init)"
+    # What the guest arrives with. This is the line that tells a user (and the
+    # verification, and the app) whether the root is the plain one or the
+    # provisioned one, without booting it.
+    if [ "$PROVISION" = "all" ]; then
+        echo "toolchain: xtool, swiftly, swift"
+        if [ -n "$SDK_SHA256" ]; then
+            echo "darwin-sdk: $DARWIN_SDK_TAG ($DARWIN_SDK_ASSET)"
+            echo "sdk-sha256: $SDK_SHA256"
+            # The SDK's own record of where SwiftPM put it, passed through rather
+            # than recomputed: verification checks this exact path, and a path
+            # that is written down where it is made cannot drift from one that is
+            # guessed at where it is checked.
+            sdk_path="$(awk '/^[[:space:]]*path:/ { print $2 }' \
+                "$DATA/usr/local/share/xforge/darwin-sdk.txt" 2>/dev/null || true)"
+            [ -n "$sdk_path" ] && echo "darwin-sdk-path: $sdk_path"
+        else
+            echo "darwin-sdk: not included"
+        fi
+    else
+        echo "toolchain: not provisioned (the guest installs it on demand)"
+    fi
     echo "built-at:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     # Bump this whenever anything about the guest's own setup changes — the app
     # compares it with the root it already installed and replaces the root when
     # they differ (see RootfsInstaller.installedRootIsStale). It must match the
     # release tag the root is published under.
-    echo "stamp:     rootfs-v4"
-} > "$DATA/usr/local/share/xforge/rootfs-manifest.txt"
+    echo "stamp:     rootfs-v5"
+} > "$MANIFEST_PATH"
 
 # ---------------------------------------------------------------------------
 # The console, exercised.
@@ -531,15 +813,32 @@ guest_umount
 # ---------------------------------------------------------------------------
 OUT_ROOTFS="$WORK/$ROOTFS_NAME"
 
+# The manifest is the root's own description of itself, the summary below prints
+# it, and the tree it lives in is deleted by the conversion below — so it is
+# copied out first.
+MANIFEST_COPY="$WORK/rootfs-manifest.txt"
+cp "$MANIFEST_PATH" "$MANIFEST_COPY"
+
 log "Converting to fakefs"
 rm -rf "$OUT_ROOTFS"
 STAGED_TAR="$WORK/$ROOTFS_NAME.tar.gz"
-tar -czf "$STAGED_TAR" -C "$DATA" .
 # Report what is being converted. The conversion is where a mistake in the
 # ordering shows up (the engine reads meta.db, not the directory), so the tree's
 # own numbers are worth having in the log next to the result.
 note "tree: $(du -sh "$DATA" | cut -f1), $(find "$DATA" -mindepth 1 | wc -l) entries"
+tar -czf "$STAGED_TAR" -C "$DATA" .
 note "staged: $(du -h "$STAGED_TAR" | cut -f1)"
+
+# The tree is deleted *here*, between packing and converting, and the ordering is
+# load-bearing rather than tidy. A provisioned tree is ~5 GB and the fakefs root
+# it converts to is about the same size again, so holding both at once — which is
+# what this did while the rootfs was small — needs ~11 GB, and a GitHub runner
+# has 14 GB in total. Spending the tar instead (which fakefsify is about to read
+# anyway) halves the peak, and the tar is already a complete copy of the tree.
+# The cost is that a failure inside fakefsify leaves no tree to inspect; the
+# packaging is what needs the disk, and the tar is kept until the conversion
+# succeeds.
+rm -rf "$DATA"
 "$FAKEFSIFY" "$STAGED_TAR" "$OUT_ROOTFS"
 rm -f "$STAGED_TAR"
 
@@ -613,7 +912,7 @@ note "size:   $(du -h "$ZIP_PATH" | cut -f1)"
 note "sha256: $(cut -d' ' -f1 < "$ZIP_PATH.sha256")"
 note "entries: $(wc -l < "$WORK/zip-contents.txt")"
 echo
-cat "$DATA/usr/local/share/xforge/rootfs-manifest.txt"
+cat "$MANIFEST_COPY"
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
     {
@@ -621,6 +920,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
         echo "rootfs_name=$ZIP_NAME"
         echo "rootfs_size=$(stat -c %s "$ZIP_PATH" 2>/dev/null || stat -f %z "$ZIP_PATH")"
         echo "rootfs_sha256=$(cut -d' ' -f1 < "$ZIP_PATH.sha256")"
+        echo "rootfs_toolchain=$([ "$PROVISION" = all ] && echo provisioned || echo none)"
     } >> "$GITHUB_OUTPUT"
 fi
 
@@ -629,9 +929,14 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
         echo "### Alpine rootfs"
         echo
         echo '```'
-        cat "$DATA/usr/local/share/xforge/rootfs-manifest.txt"
+        cat "$MANIFEST_COPY"
         echo '```'
         echo
         echo "\`$ZIP_NAME\` — $(du -h "$ZIP_PATH" | cut -f1)"
+        echo
+        echo "- toolchain: $([ "$PROVISION" = all ] && echo \
+            "xtool, swiftly, Swift${SDK_SHA256:+ and $DARWIN_SDK_TAG}" || \
+            'not provisioned')"
+        echo "- entries: $(wc -l < "$WORK/zip-contents.txt")"
     } >> "$GITHUB_STEP_SUMMARY"
 fi

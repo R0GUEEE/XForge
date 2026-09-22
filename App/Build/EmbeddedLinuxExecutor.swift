@@ -32,15 +32,18 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
                     await vm.prepareRootfs()
                     try await vm.boot()
 
-                    // The bundled root is a *plain* Alpine userspace: Swift and
-                    // xtool are installed by the guest on demand
-                    // (`install-toolchain.sh`), not baked in. So this check
-                    // reports what the guest can actually do, and an unprovisioned
-                    // root is a normal first-run state, not a broken release.
+                    // Whether the root carries the toolchain is the root's own
+                    // business: the published one has xtool and Swift baked in
+                    // (EmbeddedLinux/build-rootfs.sh, XFORGE_PROVISION=all), and a
+                    // plain one installs them on demand with
+                    // `install-toolchain.sh`. This check reports what the guest
+                    // can actually do rather than what it was supposed to arrive
+                    // with, and the message names the installer rather than
+                    // calling a plain root broken.
                     continuation.yield(.plan("Checking the Alpine toolchain…"))
                     guard try await buildEnvironmentIsReady() else {
                         continuation.yield(.failed(
-                            "The Alpine build toolchain is not installed yet. "
+                            "The Alpine build toolchain is not ready. "
                             + "Run `sh /root/install-toolchain.sh all` in the Terminal tab."
                         ))
                         continuation.finish()
@@ -78,9 +81,12 @@ final class EmbeddedLinuxExecutor: BuildExecutor {
     /// Whether the guest has the toolchain XForge builds with: the apk build
     /// dependencies, Swift, and xtool.
     ///
-    /// These are installed by the guest itself (`install-toolchain.sh`), not
-    /// shipped in the rootfs, so a false result is the ordinary state of a fresh
-    /// install rather than a packaging error.
+    /// These are what the bundled rootfs *is* expected to carry — the published
+    /// root is built with `XFORGE_PROVISION=all` and arrives with them installed
+    /// (`EmbeddedLinux/build-rootfs.sh`) — but they are also exactly what the
+    /// guest's own installer puts there (`install-toolchain.sh`), so a plain root
+    /// that has been provisioned by hand answers yes too, and a false result is
+    /// answered with the installer rather than treated as a broken release.
     ///
     /// Every probe here is a separate guest process, and their output goes to a
     /// *file*, never `/dev/null`: this engine kills a forked guest program whose

@@ -2,11 +2,13 @@ name: Build XForge IPA
 
 # Builds the unsigned XForge IPA.
 #
-# There is no rootfs-provisioning job any more. The Alpine root is a *plain*
-# small filesystem (a few MB) that is built once, published as a pinned release
-# asset, and downloaded here — see EmbeddedLinux/build-rootfs.sh and the
-# `rootfs` workflow. Provisioning a Swift toolchain into every CI run is what
-# used to make this job slow and the artifact 1.4 GB.
+# There is no rootfs-provisioning job here. The Alpine root — including the build
+# toolchain, when the published root carries one — is built once by the `rootfs`
+# workflow, published as a pinned release asset and downloaded here; see
+# EmbeddedLinux/build-rootfs.sh. Provisioning a Swift toolchain into every CI run
+# is what used to make this job slow and its artifact enormous. What arrives now
+# is a fakefs ZIP the app only unzips: a guest that can build an iOS app on first
+# launch, with nothing to install on the device.
 #
 # The engine (OpenMinis/ish-arm64) is built here, on macOS, because it can only
 # be: the aarch64 gadget sources alias registers with `.req` and only clang's
@@ -53,7 +55,12 @@ jobs:
       # upgraded; `make rootfs` (or the `rootfs` workflow) builds and publishes
       # a new one. The sha256 is asserted below, so a tag that is moved — or an
       # upload that was truncated — fails the build instead of shipping silently.
-      ROOTFS_TAG: rootfs-v4
+      #
+      # rootfs-v5 is the *provisioned* root: plain Alpine plus xtool, swiftly, the
+      # Swift toolchain and the Darwin SDK, so the guest can build without first
+      # installing anything. Its manifest says how it was built, and the checks
+      # below hold it to that.
+      ROOTFS_TAG: rootfs-v5
       ROOTFS_ASSET: alpine-rootfs.zip
       SPM_CLONES_DIR: .spm
     steps:
@@ -136,6 +143,52 @@ jobs:
               || { echo "::error::the rootfs has no ${path#alpine-rootfs/data}"; exit 1; }
           done
           echo "console: /sbin/xforge-login root → $ROOTFS_SHELL"
+
+          # The root's own manifest also says whether the build toolchain is baked
+          # in, and this is the other half of what the root is for: a guest that
+          # can build an iOS app without installing anything first. The checks are
+          # held to the manifest's claim, so the *plain* root still passes and a
+          # provisioned root that lost its toolchain does not — and the SDK is
+          # checked through meta.db as well as the listing, because a file the
+          # engine cannot see is a file the guest does not have.
+          TOOLCHAIN_CLAIM="$(awk '/^[[:space:]]*toolchain:/ { sub(/^[[:space:]]*toolchain:[[:space:]]*/, ""); print; exit }' /tmp/rootfs-manifest.txt)"
+          echo "toolchain: ${TOOLCHAIN_CLAIM:-<none stated>}"
+          case "$TOOLCHAIN_CLAIM" in
+            ""|"not provisioned"*)
+              echo "::error::the pinned rootfs ($ROOTFS_TAG) ships no build toolchain —
+          the guest would have to install Swift and xtool itself on the device. Bump
+          ROOTFS_TAG to a provisioned root, or say so deliberately here."
+              exit 1
+              ;;
+            *)
+              for path in \
+                alpine-rootfs/data/usr/local/bin/xtool \
+                alpine-rootfs/data/usr/local/bin/swift \
+                alpine-rootfs/data/usr/local/bin/swiftc \
+                alpine-rootfs/data/usr/local/bin/swiftly \
+                alpine-rootfs/data/opt/xtool/usr/bin/xtool ; do
+                grep -qx "$path" /tmp/rootfs-entries.txt \
+                  || { echo "::error::the rootfs claims a toolchain but has no ${path#alpine-rootfs/data}"; exit 1; }
+              done
+              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/bin/swift-frontend$' \
+                /tmp/rootfs-entries.txt \
+                || { echo '::error::the rootfs has no Swift toolchain'; exit 1; }
+              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/linux/[^/]+/Swift\.swiftmodule$' \
+                /tmp/rootfs-entries.txt \
+                || { echo '::error::the Swift toolchain has no Linux stdlib'; exit 1; }
+
+              SDK_PATH="$(awk '/^[[:space:]]*darwin-sdk-path:/ { print $2; exit }' /tmp/rootfs-manifest.txt)"
+              [ -n "$SDK_PATH" ] \
+                || { echo '::error::the rootfs claims a toolchain but names no Darwin SDK path'; exit 1; }
+              grep -qx "alpine-rootfs/data${SDK_PATH}/info.json" /tmp/rootfs-entries.txt \
+                || { echo "::error::the rootfs has no Darwin SDK at $SDK_PATH"; exit 1; }
+              sdk_indexed="$(sqlite3 /tmp/rootfs-meta.db \
+                "SELECT COUNT(*) FROM paths WHERE CAST(path AS TEXT) LIKE '${SDK_PATH%/}/%';")"
+              [ "${sdk_indexed:-0}" -gt 0 ] \
+                || { echo "::error::the Darwin SDK is in the zip but not indexed in meta.db ($sdk_indexed paths)"; exit 1; }
+              echo "toolchain: xtool, swift, and the Darwin SDK at $SDK_PATH ($sdk_indexed indexed paths)"
+              ;;
+          esac
 
           echo "rootfs: $(du -h "$ROOTFS_ASSET" | cut -f1), $(wc -l < /tmp/rootfs-entries.txt) entries"
 
@@ -362,6 +415,8 @@ jobs:
             echo
             echo "- binary: ${binary_info#*: } (${size_mb} MB)"
             echo "- bundled rootfs: $ROOTFS_TAG ($(du -h "$ROOTFS" | cut -f1))"
+            echo "- guest toolchain: $(unzip -p "$ROOTFS" alpine-rootfs/usr/local/share/xforge/rootfs-manifest.txt \
+              | awk '/^[[:space:]]*toolchain:/ { sub(/^[[:space:]]*toolchain:[[:space:]]*/, ""); print; exit }')"
             echo "- version: $(get CFBundleShortVersionString)"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -393,6 +448,14 @@ jobs:
           test -f "$IPA" || { echo "::error::$IPA was not produced"; exit 1; }
 
           echo "IPA: $IPA ($(du -h "$IPA" | cut -f1))"
+          # A provisioned root makes this a ~1.6 GB IPA, and GitHub refuses a
+          # release asset over 2 GiB. Failing here — with the number — is better
+          # than a publish step that errors out after the whole build.
+          ipa_bytes="$(stat -f%z "$IPA")"
+          if [ "$ipa_bytes" -gt 1900000000 ]; then
+            echo "::error::the IPA is $((ipa_bytes / 1048576)) MB; GitHub refuses a release asset over 2 GiB"
+            exit 1
+          fi
           echo "ipa=$IPA" >> "$GITHUB_ENV"
 
       - name: Upload the IPA

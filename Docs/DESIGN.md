@@ -27,7 +27,7 @@ self-contained, all fetchable):
   .tbd stubs, module maps) + the iOS Swift stdlib. This is the big one (multi-GB).
 - **`xtool` aarch64 binary** (the prebuilt `xtool-aarch64.AppImage`, 51 MB).
 
-## 1b. The userspace is **plain Alpine aarch64**, bundled as a fakefs ZIP
+## 1b. The userspace is **Alpine aarch64 with the build toolchain in it**, bundled as a fakefs ZIP
 
 The embedded Linux boots the official **Alpine Linux aarch64 minirootfs**:
 
@@ -37,10 +37,20 @@ https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3
 
 - `EmbeddedLinux/build-rootfs.sh` downloads that archive, installs the guest's
   own packages into it with the guest's own `apk` (the shell session's: see
-  *the console* below), configures the root (mount points, `/etc/passwd`,
-  `/etc/profile`, `/etc/motd`, `/etc/apk/repositories`, a default
-  `/etc/resolv.conf`), converts it to the engine's `fakefs` format with the
-  engine's own `tools/fakefsify`, and packs it as `alpine-rootfs.zip`.
+  *the console* below), **provisions the build toolchain into it by running the
+  guest's own `install-toolchain.sh` in a chroot of the tree** (glibc layer, apk
+  build dependencies, xtool, swiftly, the Swift toolchain, the Darwin SDK),
+  configures the root (mount points, `/etc/passwd`, `/etc/profile`, `/etc/motd`,
+  `/etc/apk/repositories`, a default `/etc/resolv.conf`), converts it to the
+  engine's `fakefs` format with the engine's own `tools/fakefsify`, and packs it
+  as `alpine-rootfs.zip`.
+- **Provisioning is the same code path as the guest's, not a parallel one.** The
+  script the build runs in the chroot is the script the app ships
+  (`EmbeddedLinux/install-toolchain.sh`, staged at `/root/install-toolchain.sh`),
+  invoked step by step: `deps`, `glibc`, `xtool`, `swiftly`, `swift`, `sdk`, then
+  `verify`. A root provisioned on the build machine and one provisioned by hand
+  in the Terminal therefore differ in nothing but where and when the work
+  happened, and there is one implementation to keep correct.
 - **The console is a root login session, and the root is what starts it.**
   `/etc/inittab` respawns `/sbin/xforge-login root` on `tty1`; that script (from
   `EmbeddedLinux/xforge-login`) reads root's shell out of `/etc/passwd` and execs
@@ -67,40 +77,55 @@ https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3
   of files into SQLite on a phone. This is the same layout OpenMinis ships, and
   it is why `App/EmbeddedVM/RootfsInstaller.swift` uses `unzip` and then
   `mount_root` instead of `fakefs_import`.
-- **The root is small and pre-provisioned only where it matters.** Swift and
-  xtool are *not* in it — the guest installs them on demand with
-  `install-toolchain.sh` — which is what keeps the artifact ~95 MB instead of
-  ~1.4 GB. The **glibc compatibility layer is** included: every tool XForge
-  builds with is a glibc binary (xtool is a Swift program built on Ubuntu, and so
-  is the toolchain), Alpine is musl, and `gcompat` is not enough for them. Baking
-  that layer in removes the most failure-prone step of an on-device provision
-  (a package renamed between Ubuntu releases yields a layer that loads but cannot
-  resolve a symbol, which surfaces much later inside a tool).
-- **The layer is installed before the fakefs conversion, and that ordering is
-  load-bearing.** `fakefsify` writes `meta.db` as an index of the tree as it
+- **The root arrives ready to build.** Swift, xtool and the Darwin SDK *are* in
+  it, installed before the conversion, which is what the artifact's size buys: the
+  guest can run `xtool new` and build on first launch instead of provisioning
+  itself under emulation first. `XFORGE_PROVISION=none` builds the plain
+  few-MB root instead, where the guest installs the same things on demand with
+  the same script. The **glibc compatibility layer** is included either way:
+  every tool XForge builds with is a glibc binary (xtool is a Swift program built
+  on Ubuntu, and so is the toolchain), Alpine is musl, and `gcompat` is not
+  enough for them. Baking that layer in removes the most failure-prone step of an
+  on-device provision (a package renamed between Ubuntu releases yields a layer
+  that loads but cannot resolve a symbol, which surfaces much later inside a
+  tool).
+- **Everything — the layer, the toolchain, the SDK — is installed before the
+  fakefs conversion, and that ordering is load-bearing.** `fakefsify` writes `meta.db` as an index of the tree as it
   stands, and the engine resolves files through the database rather than by
   scanning `data/`. Installing the layer *after* conversion therefore produces a
   root where the files are on disk and completely invisible in the guest — 568
   files present, zero rows in `meta.db`. `build-rootfs.sh` asserts the layer is
   indexed before it packs.
-- The trade is that a fresh install must still provision once, in the guest,
-  before it can build anything.
-- Because the root is small, it is stored as a **pinned release asset**
-  (`rootfs-v4`) rather than rebuilt per IPA run. `build-ipa.yml` downloads it and
-  verifies its sha256; `build-rootfs.yml` rebuilds and republishes it when the
-  Alpine base or the root's configuration changes. Committing it to git is not an
-  option — GitHub rejects any file over 100 MB in a push, though at a few MB this
-  root would fit if that were ever preferable.
-- The multi-GB `darwin` SDK is *not* baked into the rootfs. The app resolves the
-  newest `darwin-sdk-*` release asset and installs it on demand with SwiftPM.
+- **Slimming, then proof.** Before packing, the build drops what an iOS build
+  never loads — the static *Linux* stdlib, lldb, the editor tooling (sourcekit-lsp,
+  the index stores), and every download cache (the SDK archive, the Ubuntu `.deb`
+  pile the glibc layer was built from, the apk index) — and then runs
+  `install-toolchain.sh verify` with `XFORGE_VERIFY_COMPILE=1`, which *compiles
+  and runs a Swift program* and whose verdict fails the build. Printing a version
+  is not compiling; this is the check that makes slimming safe.
+- **The root is a pinned release asset** (`rootfs-v5`) rather than rebuilt per IPA
+  run. `build-ipa.yml` downloads it and verifies its sha256, and fails if the
+  pinned root does not carry the toolchain its manifest claims; `build-rootfs.yml`
+  rebuilds and republishes it when the Alpine base, the toolchain or the root's
+  configuration changes. Committing it to git is not an option — GitHub rejects
+  any file over 100 MB in a push, and this one is ~1.6 GB.
+- **The Darwin SDK comes from XForge's own release** (`darwin-sdk-<n>`, built in CI
+  with xtool from an Xcode.xip) for the bundled root, and it is recorded — the
+  manifest names the tag and the sha256 of the bundle that went in, and the path
+  SwiftPM installed it to. A user with their own Xcode.xip can still put a
+  different one in: the Toolchain screen installs `xtool sdk install <xip>` and
+  replaces whatever is there.
 
 ## 2. Where the `darwin` SDK comes from
 
 `xtool sdk build <Xcode.xip>` produces the `darwin` SDK from a real Xcode — impossible
 on a phone. Plan: **build the `darwin.artifactbundle` once in CI on a macOS runner**
 (using xtool's own `SDKBuilder` from an Xcode install), then host it as a downloadable
-artifact. The app fetches it on first use (like Xcode is an optional install), stores it
-in the app sandbox, and runs `swift sdk install` in the embedded Linux.
+artifact. That is what the bundled root contains: `EmbeddedLinux/build-rootfs.sh`
+downloads the pinned `darwin-sdk-<n>` asset and installs it into the root being built.
+For a guest that has none — a plain root, or a swap to a newer SDK — the Toolchain
+screen resolves the newest `darwin-sdk-*` release, fetches it into the guest and runs
+`swift sdk install` there.
 
 > Note: Apple also publishes official iOS Swift SDKs on swift.org, but they use the
 > triple `aarch64-apple-ios` under a different bundle name. xtool hardcodes `darwin` +
@@ -121,9 +146,11 @@ XForge.app
 │
 └─ Embedded Linux userspace (aarch64, inside the VM)  ────────────────────────
     Alpine/ish-arm64-style rootfs
-    ├─ Swift aarch64 Linux toolchain
-    ├─ darwin Swift SDK (fetched on demand)
-    └─ xtool (aarch64)  →  `xtool new` / `xtool dev build -s -i`
+    ├─ glibc compatibility layer (Ubuntu's, for the glibc tools below)
+    ├─ Swift aarch64 Linux toolchain   ┐
+    ├─ darwin Swift SDK                ├─ in the bundled root, installed at
+    └─ xtool (aarch64)                 ┘  build time by install-toolchain.sh
+                                          →  `xtool new` / `xtool dev build -s -i`
 ```
 
 ## 4. BuildExecutor abstraction

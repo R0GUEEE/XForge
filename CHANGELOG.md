@@ -2,6 +2,59 @@
 
 All notable changes to **XForge** are documented here.
 
+## The bundled Alpine root ships with the build toolchain installed
+
+### Changed
+- **The root the app unpacks now arrives with xtool, the Swift toolchain and the
+  Darwin Swift SDK already installed.** `EmbeddedLinux/build-rootfs.sh` runs the
+  guest's own installer (`EmbeddedLinux/install-toolchain.sh`) in a chroot of the
+  root being built — `deps`, `glibc`, `xtool`, `swiftly`, `swift`, `sdk`, `verify`
+  — so the guest can run `xtool new` and build on first launch instead of
+  provisioning itself under emulation first. There is one implementation of
+  provisioning: the script the build runs is the script the app ships, which is
+  also what the Terminal's Components menu and the Toolchain screen run. The
+  archive grows from ~95 MB to ~1.6 GB, and the root is published as `rootfs-v5`
+  (pinned by `ROOTFS_TAG` in `build-ipa.yml`).
+- **`install-toolchain.sh` gained an `sdk` step.** `sh /root/install-toolchain.sh
+  sdk` downloads XForge's pinned `darwin-sdk-<n>` bundle and installs it with
+  SwiftPM's own `swift sdk install`, recording the tag, the sha256 of the bundle
+  and the path SwiftPM put it in at `/usr/local/share/xforge/darwin-sdk.txt`. It
+  is deliberately not part of `all`: a user with their own `Xcode.xip` is better
+  served by `xtool sdk install <xip>`, and the step is a 400 MB download.
+- **`XFORGE_PROVISION=none` builds the plain root** (a few MB, the guest
+  provisions itself on demand). Both roots are the same script, the same
+  installer and the same layout; the switch decides only *when* the installer
+  runs. `XFORGE_PROVISION_SDK=0` keeps xtool and Swift but leaves the SDK out.
+- **The root is slimmed, then proved.** Before packing, the build removes the
+  parts of the Swift toolchain an iOS build never loads — the static *Linux*
+  stdlib, lldb, the editor tooling and index stores — plus every download cache
+  (the SDK archive, the Ubuntu `.deb` pile the glibc layer was built from, the
+  apk index, `/tmp`). It then runs `install-toolchain.sh verify` with
+  `XFORGE_VERIFY_COMPILE=1`, which compiles *and runs* a Swift program, and
+  **fails the build** if the toolchain does not work. Printing a version is not
+  compiling, and a slimmed-but-broken toolchain would otherwise be found on a
+  device.
+- **`build-rootfs.sh` no longer holds the tree and the converted root at once.**
+  A provisioned tree is ~5 GB and its fakefs root is about the same again; the
+  tree is now deleted immediately after it is packed into the tar that
+  `fakefsify` consumes, which halves the peak to ~7 GB. The manifest is copied
+  out before the tree goes, and the tar is kept until the conversion succeeds.
+- **The root's manifest says what it carries.** `toolchain:`, `darwin-sdk:`,
+  `sdk-sha256:` and `darwin-sdk-path:` lines, and the stamp is `rootfs-v5`.
+  `EmbeddedLinux/verify-rootfs.sh` holds the published ZIP to those claims — the
+  tools exist, a Swift toolchain with its stdlib is there, and the SDK is at the
+  path it recorded *and indexed in `meta.db`*, because a file the engine cannot
+  see is a file the guest does not have.
+- **`build-ipa.yml` refuses a root without a toolchain, and refuses an IPA over
+  1.9 GB.** GitHub rejects a release asset over 2 GiB, and the whole point of the
+  pinned root is that the app ships a guest that can build; both are now build
+  failures with the number in them rather than a surprise at publish time.
+- **`build-rootfs.yml` takes `provision`, `provision_sdk` and `darwin_sdk_tag`**,
+  frees the runner's unused toolchains before a provisioned build, reports the
+  artifact's size and manifest in the run summary, and lints
+  `install-toolchain.sh` (`sh -n` + `shellcheck -s sh`) alongside the other
+  scripts.
+
 ## The engine is a prerequisite of the app, so the app builds it
 
 ### Changed

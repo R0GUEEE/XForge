@@ -3,8 +3,11 @@
 # fetch-rootfs.sh — put the pinned Alpine rootfs where the app target bundles it.
 #
 # The guest root is a release asset, not a committed file: `alpine-rootfs.zip` is
-# ~165 MB of already-converted fakefs, published by the rootfs workflow, and
+# an already-converted fakefs published by the rootfs workflow, and
 # `.github/workflows/build-ipa.yml` pins the tag it was built from (`ROOTFS_TAG`).
+# It is ~165 MB when the root is plain Alpine and ~1.6 GB when it also carries the
+# build toolchain (xtool, Swift, the Darwin SDK) — which is what the current tag
+# pins, and the reason the download here is worth resuming and checking.
 # It has to be in place *before* the Xcode project is generated — the app target
 # lists it as a resource, and a build phase cannot add a file to a resource list
 # that was fixed when XcodeGen walked the directory.
