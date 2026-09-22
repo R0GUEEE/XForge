@@ -60,7 +60,7 @@ struct GuestFileBrowserView: View {
             .navigationBarTitleDisplayMode(.inline)
             .refreshable { await load() }
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .navigationBarLeading) {
                     Menu {
                         Toggle("Show Hidden Files", isOn: $showHidden)
                         Button("Copy Current Path", systemImage: "doc.on.doc") {
@@ -104,7 +104,7 @@ struct GuestFileBrowserView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: entry.isDirectory ? "folder.fill" : icon(entry.name))
-                    .foregroundStyle(entry.isDirectory ? .tint : .secondary)
+                    .foregroundStyle(entry.isDirectory ? Color.accentColor : Color.secondary)
                 VStack(alignment: .leading) {
                     Text(entry.name).lineLimit(1)
                     if !entry.isDirectory {
@@ -123,7 +123,7 @@ struct GuestFileBrowserView: View {
             Button("Copy…", systemImage: "plus.square.on.square") { begin(.copy(entry)) }
             Button("Move…", systemImage: "folder") { begin(.move(entry)) }
             Divider()
-            Button("Delete", systemImage: "trash", role: .destructive) { deleteTarget = entry }
+            Button(role: .destructive) { deleteTarget = entry } label: { Label("Delete", systemImage: "trash") }
         }
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) { deleteTarget = entry } label: { Label("Delete", systemImage: "trash") }
