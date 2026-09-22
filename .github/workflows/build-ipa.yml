@@ -173,12 +173,16 @@ jobs:
               grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/bin/swift-frontend$' \
                 /tmp/rootfs-entries.txt \
                 || { echo '::error::the rootfs has no Swift toolchain'; exit 1; }
-              # By shape, not by one exact directory: Swift 6.4 ships linux and
-              # linux-musl variants, and naming the wrong one fails a good root.
-              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/libswiftCore\.so$' \
+              # By shape, and *unanchored* at the end, for two reasons that each
+              # cost a build: Swift 6.4 ships linux and linux-musl variants, so
+              # naming one exact directory fails a good root; and a `.swiftmodule`
+              # is a *directory* in Swift 6, whose entry ends in a slash — a
+              # pattern anchored with `$` finds nothing. verify-rootfs.sh asks the
+              # same two questions the same way.
+              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/libswiftCore\.so' \
                 /tmp/rootfs-entries.txt \
                 || { echo '::error::the Swift toolchain has no Linux stdlib'; exit 1; }
-              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/Swift\.swiftmodule$' \
+              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/Swift\.swiftmodule' \
                 /tmp/rootfs-entries.txt \
                 || { echo '::error::the Swift toolchain has no Linux stdlib interface'; exit 1; }
 
