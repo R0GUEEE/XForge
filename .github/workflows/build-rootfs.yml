@@ -60,9 +60,11 @@ jobs:
           set -euo pipefail
           # meson/ninja build fakefsify; libarchive-dev is what it links
           # against (the engine's meson looks for it via pkg-config); zip packs
-          # the result; shellcheck guards the builder script.
+          # the result; shellcheck guards the builder script; sqlite3 reads the
+          # meta.db of the packed root, which is where the published root's paths
+          # and modes are actually checked.
           sudo apt-get update -qq
-          sudo apt-get install -y -qq meson ninja-build libarchive-dev zip unzip shellcheck
+          sudo apt-get install -y -qq meson ninja-build libarchive-dev zip unzip shellcheck sqlite3
 
       - name: Check the rootfs builder
         run: |
