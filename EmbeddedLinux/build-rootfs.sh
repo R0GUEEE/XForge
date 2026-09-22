@@ -577,9 +577,12 @@ else
             rm -rf "${toolchain}usr/lib/swift_static"
             # The debugger and the editor tooling: lldb, sourcekit-lsp and the
             # index stores exist to serve an IDE, not to compile.
+            # NOT usr/lib/swift/host/plugins: those are the host-side macro
+            # plugin libraries, and a package that uses macros needs them. They
+            # are a few MB, and the compile probe below would not notice their
+            # absence — a build on a device would.
             rm -rf "${toolchain}usr/lib/python3"* \
-                   "${toolchain}usr/share/doc" "${toolchain}usr/share/man" \
-                   "${toolchain}usr/lib/swift/host/plugins" 2>/dev/null || true
+                   "${toolchain}usr/share/doc" "${toolchain}usr/share/man" 2>/dev/null || true
             for path in \
                 usr/bin/lldb usr/bin/lldb-server usr/bin/sourcekit-lsp \
                 usr/lib/liblldb.so usr/lib/libsourcekitdInProc.so \

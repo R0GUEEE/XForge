@@ -173,14 +173,19 @@ jobs:
               grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/bin/swift-frontend$' \
                 /tmp/rootfs-entries.txt \
                 || { echo '::error::the rootfs has no Swift toolchain'; exit 1; }
-              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/linux/[^/]+/Swift\.swiftmodule$' \
+              # By shape, not by one exact directory: Swift 6.4 ships linux and
+              # linux-musl variants, and naming the wrong one fails a good root.
+              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/libswiftCore\.so$' \
                 /tmp/rootfs-entries.txt \
                 || { echo '::error::the Swift toolchain has no Linux stdlib'; exit 1; }
+              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/Swift\.swiftmodule$' \
+                /tmp/rootfs-entries.txt \
+                || { echo '::error::the Swift toolchain has no Linux stdlib interface'; exit 1; }
 
               SDK_PATH="$(awk '/^[[:space:]]*darwin-sdk-path:/ { print $2; exit }' /tmp/rootfs-manifest.txt)"
               [ -n "$SDK_PATH" ] \
                 || { echo '::error::the rootfs claims a toolchain but names no Darwin SDK path'; exit 1; }
-              grep -qx "alpine-rootfs/data${SDK_PATH}/info.json" /tmp/rootfs-entries.txt \
+              grep -qE "^alpine-rootfs/data${SDK_PATH}/" /tmp/rootfs-entries.txt \
                 || { echo "::error::the rootfs has no Darwin SDK at $SDK_PATH"; exit 1; }
               sdk_indexed="$(sqlite3 /tmp/rootfs-meta.db \
                 "SELECT COUNT(*) FROM paths WHERE CAST(path AS TEXT) LIKE '${SDK_PATH%/}/%';")"
