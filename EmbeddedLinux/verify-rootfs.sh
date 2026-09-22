@@ -125,7 +125,12 @@ path_matches() {
     if [ "$MODE" = "zip" ]; then
         grep -E "^$BASE$1" "$ENTRIES" > "$listing" || true
     else
-        find "$TREE" -mindepth 1 -print 2>/dev/null | sed "s|^$TREE/||" > "$listing" || true
+        # Matching, not just listing: the first version of this wrote the listing
+        # out and then only asked whether it was non-empty, so in tree mode every
+        # pattern "matched" and a root missing its toolchain passed the check. The
+        # test that drives those failures is Tools/test-verify-toolchain.sh.
+        find "$TREE" -mindepth 1 -print 2>/dev/null | sed "s|^$TREE/||" \
+            | grep -E "^$1" > "$listing" || true
     fi
     if [ -s "$listing" ]; then rc=0; else rc=1; fi
     rm -f "$listing"
