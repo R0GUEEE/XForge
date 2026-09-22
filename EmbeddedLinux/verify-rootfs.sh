@@ -255,9 +255,13 @@ if [ -n "$META_DB" ]; then
     # comparing a BLOB against a string literal is version-dependent — the same
     # query that matched every row locally matched zero rows on an older SQLite, so
     # a correct root failed its own check.
+    # fakefs stores paths in its normalized form, `( '/' path-component )*`:
+    # "/bin/sh", not "bin/sh" and not "/bin/sh/" (see `path_normalize` in
+    # tools/fakefs.c). The lookup is on that form, so this takes a root-relative
+    # path and looks up its absolute spelling.
     indexed() {
         sqlite3 "$META_DB" \
-            "SELECT COUNT(*) FROM paths WHERE CAST(path AS TEXT) = '$1';"
+            "SELECT COUNT(*) FROM paths WHERE CAST(path AS TEXT) = '/$1';"
     }
     for path in \
         bin/sh \
@@ -280,7 +284,7 @@ if [ -n "$META_DB" ]; then
         local hex lo hi
         hex="$(sqlite3 "$META_DB" "SELECT hex(substr(stats.stat, 1, 2)) FROM paths
                  JOIN stats ON paths.inode = stats.inode
-                 WHERE CAST(paths.path AS TEXT) = '$1';")"
+                 WHERE CAST(paths.path AS TEXT) = '/$1';")"
         [ -n "$hex" ] || return 1
         lo="${hex%??}"
         hi="${hex#??}"
