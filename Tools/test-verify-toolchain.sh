@@ -18,7 +18,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-VERIFY="$HERE/../EmbeddedLinux/verify-rootfs.sh"
+# Overridable so this can be pointed at a copy of the checker; the default is the
+# one that ships.
+VERIFY="${XFORGE_VERIFY:-$HERE/../EmbeddedLinux/verify-rootfs.sh}"
 [ -f "$VERIFY" ] || { echo "cannot find $VERIFY" >&2; exit 1; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -70,7 +72,7 @@ add_toolchain() {
     mkdir -p "$root/usr/local/bin" "$root/opt/xtool/usr/bin" \
              "$root/usr/local/share/xforge" \
              "$root/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/bin" \
-             "$root/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/lib/swift/linux" \
+             "$root/root/.local/share/swiftly/toolchains/6.2-RELEASE/usr/lib/swift/linux/aarch64" \
              "$root/root/.swiftpm/swift-sdks/darwin.artifactbundle"
     for tool in xtool swift swiftc swiftly; do
         printf '#!/bin/sh\n' > "$root/usr/local/bin/$tool"
