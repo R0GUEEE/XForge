@@ -30,16 +30,15 @@ struct SandboxBrowserView: View {
             }
         }
         .navigationTitle(root.lastPathComponent)
-        .navigationDestination(for: URL.self) { url in
-            SandboxBrowserView(root: url)
-        }
         .task { load() }
     }
 
     @ViewBuilder
     private func row(for entry: Entry) -> some View {
         if entry.isDir {
-            NavigationLink(value: entry.url) {
+            NavigationLink {
+                SandboxBrowserView(root: entry.url)
+            } label: {
                 HStack {
                     Image(systemName: "folder").foregroundStyle(.tint)
                     VStack(alignment: .leading) {
