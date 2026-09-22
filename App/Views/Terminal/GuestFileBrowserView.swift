@@ -120,8 +120,8 @@ struct GuestFileBrowserView: View {
                 box.append(chunk)
             }
             guard status == 0 else { throw BrowserError.readFailed }
-            entries = box.text.split(separator: "\\n").compactMap { line in
-                let parts = line.split(separator: "\\t", maxSplits: 2).map(String.init)
+            entries = box.text.split(separator: "\n").compactMap { line in
+                let parts = line.split(separator: "\t", maxSplits: 2).map(String.init)
                 guard parts.count == 3 else { return nil }
                 let full = parts[1]
                 return Entry(name: URL(fileURLWithPath: full).lastPathComponent,

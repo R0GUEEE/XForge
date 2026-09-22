@@ -33,6 +33,17 @@ final class IPAConfigureSignService: ObservableObject {
     func sign() async {
         guard let inputIPA, let provisioningProfile, let p12 else { return }
         let oneShotPassword = password
+        let ipaScoped = inputIPA.startAccessingSecurityScopedResource()
+        let profileScoped = provisioningProfile.startAccessingSecurityScopedResource()
+        let p12Scoped = p12.startAccessingSecurityScopedResource()
+        let entitlementsScoped = entitlements?.startAccessingSecurityScopedResource() ?? false
+        defer {
+            if ipaScoped { inputIPA.stopAccessingSecurityScopedResource() }
+            if profileScoped { provisioningProfile.stopAccessingSecurityScopedResource() }
+            if p12Scoped { p12.stopAccessingSecurityScopedResource() }
+            if entitlementsScoped { entitlements?.stopAccessingSecurityScopedResource() }
+        }
+
         isWorking = true
         error = nil
         signedIPA = nil
