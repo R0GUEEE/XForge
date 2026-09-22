@@ -41,9 +41,12 @@ TAG="${XFORGE_ROOTFS_TAG:-$(sed -n 's/^[[:space:]]*ROOTFS_TAG:[[:space:]]*//p' \
     "$REPO/.github/workflows/build-ipa.yml" | head -1)}"
 [ -n "$TAG" ] || die "could not read ROOTFS_TAG from .github/workflows/build-ipa.yml
        (set XFORGE_ROOTFS_TAG to name the release yourself)"
-SLUG="$(sed -n 's|.*github.com/\([^/]*/[^/]*\).*|\1|p' "$REPO/.gitmodules" 2>/dev/null | head -1)"
-# The app's own release repository, used when there is no git remote to ask (a
-# tarball export, for instance). Keep in step with XForgeReleases.repository.
+# Which repository publishes the rootfs: this one. Ask git, so a fork fetches its
+# own — and *not* `.gitmodules`, whose first entry is the engine (that mistake
+# resolved the engine's URL and 404ed). A tarball export has no remote, so fall back
+# to the app's release repository; keep in step with XForgeReleases.repository.
+SLUG="$(git -C "$REPO" config --get remote.origin.url 2>/dev/null \
+    | sed -e 's|^.*github\.com[:/]||' -e 's|\.git$||')"
 [ -n "$SLUG" ] || SLUG="R0GUEEE/XForge"
 
 mkdir -p "$DEST"
@@ -68,6 +71,9 @@ if command -v gh >/dev/null 2>&1; then
         --dir "$DEST" --clobber \
         || die "gh could not download $ASSET from $SLUG release $TAG"
 else
+    # A half-downloaded asset must not survive the failure: the next run (or a
+    # human) would find a plausible-looking file of the wrong size.
+    trap 'rm -f "$TARGET.partial"' EXIT
     BASE="https://github.com/$SLUG/releases/download/$TAG"
     curl -fL --retry 3 --retry-delay 2 -o "$TARGET.partial" "$BASE/$ASSET" \
         || die "could not download $BASE/$ASSET"
