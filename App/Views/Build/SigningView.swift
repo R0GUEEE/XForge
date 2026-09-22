@@ -101,8 +101,10 @@ struct SigningView: View {
             }
         }
         .navigationTitle("Configure & Sign")
-        .fileImporter(item: $importer, allowedContentTypes: importer?.types ?? [.data],
-                      allowsMultipleSelection: false) { result in
+        .fileImporter(isPresented: Binding(
+            get: { importer != nil },
+            set: { if !$0 { importer = nil } }
+        ), allowedContentTypes: importer?.types ?? [.data], allowsMultipleSelection: false) { result in
             guard case .success(let urls) = result, let url = urls.first,
                   let target = importer else { return }
             switch target {

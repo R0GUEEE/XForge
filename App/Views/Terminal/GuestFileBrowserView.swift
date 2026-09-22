@@ -1,5 +1,5 @@
 import SwiftUI
-import Foundation
+import UIKit
 
 /// Thread-safe accumulator for guest listing output, because LinuxVM streams from
 /// a background tailer and Swift 6 does not allow a captured mutable local in an
@@ -105,10 +105,20 @@ struct GuestFileBrowserView: View {
             vm = guest
             try await guest.boot()
             let box = GuestListingBox()
-            let status = try await guest.run(
-                "find \(GuestShell.quote(path)) -mindepth 1 -maxdepth 1 -printf '%y\\t%p\\t%s\\n' | sort -k2",
-                environment: nil
-            ) { chunk in box.append(chunk) }
+            // BusyBox find (the root's /usr/bin/find applet) does not support
+            // GNU `-printf`, so use the shell's glob expansion plus `stat` — no
+            // dependency on a GNU find build that plain Alpine does not ship.
+            let listing = """
+            for item in \(GuestShell.quote(path))/* \(GuestShell.quote(path))/.[!.]*; do
+                [ -e "$item" ] || [ -L "$item" ] || continue
+                if [ -d "$item" ]; then kind=d; else kind=f; fi
+                size=$(stat -c %s "$item" 2>/dev/null || echo 0)
+                printf '%s\\t%s\\t%s\\n' "$kind" "$item" "$size"
+            done | sort -k2
+            """
+            let status = try await guest.run(listing, environment: nil) { chunk in
+                box.append(chunk)
+            }
             guard status == 0 else { throw BrowserError.readFailed }
             entries = box.text.split(separator: "\\n").compactMap { line in
                 let parts = line.split(separator: "\\t", maxSplits: 2).map(String.init)
