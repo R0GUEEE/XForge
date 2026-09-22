@@ -11,13 +11,18 @@ BIN=/usr/local/bin/zsign
 if [ -x "$BIN" ] && [ -f "$MARK" ]; then
     exit 0
 fi
-apk add --no-cache curl tar git make g++ pkgconf openssl-dev >/tmp/xforge-zsign-apk.log 2>&1
+apk add --no-cache curl tar git make g++ pkgconf python3 openssl-dev >/tmp/xforge-zsign-apk.log 2>&1
 rm -rf /tmp/zsign-src
 mkdir -p /tmp/zsign-src
 cd /tmp/zsign-src
 curl -fL --retry 3 "https://github.com/zhlynn/zsign/archive/$ZSIGN_COMMIT.tar.gz" -o zsign.tar.gz
 printf '%s  %s\n' "$ZSIGN_SHA256" zsign.tar.gz | sha256sum -c -
 tar -xzf zsign.tar.gz --strip-components=1
+# Keep the PKCS#12 password out of zsign's argv/process listing. The upstream
+# CLI accepts -p <password>; patch this pinned source with -Q <password-file>,
+# which reads the secret into memory and trims its newline. The job deletes the
+# file immediately after signing.
+python3 /root/xforge/patch-zsign-password-file.py
 make -C build/linux clean all
 install -m 0755 bin/zsign "$BIN"
 mkdir -p "$(dirname "$MARK")"

@@ -137,7 +137,15 @@ enum SystemComponents {
         }
         try await vm.run("mkdir -p /root/xforge", environment: nil) { _ in }
         try await vm.copyIn(hostURL: script, to: "/root/xforge/install-zsign.sh")
-        let status = try await vm.run("chmod +x /root/xforge/install-zsign.sh", environment: nil) { _ in }
+        guard let patch = Bundle.main.url(forResource: "patch-zsign-password-file",
+                                          withExtension: "py") else {
+            throw SystemComponentsError.zsignInstallerMissing
+        }
+        try await vm.copyIn(hostURL: patch, to: "/root/xforge/patch-zsign-password-file.py")
+        let status = try await vm.run(
+            "chmod 700 /root/xforge/install-zsign.sh && chmod 600 /root/xforge/patch-zsign-password-file.py",
+            environment: nil
+        ) { _ in }
         guard status == 0 else { throw SystemComponentsError.zsignInstallerMissing }
     }
 

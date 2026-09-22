@@ -53,6 +53,8 @@ targets:
         buildPhase: resources
       - path: EmbeddedLinux/install-zsign.sh
         buildPhase: resources
+      - path: EmbeddedLinux/patch-zsign-password-file.py
+        buildPhase: resources
     dependencies:
       - package: xtool
         product: XKit

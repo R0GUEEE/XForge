@@ -58,6 +58,7 @@ final class IPAConfigureSignService: ObservableObject {
         let ipaPath = "\(dir)/input.ipa"
         let p12Path = "\(dir)/signing.p12"
         let profilePath = "\(dir)/profile.mobileprovision"
+        let passwordPath = "\(dir)/.p12-password"
         let scriptPath = "\(dir)/run-sign.sh"
         let outputPath = "\(dir)/signed.ipa"
         var vm: (any LinuxVM)?
@@ -76,6 +77,20 @@ final class IPAConfigureSignService: ObservableObject {
             try await guest.copyIn(hostURL: provisioningProfile, to: profilePath)
             try await SystemComponents.ensureZsignInstaller(in: guest)
 
+            // zsign's upstream -p accepts a password as a process argument, which
+            // a same-user guest process could read through /proc/<pid>/cmdline.
+            // A short-lived file is narrower exposure: random name inside a 700
+            // job directory, chmod 600, consumed by the pinned -Q password-file
+            // patch and removed with the rest of this per-signing directory.
+            let passwordTemp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("xforge-p12-\(UUID().uuidString)")
+            try Data(oneShotPassword.utf8).write(to: passwordTemp, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600],
+                                                   ofItemAtPath: passwordTemp.path)
+            defer { try? FileManager.default.removeItem(at: passwordTemp) }
+            try await guest.copyIn(hostURL: passwordTemp, to: passwordPath)
+            try await run(guest, "chmod 600 \(GuestShell.quote(passwordPath))")
+
             var args = "-f -k \(GuestShell.quote(p12Path)) -m \(GuestShell.quote(profilePath))"
             if let entitlements {
                 let path = "\(dir)/entitlements.plist"
@@ -86,15 +101,15 @@ final class IPAConfigureSignService: ObservableObject {
             if !displayName.isEmpty { args += " -n \(GuestShell.quote(displayName))" }
             if !version.isEmpty { args += " -r \(GuestShell.quote(version))" }
 
-            // zsign's -p password is parsed from argv, where another same-user
-            // process can read it. Instead place it in a private, mode-600 guest
-            // script, quote it as a shell literal, run the script, then delete it.
-            // The password is never logged, stored in history, or shown in status.
+            // The patched zsign reads its password from this mode-600 file rather
+            // than argv, so the signing secret is not exposed in the guest process
+            // table. The per-job directory is deleted after the sign on success
+            // or failure.
             let script = """
             #!/bin/sh
             set -eu
             umask 077
-            exec zsign \(args) -p \(GuestShell.quote(oneShotPassword)) -o \(GuestShell.quote(outputPath)) \(GuestShell.quote(ipaPath))
+            exec zsign \(args) -Q \(GuestShell.quote(passwordPath)) -o \(GuestShell.quote(outputPath)) \(GuestShell.quote(ipaPath))
             """
             let hostScript = FileManager.default.temporaryDirectory
                 .appendingPathComponent("xforge-zsign-\(UUID().uuidString).sh")
