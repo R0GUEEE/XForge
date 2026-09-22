@@ -15,7 +15,6 @@ struct TerminalView: View {
     @State private var showGuestFiles = false
     @State private var showEngineLog = false
     @State private var importingXIP = false
-    @FocusState private var inputFocused: Bool
     /// Which keys the extra-keys bar shows. Shared with the configuration sheet.
     @StateObject private var keyConfiguration = TerminalKeyConfiguration()
     @State private var showKeyConfiguration = false
@@ -26,12 +25,11 @@ struct TerminalView: View {
             if !session.pending.isEmpty || session.activeLabel != nil {
                 activityStrip
             }
-            inputRow
             TerminalKeyBar(session: session,
                            configuration: keyConfiguration,
                            onFiles: { showGuestFiles = true },
                            onComponents: { component in install(component) },
-                           onHideKeyboard: { inputFocused = false },
+                           onHideKeyboard: { UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil) },
                            onConfigure: { showKeyConfiguration = true })
         }
         .background(Color.black)
@@ -40,7 +38,6 @@ struct TerminalView: View {
         .toolbar { toolbarContent }
         .task {
             await session.boot()
-            inputFocused = true
         }
         .fileImporter(
             isPresented: $importingXIP,
@@ -65,36 +62,9 @@ struct TerminalView: View {
     // MARK: - Screen
 
     private var canvas: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(session.buffer.lines.enumerated()), id: \.offset) { _, line in
-                        TerminalLineView(line: line, fontSize: fontSize)
-                    }
-                    // The line the shell is part-way through writing. It is the
-                    // shell's own output — a prompt, a partial result, or the echo
-                    // of what was typed — so it is drawn exactly like any other
-                    // line and only kept separate so it can grow in place.
-                    if !session.buffer.current.isEmpty {
-                        TerminalLineView(line: session.buffer.current, fontSize: fontSize)
-                            .id(Self.bottomID)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
+        InteractiveTerminalSurface(session: session, fontSize: fontSize)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black)
-            .onChange(of: session.revision) { _ in
-                withAnimation(.none) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
-            }
-            .onChange(of: session.buffer.lines.count) { _ in
-                withAnimation(.none) { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .onTapGesture { inputFocused = true }
     }
 
     private static let bottomID = "org.xforge.terminal.bottom"
@@ -121,48 +91,6 @@ struct TerminalView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 5)
         .background(Color(white: 0.13))
-    }
-
-    // MARK: - Input
-
-    /// A single line that stands in for the keyboard: what is typed here is
-    /// written to the shell's stdin on return.
-    ///
-    /// Single-line on purpose. With `axis: .vertical`, Return inserts a newline
-    /// instead of submitting, so a command could only be run by dismissing the
-    /// keyboard — which is not how a terminal behaves. Multi-line input is still
-    /// possible: the shell reads a trailing `\` as a continuation, and Paste
-    /// hands the shell whatever was copied, newlines and all.
-    private var inputRow: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: fontSize - 1, weight: .bold))
-                .foregroundStyle(Color.green.opacity(0.7))
-
-            TextField(session.booting ? "starting the embedded Linux…" : "type a command",
-                      text: $session.input)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.system(size: fontSize, design: .monospaced))
-                .foregroundStyle(Color(white: 0.92))
-                .tint(.green)
-                .focused($inputFocused)
-                .disabled(session.booting)
-                .submitLabel(.go)
-                .onSubmit {
-                    session.submit()
-                    // Keep the keyboard up: this is a terminal, and the next
-                    // command is usually typed immediately.
-                    inputFocused = true
-                }
-
-            if session.booting {
-                ProgressView().controlSize(.small)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(Color(white: 0.10))
     }
 
     // MARK: - Toolbar
@@ -292,17 +220,125 @@ struct TerminalView: View {
     }
 }
 
-/// One line of the screen.
-private struct TerminalLineView: View {
-    let line: TerminalLine
+/// A native iOS terminal surface. The view itself becomes first responder, so
+/// software/hardware keyboard events go directly to Alpine instead of through a
+/// separate command field. Touch controls scrolling and selects/copies terminal
+/// text; tapping the terminal summons the iOS keyboard.
+private struct InteractiveTerminalSurface: UIViewRepresentable {
+    @ObservedObject var session: TerminalSession
     let fontSize: Double
 
-    var body: some View {
-        Text(line.attributedString(fontSize: fontSize))
-            .font(.system(size: fontSize, design: .monospaced))
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
+    func makeUIView(context: Context) -> TerminalTextView {
+        let view = TerminalTextView()
+        view.session = session
+        view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        view.refresh(from: session)
+        DispatchQueue.main.async { view.becomeFirstResponder() }
+        return view
     }
+
+    func updateUIView(_ view: TerminalTextView, context: Context) {
+        view.session = session
+        view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        view.refresh(from: session)
+    }
+}
+
+private final class TerminalTextView: UITextView, UIKeyInput {
+    weak var session: TerminalSession?
+    private var lastRevision = -1
+
+    override var canBecomeFirstResponder: Bool { true }
+    override var keyboardType: UIKeyboardType {
+        get { .asciiCapable }
+        set { }
+    }
+    override var autocorrectionType: UITextAutocorrectionType {
+        get { .no }
+        set { }
+    }
+    override var autocapitalizationType: UITextAutocapitalizationType {
+        get { .none }
+        set { }
+    }
+    override var spellCheckingType: UITextSpellCheckingType {
+        get { .no }
+        set { }
+    }
+    override var smartQuotesType: UITextSmartQuotesType {
+        get { .no }
+        set { }
+    }
+    override var smartDashesType: UITextSmartDashesType {
+        get { .no }
+        set { }
+    }
+    override var smartInsertDeleteType: UITextSmartInsertDeleteType {
+        get { .no }
+        set { }
+    }
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        backgroundColor = .black
+        textColor = UIColor(white: 0.92, alpha: 1)
+        tintColor = .systemGreen
+        isEditable = false
+        isSelectable = true
+        alwaysBounceVertical = true
+        keyboardDismissMode = .interactive
+        textContainerInset = UIEdgeInsets(top: 6, left: 8, bottom: 8, right: 8)
+        textContainer.lineFragmentPadding = 0
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(focusTerminal)))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func focusTerminal() { becomeFirstResponder() }
+
+    func refresh(from session: TerminalSession) {
+        guard lastRevision != session.revision else { return }
+        lastRevision = session.revision
+        let wasNearBottom = contentOffset.y + bounds.height >= contentSize.height - 44
+        let selection = selectedRange
+        text = session.buffer.plainText
+        if selection.location <= (text as NSString).length { selectedRange = selection }
+        if wasNearBottom || !isTracking {
+            let end = NSRange(location: (text as NSString).length, length: 0)
+            scrollRangeToVisible(end)
+        }
+    }
+
+    // UIKeyInput is intentionally implemented even though the UITextView is not
+    // editable: UIKit still presents the keyboard, while every keystroke is sent
+    // to the guest shell instead of mutating host-side text.
+    var hasText: Bool { true }
+    func insertText(_ text: String) {
+        session?.sendRaw(text)
+    }
+    func deleteBackward() {
+        session?.sendRaw("\u{7f}")
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [
+            UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(upArrow)),
+            UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(downArrow)),
+            UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(leftArrow)),
+            UIKeyCommand(input: UIKeyCommand.inputRightArrow, modifierFlags: [], action: #selector(rightArrow)),
+            UIKeyCommand(input: "c", modifierFlags: .control, action: #selector(controlC)),
+            UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(tabKey)),
+            UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapeKey))
+        ]
+    }
+
+    @objc private func upArrow() { session?.sendRaw("\u{1b}[A") }
+    @objc private func downArrow() { session?.sendRaw("\u{1b}[B") }
+    @objc private func leftArrow() { session?.sendRaw("\u{1b}[D") }
+    @objc private func rightArrow() { session?.sendRaw("\u{1b}[C") }
+    @objc private func controlC() { session?.interrupt() }
+    @objc private func tabKey() { session?.sendRaw("\t") }
+    @objc private func escapeKey() { session?.sendRaw("\u{1b}") }
 }
 
 /// the iSH terminal's extra-keys bar: the characters a phone keyboard cannot produce,
