@@ -126,9 +126,9 @@ jobs:
           # links the copy built from the vendored submodule.
           # llvm/lld provide the aarch64-linux cross-compiler the guest VDSO
           # needs (`clang -target aarch64-linux-gnu -fuse-ld=lld`) — Apple's
-          # clang cannot link that. Note the `llvm` bottle ships clang but not
-          # ld.lld, hence the separate `lld` formula.
-          brew install xcodegen meson ninja llvm lld
+          # clang cannot link that. shellcheck validates the pinned zsign
+          # installer, hence it is installed with the build tools.
+          brew install xcodegen meson ninja llvm lld shellcheck
 
       - name: Build the embedded Linux engine (ish-arm64, iOS arm64)
         run: |
