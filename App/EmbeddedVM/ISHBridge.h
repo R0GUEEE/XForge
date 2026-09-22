@@ -68,7 +68,8 @@ int xf_ish_log(const char *text);
 ///
 /// `/dev/tty1` and `/dev/console` are the same terminal (major `TTY_CONSOLE_MAJOR`,
 /// minor 1), and it is the one pid 1's stdio is wired to — so `/sbin/init` and
-/// everything it starts (login, its shell) talk to the screen in the app.
+/// everything it starts (the console session and the shell it execs) talk to the
+/// screen in the app.
 ///
 /// Read and write are safe from any thread: the write callback only appends to a
 /// host buffer, `xf_ish_console_write` takes the tty's own lock inside the engine,
@@ -77,7 +78,7 @@ int xf_ish_log(const char *text);
 /// Start the guest's init as pid 1, giving it the console as its stdio.
 ///
 /// This is what turns the mounted root into a *booted system*: `/sbin/init`
-/// reads `/etc/inittab`, which respawns `/bin/login -f root` on the console.
+/// reads `/etc/inittab`, which respawns `/sbin/xforge-login root` on the console.
 /// Must be called on the engine thread, after `xf_ish_boot`. Returns 0, or a
 /// negative errno.
 int xf_ish_start_init(const char *program);

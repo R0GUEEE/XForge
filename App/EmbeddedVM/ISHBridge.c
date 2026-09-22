@@ -563,8 +563,8 @@ int xf_ish_boot(const char *root_dir, const char *host_dir) {
 
     // The console. Registering the host's tty driver *before* pid 1's stdio is
     // opened is what makes /dev/console and /dev/tty1 the same terminal, and that
-    // terminal is the app's screen — so init, the login it respawns, and the shell
-    // the user types into all appear there.
+    // terminal is the app's screen — so init, the console session it respawns, and
+    // the shell the user types into all appear there.
     xf_logf("boot: console tty driver");
     pthread_mutex_lock(&s_console_lock);
     s_console_stopping = false;
@@ -624,8 +624,9 @@ int xf_ish_start_init(const char *program) {
     memcpy(argv, path, path_len + 1);
     argv[path_len + 1] = '\0';
 
-    // init gets the environment a console login expects; the login it starts
-    // replaces TERM/HOME/PATH with its own from /etc/profile anyway.
+    // init gets the environment a console session expects; /sbin/xforge-login
+    // replaces TERM/HOME/PATH with its own anyway, and /etc/profile re-exports
+    // them for the shell it execs.
     static const char *const envp =
         "TERM=xterm-256color\0"
         "HOME=/root\0"

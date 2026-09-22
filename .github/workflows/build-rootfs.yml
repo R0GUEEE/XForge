@@ -27,6 +27,14 @@ on:
         description: Alpine release series
         type: string
         default: "3.21"
+      default_shell:
+        description: Login shell root's console starts (must be installed by console_packages)
+        type: string
+        default: "/bin/bash"
+      console_packages:
+        description: Space-separated packages baked in for the console session
+        type: string
+        default: "bash coreutils less ncurses-terminfo"
 
 permissions:
   contents: write
@@ -60,20 +68,31 @@ jobs:
         run: |
           set -euo pipefail
           bash -n EmbeddedLinux/build-rootfs.sh
-          shellcheck -S error EmbeddedLinux/build-rootfs.sh
+          bash -n EmbeddedLinux/verify-rootfs.sh
+          shellcheck -S error EmbeddedLinux/build-rootfs.sh EmbeddedLinux/verify-rootfs.sh
+          # The console program is /bin/sh (busybox ash), and it is installed into
+          # the guest rather than run here — parse it and lint it, but as POSIX sh,
+          # which is the dialect it is written in.
+          sh -n EmbeddedLinux/xforge-login
+          shellcheck -s sh -S error EmbeddedLinux/xforge-login
 
       - name: Build the rootfs
         env:
           XFORGE_ALPINE_VERSION: ${{ inputs.alpine_version }}
+          XFORGE_DEFAULT_SHELL: ${{ inputs.default_shell }}
+          XFORGE_CONSOLE_PACKAGES: ${{ inputs.console_packages }}
         run: |
           set -euo pipefail
-          # As root: installing the glibc layer runs the guest's own installer in
-          # a chroot of the tree being built (it unpacks Ubuntu packages with
-          # ar/zstd and writes to /lib, /usr/lib and /opt/glibc), and a chroot
-          # needs mounts. Keep the work directory and the output separate so the
-          # resulting files are owned by the runner, not root.
+          # As root: installing the glibc layer and the guest's own packages runs
+          # the guest's installer and apk in a chroot of the tree being built (the
+          # first unpacks Ubuntu packages with ar/zstd and writes to /lib, /usr/lib
+          # and /opt/glibc), and a chroot needs mounts. Keep the work directory and
+          # the output separate so the resulting files are owned by the runner, not
+          # root.
           sudo -E env "PATH=$PATH" \
             XFORGE_ALPINE_VERSION="$XFORGE_ALPINE_VERSION" \
+            XFORGE_DEFAULT_SHELL="$XFORGE_DEFAULT_SHELL" \
+            XFORGE_CONSOLE_PACKAGES="$XFORGE_CONSOLE_PACKAGES" \
             bash EmbeddedLinux/build-rootfs.sh "$PWD/dist/rootfs"
           sudo chown -R "$(id -u):$(id -g)" dist
           ls -la dist/rootfs
@@ -82,35 +101,17 @@ jobs:
         run: |
           set -euo pipefail
           # XForge boots pid 1 as /sbin/init and drives the guest's single console,
-          # where /etc/inittab respawns /bin/login -f root. A root that cannot do
-          # any of that has no usable Terminal, so it fails here rather than on a
-          # device.
-          ZIP=dist/rootfs/alpine-rootfs.zip
-          unzip -Z1 "$ZIP" > /tmp/rootfs-entries.txt
-          for path in \
-            alpine-rootfs/data/sbin/init \
-            alpine-rootfs/data/bin/login \
-            alpine-rootfs/data/bin/sh \
-            alpine-rootfs/data/etc/inittab \
-            alpine-rootfs/data/etc/init.d/rcS \
-            alpine-rootfs/data/etc/passwd \
-            alpine-rootfs/data/etc/shadow ; do
-            grep -qx "$path" /tmp/rootfs-entries.txt \
-              || { echo "::error::the rootfs has no ${path#alpine-rootfs/data/}"; exit 1; }
-          done
-
-          unzip -p "$ZIP" alpine-rootfs/data/etc/inittab > /tmp/inittab.txt
-          grep -qE '^::sysinit:/etc/init.d/rcS$' /tmp/inittab.txt \
-            || { echo '::error::inittab does not run the sysinit step'; exit 1; }
-          grep -qE '^tty1::respawn:/bin/login -f root$' /tmp/inittab.txt \
-            || { echo '::error::inittab does not respawn the root login on tty1'; exit 1; }
-          # The stock inittab starts openrc (not present in this root) and six
-          # gettys on terminals that do not exist. Both were replaced on purpose.
-          ! grep -q 'openrc' /tmp/inittab.txt \
-            || { echo '::error::inittab still starts openrc, which this root has no'; exit 1; }
-          ! grep -qE '^tty[2-6]::' /tmp/inittab.txt \
-            || { echo '::error::inittab still respawns gettys on nonexistent terminals'; exit 1; }
-          echo "inittab: pid 1 is /sbin/init, tty1 respawns /bin/login -f root"
+          # where /etc/inittab respawns /sbin/xforge-login root — the script that
+          # execs root's login shell from /etc/passwd. A root that cannot do that
+          # has no usable Terminal, and nothing else would notice: it fails here
+          # rather than on a device, and on the *published artifact*, not on the
+          # tree it was made from.
+          #
+          # The checker unpacks the ZIP and runs the guest's own console program in
+          # a chroot, so "root's shell starts" is answered by the root itself.
+          # Needs root for the chroot (the runner is aarch64, same as the root).
+          sudo -E env "PATH=$PATH" \
+            bash EmbeddedLinux/verify-rootfs.sh "$PWD/dist/rootfs/alpine-rootfs.zip"
 
       - name: Publish the release
         env:

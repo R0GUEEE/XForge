@@ -13,9 +13,10 @@ import Foundation
 ///  - output appears as the guest writes it, including prompts that do not end in
 ///    a newline, which is what makes a password prompt or a progress bar usable.
 ///
-/// The guest's `/sbin/init` owns that console and respawns `/bin/login -f root` on
-/// it, so the shell is login's child: logging out gives a fresh login rather than
-/// a dead screen.
+/// The guest's `/sbin/init` owns that console and respawns `/sbin/xforge-login
+/// root` on it, so the shell is that script's child — it execs root's login shell
+/// from `/etc/passwd`: logging out gives a fresh session rather than a dead
+/// screen.
 @MainActor
 protocol InteractiveShellSession: AnyObject {
     /// Guest pid the session speaks for. For a console login this is init, which

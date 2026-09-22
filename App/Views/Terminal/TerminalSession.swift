@@ -5,8 +5,9 @@ import UIKit
 /// The app's one terminal into the embedded Alpine Linux.
 ///
 /// This is the guest's own console: `/sbin/init` owns it, and it respawns
-/// `/bin/login -f root` on it, so the shell you type into is a real login session
-/// with a real tty. See `InteractiveShellSession` for what that buys.
+/// `/sbin/xforge-login root` on it, so the shell you type into is a real login
+/// session with a real tty — the login shell root is configured with in
+/// `/etc/passwd`. See `InteractiveShellSession` for what that buys.
 ///
 /// Consequences of it being a real console, which are the point of the change:
 ///  - the working directory is the shell's own, so `cd` persists;

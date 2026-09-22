@@ -35,11 +35,32 @@ The embedded Linux boots the official **Alpine Linux aarch64 minirootfs**:
 https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.0-aarch64.tar.gz
 ```
 
-- `EmbeddedLinux/build-rootfs.sh` downloads that archive, converts it to the
-  engine's `fakefs` format with the engine's own `tools/fakefsify`, configures the
-  root (mount points, `/etc/passwd`, `/etc/profile`, `/etc/motd`,
-  `/etc/apk/repositories`, a default `/etc/resolv.conf`), and packs it as
-  `alpine-rootfs.zip`.
+- `EmbeddedLinux/build-rootfs.sh` downloads that archive, installs the guest's
+  own packages into it with the guest's own `apk` (the shell session's: see
+  *the console* below), configures the root (mount points, `/etc/passwd`,
+  `/etc/profile`, `/etc/motd`, `/etc/apk/repositories`, a default
+  `/etc/resolv.conf`), converts it to the engine's `fakefs` format with the
+  engine's own `tools/fakefsify`, and packs it as `alpine-rootfs.zip`.
+- **The console is a root login session, and the root is what starts it.**
+  `/etc/inittab` respawns `/sbin/xforge-login root` on `tty1`; that script (from
+  `EmbeddedLinux/xforge-login`) reads root's shell out of `/etc/passwd` and execs
+  it as a login shell, so the Terminal tab opens in the shell the root names —
+  `/bin/bash` by default — and `apk add zsh` plus that field changes it. Busybox
+  `login -f root` is deliberately not in this path: it authenticates, needs utmp
+  and takes over the terminal, none of which this guest has, and none of which it
+  can report failing.
+- **The root therefore carries the session's dependencies**: `bash`,
+  `coreutils`, `less` and `ncurses-terminfo` (`XFORGE_CONSOLE_PACKAGES`). The
+  terminfo package is not optional detail — `/etc/profile` exports
+  `TERM=xterm-256color`, and the *base* terminfo package does not contain the
+  xterm entries, so without it every curses program in the guest runs against an
+  unknown terminal.
+- **`EmbeddedLinux/verify-rootfs.sh` runs the console program in a chroot of the
+  root** and asserts which shell comes up, as a login shell, from the field in
+  `/etc/passwd`. `build-rootfs.sh` runs it on the tree before conversion and
+  `build-rootfs.yml` runs it on the published ZIP, so "the terminal works" is
+  checked against the guest's own binaries rather than against the intent of the
+  configuration that produced them.
 - **The conversion happens at build time, not in the app.** `fakefsify` runs on
   the build machine, so the ZIP already *is* a fakefs — a `data/` tree plus
   `meta.db` — and first launch costs an unzip rather than an import of thousands
@@ -65,7 +86,7 @@ https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3
 - The trade is that a fresh install must still provision once, in the guest,
   before it can build anything.
 - Because the root is small, it is stored as a **pinned release asset**
-  (`rootfs-v1`) rather than rebuilt per IPA run. `build-ipa.yml` downloads it and
+  (`rootfs-v4`) rather than rebuilt per IPA run. `build-ipa.yml` downloads it and
   verifies its sha256; `build-rootfs.yml` rebuilds and republishes it when the
   Alpine base or the root's configuration changes. Committing it to git is not an
   option — GitHub rejects any file over 100 MB in a push, though at a few MB this
@@ -192,6 +213,7 @@ App/EmbeddedVM/                      # LinuxVM bridge, ISHEmulator, C bridge, ro
 Support/                             # Info.plist, entitlements, Resources/ (bundled rootfs)
 Vendor/ish-arm64/                      # git submodule: the embedded Linux engine
 Vendor/ish-arm64-build/                # core static libs (built, gitignored)
-EmbeddedLinux/                       # build-rootfs.sh, build-ish-core.sh, install-toolchain.sh
+EmbeddedLinux/                       # build-rootfs.sh, build-ish-core.sh, install-toolchain.sh,
+                                     # verify-rootfs.sh, xforge-login (installed into the guest)
 Docs/                                # this design doc + tutorials
 ```

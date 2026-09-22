@@ -2,6 +2,49 @@
 
 All notable changes to **XForge** are documented here.
 
+## The console starts root's login shell, in a root that has it
+
+### Changed
+- **The guest's console starts root's *login shell*, not a login program.**
+  `/etc/inittab` now respawns `/sbin/xforge-login root` on tty1 instead of
+  `/bin/login -f root`. The new script (`EmbeddedLinux/xforge-login`, installed
+  into the root) reads root's shell out of `/etc/passwd` and execs it as a login
+  shell — with the leading dash in `argv[0]` that makes a shell read
+  `/etc/profile`, the user's home as the working directory, and the environment
+  `login` would have set. So the shell the Terminal tab opens in is the shell the
+  root is configured with, and `apk add zsh` plus that one field changes it.
+- **`login` is out of the console path on purpose.** It authenticates, allocates a
+  utmp slot and takes over a controlling terminal. This guest has one user, whose
+  password is locked, and its tty is already init's — so all three are work it does
+  not need, and each is a way for a working root to produce no console at all (a
+  non-tty stdin makes `login` exit 1 with nothing on the screen). What it never did
+  is start the shell the root asked for. If the shell that field names has been
+  uninstalled, the script says so and falls back to `/bin/sh` rather than
+  respawning into a blank screen forever.
+- **The root now carries the console session's dependencies,** installed with the
+  guest's own `apk` at build time (`XFORGE_CONSOLE_PACKAGES`, default
+  `bash coreutils less ncurses-terminfo`). The console is the first thing a new
+  install shows; a shell whose pager is missing, or whose `TERM` is unknown to
+  curses, is a guest that looks broken.
+  - `ncurses-terminfo`, specifically, is the difference between a working `less`
+    and one that warns that the terminal is not fully functional: `/etc/profile`
+    exports `TERM=xterm-256color` and the *base* terminfo package does not carry
+    the xterm entries.
+  - Root's shell is written into `/etc/passwd` from `XFORGE_DEFAULT_SHELL`
+    (`/bin/bash`), and the build fails loudly into `/bin/sh` with a warning if that
+    shell is not among the packages.
+- **The rootfs is checked by running it.** `EmbeddedLinux/verify-rootfs.sh`
+  unpacks the root, checks the files init needs, then runs `/sbin/xforge-login`
+  inside a chroot — the guest's own binaries, started the way init starts them —
+  and asserts that the shell named in `/etc/passwd` comes up as a login shell,
+  with `SHELL` set to it and `TERM` one curses knows. `build-rootfs.sh` runs it on
+  the tree before the fakefs conversion; `build-rootfs.yml` runs it on the
+  published ZIP; `build-ipa.yml` refuses a pinned root whose manifest shell is not
+  in the archive.
+- **The rootfs stamp is `rootfs-v4`** (`ROOTFS_TAG` in `build-ipa.yml`), so a
+  device that has booted an older root replaces it — the console is the one part
+  of the guest an app update cannot reach on its own.
+
 ## The Terminal is the guest's console: /sbin/init + login -f root
 
 ### Changed

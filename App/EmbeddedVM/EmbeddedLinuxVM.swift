@@ -44,11 +44,12 @@ final class EmbeddedLinuxVM: LinuxVM {
     /// Staging subdirectory inside the share used for transfers.
     private static let transferDir = ".xforge-transfer"
     /// Launch shell for probes and one-shot commands. Not the guest's boot: pid 1
-    /// is `/sbin/init` (see `initCommand`), which is what puts a login on the
+    /// is `/sbin/init` (see `initCommand`), which is what starts a shell on the
     /// console.
     static let launchCommand = "/bin/sh"
-    /// The program XForge boots pid 1 with. It reads `/etc/inittab`, which starts
-    /// `/bin/login -f root` on the console — the shell the Terminal tab shows.
+    /// The program XForge boots pid 1 with. It reads `/etc/inittab`, which runs
+    /// `/sbin/xforge-login root` on the console — that script execs root's login
+    /// shell from `/etc/passwd`, which is the shell the Terminal tab shows.
     static let initCommand = "/sbin/init"
 
     /// Why the guest's init did not start, if it did not. Kept rather than thrown
@@ -113,7 +114,7 @@ final class EmbeddedLinuxVM: LinuxVM {
 
     /// Bring up the guest's own init, which is what turns the mounted root into a
     /// booted system: `/sbin/init` reads `/etc/inittab` and respawns
-    /// `/bin/login -f root` on the console.
+    /// `/sbin/xforge-login root` on the console.
     ///
     /// A failure is recorded, not thrown. Everything except the terminal works
     /// without it — the command runner makes its own children of pid 1, who that
@@ -342,8 +343,8 @@ final class EmbeddedLinuxVM: LinuxVM {
     ///
     /// The shell is not a process this code launches: it is the guest's own
     /// console session, started by `/sbin/init` from `/etc/inittab`, which
-    /// respawns `/bin/login -f root` on the console. So all this does is attach
-    /// the screen to the console the guest is already driving.
+    /// respawns `/sbin/xforge-login root` on the console. So all this does is
+    /// attach the screen to the console the guest is already driving.
     func startInteractiveShell(
         onOutput: @escaping @Sendable (String) -> Void
     ) async throws -> any InteractiveShellSession {

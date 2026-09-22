@@ -69,7 +69,7 @@ final class TerminalSessionTests: XCTestCase {
     }
 
     func testMultipleLinesAccumulateInOneSession() async throws {
-        // The console is persistent: each line joins the same login session, so the
+        // The console is persistent: each line joins the same shell session, so the
         // second command could depend on the first.
         let (session, vm) = await makeSession()
         for line in ["cd /etc", "cat hostname"] {

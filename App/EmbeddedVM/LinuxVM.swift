@@ -40,7 +40,7 @@ protocol LinuxVM: AnyObject {
     func copyOut(guestPath: String, to hostURL: URL) async throws
     /// Stage a host file into the guest filesystem.
     func copyIn(hostURL: URL, to guestPath: String) async throws
-    /// Attach the screen to the guest's console shell: the login `/sbin/init`
+    /// Attach the screen to the guest's console shell: the session `/sbin/init`
     /// respawns there. Output is delivered as the guest writes it.
     func startInteractiveShell(
         onOutput: @Sendable @escaping (String) -> Void

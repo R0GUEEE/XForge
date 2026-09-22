@@ -10,9 +10,12 @@
 #   1. download the *plain* Alpine aarch64 minirootfs
 #   2. build the engine's own `tools/fakefsify` for the build machine
 #      (NOT cross-compiled: it runs here, on this host)
-#   3. convert the tarball into fakefs format — a `data/` tree + `meta.db`
+#   3. unpack it as a plain tree, install the glibc layer into it, and install the
+#      packages the console session needs (bash/coreutils/less/terminfo)
 #   4. configure the root in place (passwd, profile, motd, inittab, DNS, apk repos)
-#   5. `zip -r` the result, excluding the SQLite WAL/SHM sidecars
+#      — including the console program, EmbeddedLinux/xforge-login
+#   5. convert the configured tree to fakefs — a `data/` tree + `meta.db`
+#   6. `zip -r` the result, excluding the SQLite WAL/SHM sidecars
 #
 # Why a ZIP of a fakefs and not a tarball the app imports at runtime: the
 # conversion is the expensive part (thousands of files into SQLite), and doing it
@@ -20,11 +23,13 @@
 # a phone. This is the same reason OpenMinis ships `alpine-rootfs.zip` and its
 # app only calls unzip + mount_root.
 #
-# The root is deliberately SMALL: plain Alpine, no Swift toolchain, no glibc
-# layer, no xtool. The guest installs tooling itself on demand
-# (EmbeddedLinux/install-toolchain.sh, run inside the guest), which is what keeps
-# this under a size that can be stored and fetched cheaply. Baking a toolchain in
-# made the payload ~1.4 GB.
+# The root is deliberately SMALL: plain Alpine, no Swift toolchain, no xtool. The
+# guest installs tooling itself on demand (EmbeddedLinux/install-toolchain.sh, run
+# inside the guest), which is what keeps this under a size that can be stored and
+# fetched cheaply. Baking a toolchain in made the payload ~1.4 GB. What the root
+# does carry beyond plain Alpine is the shell session the app opens onto (see
+# XFORGE_CONSOLE_PACKAGES below) — a few MB, and the difference between a console
+# that works on first launch and one that has to be provisioned first.
 #
 # Output:
 #     dist/rootfs/alpine-rootfs.zip        the root (data/ + meta.db)
@@ -40,6 +45,14 @@
 #     XFORGE_ISH_ROOT         engine checkout (default: <repo>/Vendor/ish-arm64)
 #     XFORGE_WORK_DIR         scratch dir (default: <repo>/.rootfs-work)
 #     XFORGE_KEEP_WORK        1 to keep the scratch dir
+#     XFORGE_SKIP_GLIBC       1 to build a root without the glibc layer
+#     XFORGE_DEFAULT_SHELL    login shell root's console starts (default:
+#                             /bin/bash). Must be a shell the package list below
+#                             installs; if it is not, the build falls back to
+#                             /bin/sh and says so.
+#     XFORGE_CONSOLE_PACKAGES Alpine packages baked into the root for the console
+#                             session (default: bash coreutils less
+#                             ncurses-terminfo). Space-separated.
 #
 set -euo pipefail
 
@@ -61,6 +74,26 @@ ALPINE_MIRROR="https://dl-cdn.alpinelinux.org/alpine"
 ISH="${XFORGE_ISH_ROOT:-$REPO/Vendor/ish-arm64}"
 WORK="${XFORGE_WORK_DIR:-$REPO/.rootfs-work}"
 
+# The guest's console session, and what it needs from the root.
+#
+# XFORGE_DEFAULT_SHELL is the shell root's console starts in: it is written into
+# /etc/passwd, and /etc/inittab runs xforge-login, which reads that field — so
+# this is the one place the shell is chosen, and the guest can change it at
+# runtime (`apk add zsh` + the passwd field).
+#
+# The package list is the shell's own environment, and every entry earns its
+# place:
+#   bash                  the default shell (pulls readline, ncurses-libs)
+#   coreutils             the tools a shell session expects to exist
+#   less                  a pager for them
+#   ncurses-terminfo      terminfo entries — xterm/xterm-256color are NOT in
+#                         ncurses-terminfo-base, and /etc/profile exports
+#                         TERM=xterm-256color, so without this every curses
+#                         program (less, top, vim) runs against an unknown
+#                         terminal
+DEFAULT_SHELL="${XFORGE_DEFAULT_SHELL:-/bin/bash}"
+CONSOLE_PACKAGES="${XFORGE_CONSOLE_PACKAGES:-bash coreutils less ncurses-terminfo}"
+
 ROOTFS_NAME="alpine-rootfs"
 ZIP_NAME="$ROOTFS_NAME.zip"
 
@@ -68,8 +101,59 @@ log()  { printf '\n==> %s\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
 die()  { printf '\nerror: %s\n' "$*" >&2; exit 1; }
 
+# ---------------------------------------------------------------------------
+# Running things *inside* the root being built
+#
+# Two steps need this: installing the glibc layer (step 4) and installing the
+# guest's own packages (step 5). Both run the guest's own apk in a chroot of the
+# tree, which needs the kernel's /proc and a /dev with a working /dev/null — apk
+# opens it, and so does every shell — plus /etc/resolv.conf, because the
+# minirootfs ships no nameservers at all and every one of those commands
+# downloads something.
+#
+# The mounts are recorded so the exit trap can undo them: a failed build must not
+# leave a mount behind, or the next run's `rm -rf $WORK` walks into a live /proc.
+# ---------------------------------------------------------------------------
+GUEST_MOUNTS=""
+
+guest_mount() {
+    [ "$(id -u)" -eq 0 ] || die "building the root needs root: the guest's own
+       installer and apk are run in a chroot of the tree being built, and a chroot
+       needs mounts. Re-run with sudo."
+
+    mount -t proc none "$DATA/proc" || die "could not mount /proc in $DATA"
+    GUEST_MOUNTS="$DATA/proc"
+    mount --rbind /dev "$DATA/dev" 2>/dev/null || true
+    GUEST_MOUNTS="$DATA/dev $GUEST_MOUNTS"
+    mount --rbind /sys "$DATA/sys" 2>/dev/null || true
+    GUEST_MOUNTS="$DATA/sys $GUEST_MOUNTS"
+
+    # Name resolution for anything the chroot runs: the minirootfs ships no
+    # nameservers at all, and both steps below download (apk indexes, packages).
+    #
+    # Written with awk rather than `grep … | sed …`, and with the fallback keyed on
+    # the *result* rather than on the host file's contents: a pipeline whose output
+    # is redirected leaves an empty file behind if it produces nothing, and a
+    # truncated /etc/resolv.conf inside the chroot turns a network failure into a
+    # name-resolution failure three steps away. (Seen for real: iSH wedged the
+    # pipeline and the root being built got a 0-byte resolv.conf.)
+    awk '/^nameserver/ { print; if (++n == 3) exit }' /etc/resolv.conf \
+        > "$DATA/etc/resolv.conf" 2>/dev/null || true
+    if ! [ -s "$DATA/etc/resolv.conf" ]; then
+        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$DATA/etc/resolv.conf"
+    fi
+}
+
+guest_umount() {
+    for m in $GUEST_MOUNTS; do
+        umount -l "$m" 2>/dev/null || true
+    done
+    GUEST_MOUNTS=""
+}
+
 cleanup() {
     local status=$?
+    guest_umount
     if [ "$status" -ne 0 ]; then
         printf '\nFailed (exit %d). Work directory kept at %s\n' "$status" "$WORK" >&2
     elif [ "${XFORGE_KEEP_WORK:-0}" != "1" ]; then
@@ -193,31 +277,11 @@ if [ "${XFORGE_SKIP_GLIBC:-0}" = "1" ]; then
 else
     log "Installing the glibc compatibility layer (this is the slow part)"
 
-    # The step runs the guest's installer in a chroot, which needs mounts, and
-    # aarch64 binaries have to execute. Say so plainly: otherwise this surfaces
-    # as "mount: must be superuser to use mount" from somewhere in the middle of
-    # a long install.
-    [ "$(id -u)" -eq 0 ] || die "installing the glibc layer needs root (it chroots
-       into the root being built and mounts /proc). Re-run with sudo, or set
-       XFORGE_SKIP_GLIBC=1 to build a root without the layer."
-
-    # Bind /proc and /dev: apk and the shell expect them, and the step's own
-    # verification compiles a program.
-    mount -t proc none "$DATA/proc"
-    GLIBC_MOUNTS="$DATA/proc"
-    trap 'for m in $GLIBC_MOUNTS; do umount -l "$m" 2>/dev/null || true; done' EXIT
-    mount --rbind /dev "$DATA/dev" 2>/dev/null || true
-    GLIBC_MOUNTS="$DATA/dev $GLIBC_MOUNTS"
-    mount --rbind /sys "$DATA/sys" 2>/dev/null || true
-    GLIBC_MOUNTS="$DATA/sys $GLIBC_MOUNTS"
-
-    # DNS: name resolution happens inside the chroot, and the minirootfs ships no
-    # nameservers at all.
-    if [ -s /etc/resolv.conf ] && grep -q '^nameserver' /etc/resolv.conf; then
-        grep '^nameserver' /etc/resolv.conf | sed -n '1,3p' > "$DATA/etc/resolv.conf"
-    else
-        printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > "$DATA/etc/resolv.conf"
-    fi
+    # The step runs the guest's installer in a chroot, which needs /proc, /dev and
+    # DNS. guest_mount() sets those up (and refuses to run unless we are root:
+    # otherwise this surfaces as "mount: must be superuser to use mount" from
+    # somewhere in the middle of a long install).
+    guest_mount
 
     # The Alpine-side prerequisites for the step itself (it fetches packages with
     # curl and unpacks them with ar/zstd), and its copy of the installer.
@@ -248,9 +312,7 @@ else
         [ -L "$DATA/$link" ] || die "the glibc layer is not wired in: $link is missing"
     done
 
-    umount -l "$DATA/dev" 2>/dev/null || true
-    umount -l "$DATA/sys" 2>/dev/null || true
-    umount -l "$DATA/proc" 2>/dev/null || true
+    guest_umount
 
     # The layer's own prerequisite packages are no longer needed: they were
     # installed to run the step, not to run the guest.
@@ -260,7 +322,33 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Configure the root
+# 5. Install the guest's own packages
+#
+# The shell session XForge's Terminal *is* has dependencies, and they belong in
+# the root rather than in an on-device install: the console is the first thing a
+# new install shows, and a shell whose pager is missing (or whose TERM is unknown
+# to curses) is a broken-looking guest, not a hint to run `apk add`.
+#
+# Installed with the guest's own apk, in a chroot of this tree, so the packages
+# land in the root's own database (/lib/apk/db) and `apk del`/`apk upgrade` in the
+# guest stay consistent with them. This is also why it runs *before* the fakefs
+# conversion below: the conversion indexes the tree, and anything installed
+# afterwards would be on disk and invisible to the engine.
+# ---------------------------------------------------------------------------
+log "Installing the guest's console packages: $CONSOLE_PACKAGES"
+guest_mount
+chroot "$DATA" /bin/sh -c "apk add --no-cache $CONSOLE_PACKAGES" \
+    || die "installing the guest's own packages in the chroot failed"
+guest_umount
+
+for package in $CONSOLE_PACKAGES; do
+    chroot "$DATA" /bin/sh -c "apk info -e $package" >/dev/null 2>&1 \
+        || die "$package is not installed in the built root"
+done
+note "$(chroot "$DATA" /bin/sh -c 'apk info 2>/dev/null | wc -l' | tr -d ' ') packages in the root"
+
+# ---------------------------------------------------------------------------
+# 6. Configure the root
 #
 # A bare Alpine minirootfs is not quite bootable as XForge's guest: it has no
 # mount points, no DNS, no apk repositories, and root may not have a usable
@@ -268,10 +356,24 @@ fi
 # ---------------------------------------------------------------------------
 log "Configuring the root"
 
-# The guest logs in as root with no password, and its shell must exist.
+# The shell the console starts is a property of /etc/passwd — /sbin/xforge-login
+# reads this field and execs what it names, so this one line is the whole
+# "default shell" setting. `chsh` is not needed and is not in the root; editing
+# the field (or `apk add shadow` for chsh) is the way to change it in the guest.
 if [ -f "$DATA/etc/passwd" ]; then
-    sed -i 's|^root:.*|root:x:0:0:root:/root:/bin/sh|' "$DATA/etc/passwd"
+    if [ -x "$DATA$DEFAULT_SHELL" ]; then
+        sed -i "s|^root:.*|root:x:0:0:root:/root:$DEFAULT_SHELL|" "$DATA/etc/passwd"
+    else
+        # Not a hard failure: a root without the shell it promised is worse than a
+        # root that boots into the one it certainly has. Say which it is, loudly.
+        printf 'warning: %s is not installed in the root (add its package to\n' "$DEFAULT_SHELL" >&2
+        printf '         XFORGE_CONSOLE_PACKAGES, or set XFORGE_DEFAULT_SHELL)\n' >&2
+        printf '         — falling back to /bin/sh\n' >&2
+        DEFAULT_SHELL=/bin/sh
+        sed -i 's|^root:.*|root:x:0:0:root:/root:/bin/sh|' "$DATA/etc/passwd"
+    fi
 fi
+note "root's login shell: $DEFAULT_SHELL"
 
 # /etc/profile: the non-interactive environment is built by XForge's exec layer,
 # but an interactive shell (the terminal tab) reads this.
@@ -292,9 +394,13 @@ alias l='ls -CF'
 cd ~
 EOF
 
-cat > "$DATA/etc/motd" <<'EOF'
+cat > "$DATA/etc/motd" <<EOF
 
   XForge — Alpine Linux aarch64 on ish-arm64
+
+  This console starts root's login shell: $DEFAULT_SHELL
+  Change it by editing root's shell field in /etc/passwd
+  (the login script reads that field — any shell you install will do).
 
   Swift and xtool are not installed yet. Install them in the guest with:
       sh /root/install-toolchain.sh all
@@ -311,12 +417,16 @@ EOF
 # starts openrc — which this root does not contain — and respawns six gettys that
 # have no terminals behind them, so on this guest every one of those lines fails
 # or spins. Replace it with what XForge's guest actually is: a busybox system with
-# one console, where a root shell is the point.
+# one console, where the root shell is the point.
 #
-# `login -f` skips authentication, which is required rather than a convenience:
-# the minirootfs ships root with a *locked* password (`root:*` in /etc/shadow),
-# so getty plus a password login could never get in at all.
+# The console program is /sbin/xforge-login, not a getty and not `/bin/login -f
+# root`: it starts the shell configured for root in /etc/passwd directly. See that
+# script for why login is not in this path, and for what the session it creates
+# looks like. `login -f` itself would work here — it is what this line used to be
+# — but it authenticates, allocates utmp and takes over the terminal, none of
+# which this guest has a use for, and none of which it can report failing.
 # ---------------------------------------------------------------------------
+install -m 0755 "$HERE/xforge-login" "$DATA/sbin/xforge-login"
 cat > "$DATA/etc/inittab" <<'EOF'
 # /etc/inittab — XForge
 #
@@ -324,14 +434,15 @@ cat > "$DATA/etc/inittab" <<'EOF'
 # /dev/console, and the one the app shows.
 ::sysinit:/etc/init.d/rcS
 
-# Respawned, so logging out (or a crash) gives a fresh login rather than a dead
-# screen. No password: the guest logs in as root.
-tty1::respawn:/bin/login -f root
+# Respawned, so logging out (or a crash) gives a fresh session rather than a dead
+# screen. No password, no getty: xforge-login execs the login shell configured for
+# root in /etc/passwd.
+tty1::respawn:/sbin/xforge-login root
 
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/umount -a -r
 EOF
-note "inittab: pid 1 is /sbin/init, /bin/login -f root on tty1"
+note "inittab: pid 1 is /sbin/init, tty1 respawns /sbin/xforge-login root"
 
 mkdir -p "$DATA/etc/init.d"
 cat > "$DATA/etc/init.d/rcS" <<'EOF'
@@ -382,16 +493,33 @@ mkdir -p "$DATA/usr/local/share/xforge"
     echo "rootfs:    ${ALPINE_VERSION}.${ALPINE_MINOR}"
     echo "engine:    ish-arm64"
     echo "format:    fakefs-zip"
+    echo "shell:     $DEFAULT_SHELL"
+    echo "console:   /sbin/xforge-login root (tty1, respawned by init)"
     echo "built-at:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     # Bump this whenever anything about the guest's own setup changes — the app
     # compares it with the root it already installed and replaces the root when
     # they differ (see RootfsInstaller.installedRootIsStale). It must match the
     # release tag the root is published under.
-    echo "stamp:     rootfs-v3"
+    echo "stamp:     rootfs-v4"
 } > "$DATA/usr/local/share/xforge/rootfs-manifest.txt"
 
 # ---------------------------------------------------------------------------
-# 6. Convert to fakefs
+# The console, exercised.
+#
+# Everything above is configuration, and configuration that looks right reads
+# exactly like configuration that works. So the root is handed to
+# EmbeddedLinux/verify-rootfs.sh, which runs the guest's own login program in a
+# chroot of this tree — the way init runs it — and checks which shell ends up
+# running. The same script checks the ZIP that gets published, so a device and
+# this build agree on what "correct" means.
+# ---------------------------------------------------------------------------
+log "Checking the finished root"
+guest_mount
+"$HERE/verify-rootfs.sh" "$DATA"
+guest_umount
+
+# ---------------------------------------------------------------------------
+# 7. Convert to fakefs
 #
 # Last, after everything that adds, removes or links anything — the conversion
 # builds `meta.db` as an index of the tree as it stands, and the engine reads
@@ -447,7 +575,7 @@ if [ "${XFORGE_SKIP_GLIBC:-0}" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Pack
+# 8. Pack
 # ---------------------------------------------------------------------------
 log "Packing $ZIP_NAME"
 ZIP_PATH="$OUT_DIR/$ZIP_NAME"

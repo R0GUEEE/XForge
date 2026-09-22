@@ -1,0 +1,74 @@
+#!/bin/sh
+#
+# xforge-login — the program XForge's console runs, one instance per session.
+#
+# This file is not a build script: it is *installed into the guest* by
+# EmbeddedLinux/build-rootfs.sh, at /sbin/xforge-login, and run from /etc/inittab
+# (which respawns it on tty1, the guest's only console and the terminal the app
+# shows). It lives here, next to the builder that installs it, because it is the
+# one guest file with logic in it worth reading on its own.
+#
+# It used to be `/bin/login -f root`, and not needing login is the point:
+#
+#   * login authenticates, allocates a utmp slot and takes over a controlling
+#     terminal. None of that applies to this guest: it has one user, whose
+#     password is locked (`root:*`), and init has already given the session the
+#     console tty.
+#   * what login did *not* do is what the guest actually wants — start the shell
+#     configured for the user. That shell is a property of /etc/passwd, so this
+#     script reads it: `chsh -s /bin/zsh root` (or editing the field) changes what
+#     the console starts, and the console still starts *something* if that shell
+#     was uninstalled underneath it.
+#
+# The session is a login session: the shell is exec'd with a leading dash in
+# argv[0] — the POSIX convention that makes a shell read /etc/profile — with the
+# user's home as the working directory and the environment `login` would have set.
+#
+# Usage: xforge-login [user]        (default: root)
+#
+# The leading dash is done with `exec -a`, which is busybox ash's (this script is
+# /bin/sh, and /bin/sh is busybox ash here). Passing `-l`/`--login` instead would
+# mean knowing which flag each shell spells it with.
+#
+set -u
+
+user="${1:-root}"
+fallback=/bin/sh
+
+# field <n> <user>: one colon-separated field of /etc/passwd, or nothing.
+field() {
+    awk -F: -v u="$user" -v n="$1" '$1 == u { print $n; exit }' /etc/passwd 2>/dev/null
+}
+
+wanted="$(field 7)"
+home="$(field 6)"
+[ -n "$home" ] || home=/
+[ -n "$wanted" ] || wanted="$fallback"
+
+# The configured shell may have been removed since it was set. Say so and run the
+# fallback: init respawns this forever, and a console that dies silently on every
+# respawn leaves a blank screen with nothing to read.
+if [ ! -x "$wanted" ]; then
+    printf 'xforge-login: %s is not executable, falling back to %s\n' "$wanted" "$fallback" >&2
+    wanted="$fallback"
+fi
+
+# What `login` would export. TERM is the terminal the app emulates; /etc/profile
+# sets it too, for shells that read it.
+TERM="${TERM:-xterm-256color}"
+HOME="$home"
+SHELL="$wanted"
+USER="$user"
+LOGNAME="$user"
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/bin
+export TERM HOME SHELL USER LOGNAME PATH
+
+cd "$home" 2>/dev/null || cd /
+
+# The motd `login` used to print, and only when there is a terminal to print it to.
+if [ -t 0 ] && [ -s /etc/motd ]; then
+    cat /etc/motd
+fi
+
+name="${wanted##*/}"
+exec -a "-$name" "$wanted"

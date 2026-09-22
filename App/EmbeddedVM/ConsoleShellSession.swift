@@ -9,7 +9,7 @@ import Foundation
 final class ConsoleShellSession: InteractiveShellSession {
     private let console: any GuestConsole
 
-    /// init owns the console, and it respawns the login the user types into, so
+    /// init owns the console, and it respawns the session the user types into, so
     /// init is the process this session speaks for.
     let pid: Int32 = 1
     private(set) var isRunning = true

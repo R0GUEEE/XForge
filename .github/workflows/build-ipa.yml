@@ -53,7 +53,7 @@ jobs:
       # upgraded; `make rootfs` (or the `rootfs` workflow) builds and publishes
       # a new one. The sha256 is asserted below, so a tag that is moved — or an
       # upload that was truncated — fails the build instead of shipping silently.
-      ROOTFS_TAG: rootfs-v3
+      ROOTFS_TAG: rootfs-v4
       ROOTFS_ASSET: alpine-rootfs.zip
       SPM_CLONES_DIR: .spm
     steps:
@@ -114,20 +114,32 @@ jobs:
           echo "glibc layers paths indexed: $indexed"
 
           # The guest boots /sbin/init, which reads /etc/inittab and respawns
-          # /bin/login -f root on the console — that is the whole Terminal tab, so
-          # a root without it is not shippable.
+          # /sbin/xforge-login root on the console — the script that starts root's
+          # login shell in /etc/passwd. That is the whole Terminal tab, and the
+          # shell it names is part of the root's contract, so both are checked
+          # here: a root pinned to a tag that predates them fails the build
+          # instead of shipping a terminal that cannot start a shell.
           unzip -p "$ROOTFS_ASSET" alpine-rootfs/data/etc/inittab > /tmp/rootfs-inittab.txt
-          grep -qE '^tty1::respawn:/bin/login -f root$' /tmp/rootfs-inittab.txt \
-            || { echo '::error::the rootfs does not respawn a root login on the console'; exit 1; }
+          grep -qE '^tty1::respawn:/sbin/xforge-login root$' /tmp/rootfs-inittab.txt \
+            || { echo '::error::the rootfs does not respawn xforge-login on the console'; exit 1; }
+          unzip -p "$ROOTFS_ASSET" alpine-rootfs/data/usr/local/share/xforge/rootfs-manifest.txt \
+            > /tmp/rootfs-manifest.txt
+          ROOTFS_SHELL="$(awk '/^[[:space:]]*shell:/ { print $2 }' /tmp/rootfs-manifest.txt)"
+          [ -n "$ROOTFS_SHELL" ] \
+            || { echo '::error::the rootfs manifest does not name a login shell'; exit 1; }
           unzip -Z1 "$ROOTFS_ASSET" > /tmp/rootfs-files.txt
           for path in \
             alpine-rootfs/data/sbin/init \
             alpine-rootfs/data/bin/login \
             alpine-rootfs/data/etc/inittab \
-            alpine-rootfs/data/etc/init.d/rcS ; do
+            alpine-rootfs/data/etc/init.d/rcS \
+            alpine-rootfs/data/sbin/xforge-login \
+            "alpine-rootfs/data${ROOTFS_SHELL}" \
+            alpine-rootfs/data/usr/share/terminfo/x/xterm-256color ; do
             grep -qx "$path" /tmp/rootfs-files.txt \
-              || { echo "::error::the rootfs has no ${path#alpine-rootfs/data/}"; exit 1; }
+              || { echo "::error::the rootfs has no ${path#alpine-rootfs/data}"; exit 1; }
           done
+          echo "console: /sbin/xforge-login root → $ROOTFS_SHELL"
 
           echo "rootfs: $(du -h "$ROOTFS_ASSET" | cut -f1), $(wc -l < /tmp/rootfs-entries.txt) entries"
 

@@ -73,7 +73,7 @@ protocol LinuxEmulator: AnyObject {
 
     /// Start the guest's own init as pid 1, giving it the console as its stdio.
     /// This is what boots the guest as a *system*: init reads /etc/inittab, which
-    /// puts a login on the console. Safe to call once per boot.
+    /// puts a root shell on the console. Safe to call once per boot.
     func startInit(_ program: String) async throws
 
     /// Attach to the guest console, delivering its output as the guest produces

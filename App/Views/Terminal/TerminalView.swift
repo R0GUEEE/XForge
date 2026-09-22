@@ -4,8 +4,8 @@ import UniformTypeIdentifiers
 
 /// The Terminal tab: the guest's console.
 ///
-/// The screen *is* the terminal. Alpine boots `/sbin/init` as pid 1, which puts a
-/// root login on the console, and the console is this view: what you type goes
+/// The screen *is* the terminal. Alpine boots `/sbin/init` as pid 1, which starts
+/// root's login shell on the console, and the console is this view: what you type goes
 /// into the guest's tty, and what the tty produces is drawn here. The shell prints
 /// its own prompt and echoes its own input, so there is nothing host-side to draw
 /// or interpret.
