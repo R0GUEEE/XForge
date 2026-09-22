@@ -145,7 +145,6 @@ struct GuestFileBrowserView: View {
         do {
             let guest = vm ?? XForgeEnvironment.makeVM()
             vm = guest
-            await guest.prepareRootfs()
             try await guest.boot()
             let box = GuestListingBox()
             let hiddenGlob = showHidden ? " \(GuestShell.quote(path))/.[!.]*" : ""
