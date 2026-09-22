@@ -244,7 +244,7 @@ private struct InteractiveTerminalSurface: UIViewRepresentable {
     }
 }
 
-private final class TerminalTextView: UITextView, UIKeyInput {
+private final class TerminalTextView: UITextView {
     weak var session: TerminalSession?
     private var lastRevision = -1
 
@@ -290,11 +290,11 @@ private final class TerminalTextView: UITextView, UIKeyInput {
     // UIKeyInput is intentionally implemented even though the UITextView is not
     // editable: UIKit still presents the keyboard, while every keystroke is sent
     // to the guest shell instead of mutating host-side text.
-    var hasText: Bool { true }
-    func insertText(_ text: String) {
+    override var hasText: Bool { true }
+    override func insertText(_ text: String) {
         session?.sendRaw(text)
     }
-    func deleteBackward() {
+    override func deleteBackward() {
         session?.sendRaw("\u{7f}")
     }
 
