@@ -101,12 +101,18 @@ enum TerminalKey: String, CaseIterable, Identifiable, Codable {
 @MainActor
 final class TerminalKeyConfiguration: ObservableObject {
     @Published private(set) var hidden: Set<TerminalKey> = []
+    @Published private(set) var order: [TerminalKey] = []
 
     private static let defaultsKey = "org.xforge.terminal.hiddenKeys"
+    private static let orderKey = "org.xforge.terminal.keyOrder"
 
     init() {
         let raw = UserDefaults.standard.stringArray(forKey: Self.defaultsKey) ?? []
         hidden = Set(raw.compactMap(TerminalKey.init(rawValue:)))
+        let saved = (UserDefaults.standard.stringArray(forKey: Self.orderKey) ?? [])
+            .compactMap(TerminalKey.init(rawValue:))
+        let defaults = TerminalKey.groups.flatMap(\.keys)
+        order = saved + defaults.filter { !saved.contains($0) }
     }
 
     /// Whether a key is shown. Pinned keys ignore the stored preference.
@@ -128,16 +134,19 @@ final class TerminalKeyConfiguration: ObservableObject {
     /// Restore every key.
     func resetToDefaults() {
         hidden = []
+        order = TerminalKey.groups.flatMap(\.keys)
         save()
     }
 
-    /// The keys to render, in the order the groups declare.
-    var visibleKeys: [TerminalKey] {
-        TerminalKey.groups.flatMap(\.keys).filter(isVisible)
+    func move(from source: IndexSet, to destination: Int) {
+        order.move(fromOffsets: source, toOffset: destination)
+        save()
     }
 
+    var visibleKeys: [TerminalKey] { order.filter(isVisible) }
+
     private func save() {
-        UserDefaults.standard.set(hidden.map(\.rawValue).sorted(),
-                                  forKey: Self.defaultsKey)
+        UserDefaults.standard.set(hidden.map(\.rawValue).sorted(), forKey: Self.defaultsKey)
+        UserDefaults.standard.set(order.map(\.rawValue), forKey: Self.orderKey)
     }
 }

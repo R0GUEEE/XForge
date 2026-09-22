@@ -430,25 +430,27 @@ private struct TerminalKeyConfigurationView: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(TerminalKey.groups, id: \.title) { group in
-                    Section(group.title) {
-                        ForEach(group.keys) { key in
-                            row(for: key)
-                        }
+                Section {
+                    ForEach(configuration.order) { key in
+                        row(for: key)
                     }
+                    .onMove(perform: configuration.move)
+                } header: {
+                    Text("Command bar")
+                } footer: {
+                    Text("Drag to reorganize buttons. Hidden buttons remain here so they can be restored.")
                 }
 
                 Section {
-                    Button("Show every key", systemImage: "arrow.counterclockwise") {
+                    Button("Restore default buttons and order", systemImage: "arrow.counterclockwise") {
                         configuration.resetToDefaults()
                     }
-                } footer: {
-                    Text("Hidden keys can be brought back here at any time.")
                 }
             }
             .navigationTitle("Terminal keys")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) { EditButton() }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
