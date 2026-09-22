@@ -1,3 +1,4 @@
+#!/bin/sh
 set -eu
 
 # Build zsign inside the embedded Alpine guest on first use. The upstream project

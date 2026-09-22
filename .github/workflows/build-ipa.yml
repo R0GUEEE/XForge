@@ -150,6 +150,23 @@ jobs:
             exit 1
           fi
 
+      - name: Validate the bundled guest tools
+        run: |
+          set -euo pipefail
+          # zsign is built inside Alpine on first use. These two files are the
+          # guest-side installer and the tiny patch that adds -Q/--password-file
+          # to the pinned upstream CLI (so a P12 password never appears in argv).
+          bash -n EmbeddedLinux/install-zsign.sh
+          shellcheck -S error EmbeddedLinux/install-zsign.sh
+          python3 -m py_compile EmbeddedLinux/patch-zsign-password-file.py
+          rm -rf EmbeddedLinux/__pycache__
+          grep -q '^ZSIGN_COMMIT=614caa8d1ca949e260e5746144aa52d27a4b08d6$' \
+            EmbeddedLinux/install-zsign.sh
+          grep -q '^ZSIGN_SHA256=a373dc5ddbf81ba5c435a48c14b4a2857506c3dde02ec62e0136b6968797384b$' \
+            EmbeddedLinux/install-zsign.sh
+          grep -q 'install-zsign.sh' project.yml
+          grep -q 'patch-zsign-password-file.py' project.yml
+
       - name: Generate the Xcode project
         run: xcodegen generate --spec project.yml
 
