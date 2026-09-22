@@ -242,6 +242,19 @@ jobs:
               fi
             done
 
+      - name: Stage the guest rootfs (XForge)
+        # XForge bundles a ~165 MB Alpine rootfs that is published as a release
+        # asset rather than committed, and the app target lists it as a resource —
+        # so it has to be on disk *before* XcodeGen walks the project, or the app
+        # is built without a Linux guest. The script reads the pinned tag from
+        # .github/workflows/build-ipa.yml and verifies the sha256. It is a no-op in
+        # a repository that has no such script.
+        run: |
+          set -e
+          if [ -x EmbeddedLinux/fetch-rootfs.sh ]; then
+            bash EmbeddedLinux/fetch-rootfs.sh
+          fi
+
       - name: Generate Xcode project (XcodeGen)
         env:
           IOS_PATH: ${{ steps.params.outputs.ios_path }}

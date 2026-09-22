@@ -79,6 +79,25 @@ targets:
         # file's executable bit surviving a checkout.
         script: 'bash "$SRCROOT/EmbeddedLinux/build-engine-for-xcode.sh"'
         basedOnDependencyAnalysis: false
+      # The other half of a working app is the guest rootfs, and it cannot be
+      # fetched here: it is a resource, so XcodeGen had to see it when it walked the
+      # directory (that is why EmbeddedLinux/fetch-rootfs.sh exists and why CI runs
+      # it before generating the project). A device build without it produces an app
+      # that cannot boot Linux, so this says so instead of shipping it quietly.
+      - name: Check the bundled guest rootfs
+        script: |
+          if [ "${PLATFORM_NAME:-}" != "iphoneos" ] || [ "${XFORGE_SKIP_ROOTFS:-0}" = "1" ]; then
+              exit 0
+          fi
+          if [ -f "${SRCROOT}/Support/Resources/alpine-rootfs.zip" ]; then
+              exit 0
+          fi
+          echo "error: no guest rootfs is staged at Support/Resources/alpine-rootfs.zip, so this app would boot no Linux." >&2
+          echo "       Stage the pinned one (about 165 MB) and build again:" >&2
+          echo "           bash EmbeddedLinux/fetch-rootfs.sh" >&2
+          echo "       Set XFORGE_SKIP_ROOTFS=1 to build without it anyway." >&2
+          exit 1
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(XFORGE_BUNDLE_ID)

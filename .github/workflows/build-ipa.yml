@@ -65,14 +65,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p Support/Resources
-          gh release download "$ROOTFS_TAG" \
-            --repo "${{ github.repository }}" \
-            --pattern "$ROOTFS_ASSET" \
-            --pattern "$ROOTFS_ASSET.sha256" \
-            --dir Support/Resources \
-            --clobber
-          test -f "Support/Resources/$ROOTFS_ASSET"
+          # The same script any other build calls (and that Xcode users run by
+          # hand): it reads the pinned tag from this file, downloads the asset,
+          # verifies the published sha256 and checks it is a fakefs ZIP.
+          bash EmbeddedLinux/fetch-rootfs.sh
 
       - name: Verify the downloaded rootfs
         run: |

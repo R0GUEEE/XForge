@@ -16,6 +16,14 @@ All notable changes to **XForge** are documented here.
   missing header rather than a missing engine. Simulator builds skip the phase
   (they compile the stub branch of the bridge), as do `XFORGE_SKIP_ENGINE=1` and
   `XFORGE_REBUILD_ENGINE=1` forces a rebuild.
+- **Staging the guest rootfs is a step any build can run**:
+  `EmbeddedLinux/fetch-rootfs.sh` reads the pinned `ROOTFS_TAG` out of
+  `build-ipa.yml`, downloads `alpine-rootfs.zip`, verifies the published sha256 and
+  checks it is a fakefs ZIP. The IPA workflow calls it (replacing its inline `gh
+  release download`), and so does the generic iOS pipeline — without it that pipeline
+  built a 19 MB app with no Linux guest at all. A device build whose rootfs resource
+  is missing now fails with instructions instead of succeeding quietly
+  (`XFORGE_SKIP_ROOTFS=1` opts out).
 - **The app no longer links libarchive or the fakefs import tool.** The bundled
   root is already a fakefs ZIP, unpacked with ZIPFoundation, so `fakefs_import` was
   never called — the app's own headers said so. `-larchive`, `-lfakefsify`, the

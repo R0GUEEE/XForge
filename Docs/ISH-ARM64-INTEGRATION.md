@@ -147,7 +147,7 @@ On top of the reference's list, XForge's root also carries:
   root — for a plain tree — and checks the fakefs ZIP through `meta.db`, which is the
   database the engine actually resolves through.
 
-## Building it: the engine is a prerequisite of the app
+## Building it: the engine and the rootfs are prerequisites of the app
 
 The guide treats the engine as something you build first and then link. That is fine
 for a human following instructions and wrong for a pipeline: any build that does not
@@ -172,6 +172,17 @@ carries a **first build phase**, `EmbeddedLinux/build-engine-for-xcode.sh`, whic
 
 The result is that `xcodebuild`, Xcode itself, the IPA workflow and any other
 pipeline all produce the same app from the same checkout.
+
+The **rootfs** is a prerequisite in the same sense, but it cannot be fetched from a
+build phase: it is a *resource*, so it has to be on disk before the project is
+generated (XcodeGen fixes the resource list when it walks the directory). Hence
+`EmbeddedLinux/fetch-rootfs.sh`, which reads the pinned tag out of
+`build-ipa.yml`, downloads the asset, verifies its published sha256 and checks it is
+a fakefs ZIP — run by the IPA workflow before XcodeGen, by the generic iOS pipeline,
+and by hand before opening the project in Xcode. A device build whose resource is
+missing fails on purpose (`Check the bundled guest rootfs`), because an app without a
+root is an app that cannot boot Linux, and finding that out on a phone is worse than
+a red build.
 
 ## Verification, and what is still only verified on a device
 
