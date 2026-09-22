@@ -107,14 +107,39 @@ struct SigningView: View {
         ), allowedContentTypes: importer?.types ?? [.data], allowsMultipleSelection: false) { result in
             guard case .success(let urls) = result, let url = urls.first,
                   let target = importer else { return }
-            switch target {
-            case .ipa: job.inputIPA = url
-            case .p12: job.p12 = url
-            case .mobileprovision: job.provisioningProfile = url
-            case .entitlements: job.entitlements = url
+            do {
+                let localURL = try persistImportedFile(url)
+                switch target {
+                case .ipa: job.inputIPA = localURL
+                case .p12: job.p12 = localURL
+                case .mobileprovision: job.provisioningProfile = localURL
+                case .entitlements: job.entitlements = localURL
+                }
+            } catch {
+                job.error = "Import failed: \(error.localizedDescription)"
             }
             importer = nil
         }
+    }
+
+    /// File-provider URLs returned by UIDocumentPicker are security-scoped and can
+    /// become unreadable as soon as the picker callback returns. Copy the selected
+    /// item into XForge's sandbox while access is active so signing can reliably
+    /// stage it into Alpine later.
+    private func persistImportedFile(_ source: URL) throws -> URL {
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+
+        let directory = XForgeEnvironment.documentDirectory
+            .appendingPathComponent("Signing Imports", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent(source.lastPathComponent)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(at: source, to: destination)
+        return destination
     }
 
     @ViewBuilder
