@@ -153,6 +153,13 @@ final class TerminalSession: ObservableObject {
 
     // MARK: - Input
 
+    /// Send raw keyboard/touch terminal input directly to the live shell.
+    /// This is used by the terminal surface so there is no separate command field.
+    func sendRaw(_ text: String) {
+        guard !text.isEmpty else { return }
+        sendToShell(text, label: nil)
+    }
+
     /// Send the composed line to the shell.
     func submit() {
         let line = input
