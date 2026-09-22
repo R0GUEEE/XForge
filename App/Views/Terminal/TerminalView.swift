@@ -450,7 +450,7 @@ private struct TerminalKeyConfigurationView: View {
             .navigationTitle("Terminal keys")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { EditButton() }
+                ToolbarItem(placement: .navigationBarLeading) { EditButton() }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                 }
