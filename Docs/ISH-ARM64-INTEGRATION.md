@@ -16,7 +16,7 @@ that are not were bugs.
 
 | The guide says | XForge | Where |
 |---|---|---|
-| Link `deps/libs/libish.a`, `libish_emu.a`, `libfakefs.a` | linked, plus `libfakefsify.a` and `libarchive.a` | `project.yml` (`OTHER_LDFLAGS[sdk=iphoneos*]`) |
+| Link `deps/libs/libish.a`, `libish_emu.a`, `libfakefs.a` | exactly those three | `project.yml` (`OTHER_LDFLAGS[sdk=iphoneos*]`) |
 | Add system library `libsqlite3.tbd` | `-lsqlite3` | same |
 | Header search path `deps/include` | `$(ISH_ROOT)` and `$(ISH_ROOT)/deps/libarchive/libarchive` | `project.yml` (`HEADER_SEARCH_PATHS[sdk=iphoneos*]`) |
 | Other linker flags `-ObjC`, `-all_load` | **not used** — see below | — |
@@ -30,6 +30,25 @@ that are not were bugs.
 | Feed keystrokes with `tty_get()` + `tty_input()` + `tty_release()` | equivalent: the tty is recorded in the driver's `init` and typed into with `tty_input` (which reads no per-thread engine state) | `ISHBridge.c` (`xf_ish_console_write`, `xf_ish_console_*`) |
 | `do_execve` + `task_start(current)` to run the console program | same, for pid 1 **and** for every command the app runs | `ISHBridge.c` |
 | Build options (`build_ish.sh`): `--buildtype=release`, `-Db_ndebug=true`, `-Dlog=""`, `-Dlog_handler=nslog`, `-Dkernel=ish`, `-Dengine=asbestos`, `-Dguest_arch=arm64` | identical set | `EmbeddedLinux/build-ish-core.sh` |
+
+### Why no `libarchive` (or `libfakefsify`)
+
+The reference links libarchive and builds the fakefs tools for the app. XForge did
+too, until the app's own header said otherwise: the bundled root is *already* a
+fakefs ZIP, unpacked with ZIPFoundation into `Documents`, and `fakefs_import` is
+never called — "there is no import step here: `fakefs_import` is a build-time tool
+in this design, not a runtime one" (`App/EmbeddedVM/ISHBridge.h`). The `fakefsify`
+the build machine needs is built by the engine's meson project on Linux, in
+`EmbeddedLinux/build-rootfs.sh`.
+
+So `-larchive`, `-lfakefsify`, the libarchive header path, the
+`deps/libarchive` submodule fetch and the libarchive iOS build are all gone from
+the app's build. It was not just dead weight: libarchive has no iOS build system of
+its own here, so `build-ish-core.sh` drove its Xcode project with a *nested*
+`xcodebuild` — and nested inside Xcode's own build phase, that crashed the Xcode
+build system (`error: unexpected service error: The Xcode build system has crashed`)
+after 90/90 engine targets had already succeeded. Removing the dependency removed
+the failure.
 
 ### Why not `-ObjC -all_load`
 

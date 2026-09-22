@@ -14,11 +14,17 @@
 #   libish_emu.a  per-arch instruction translation
 #   libfakefs.a   the SQLite-backed filesystem
 #
-# into Vendor/ish-arm64-build/lib, plus libfakefsify.a — tools/fakefs.c, whose
-# fakefs_import() unpacks an archive into a fakefs root on first launch.
+# into Vendor/ish-arm64-build/lib.
 #
-# Requires: macOS, Xcode command line tools, meson, ninja, python3, libarchive.
-#   brew install meson ninja llvm lld libarchive
+# Nothing else is built here. In particular the app does *not* link
+# tools/fakefs.c (`fakefs_import`) or libarchive: the rootfs it installs is already
+# a fakefs ZIP, unpacked with ZIPFoundation, so there is no import step at runtime
+# (see App/EmbeddedVM/ISHBridge.h). The `fakefsify` the *build machine* needs to
+# make that ZIP is produced by the engine's own meson build in
+# EmbeddedLinux/build-rootfs.sh, on a Linux host.
+#
+# Requires: macOS, Xcode command line tools, meson, ninja, python3.
+#   brew install meson ninja llvm lld
 #
 # Usage: EmbeddedLinux/build-ish-core.sh
 #
@@ -44,13 +50,11 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 [ -f "$ISH/meson.build" ] || die "ish-arm64 sources not found at $ISH
        run: git submodule update --init --depth 1 Vendor/ish-arm64"
 
-# ish-arm64's own submodules: libarchive builds the archive reader, libapps is
-# only used by the native (host) shell programs, which XForge does not embed.
-for sub in deps/libarchive; do
-    [ -d "$ISH/$sub" ] && [ -n "$(ls -A "$ISH/$sub" 2>/dev/null)" ] || die \
-        "ish-arm64's $sub submodule is missing
-       run: git -C Vendor/ish-arm64 submodule update --init --depth 1 $sub"
-done
+# ish-arm64's own submodules are deliberately not required. deps/libarchive only
+# feeds the fakefs tools (which this app does not link — see the note at the top),
+# deps/libapps is for the native host shells XForge does not embed, and deps/linux
+# is for -Dkernel=linux, which XForge does not build. Requiring them would mean
+# fetching something the build never reads.
 
 for tool in meson ninja xcrun python3; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool not found in PATH"
@@ -85,7 +89,7 @@ WANT_STAMP="$(stamp_value)"
 if [ "${XFORGE_REBUILD_ENGINE:-0}" != "1" ] && [ -f "$STAMP" ] \
    && [ "$(cat "$STAMP")" = "$WANT_STAMP" ]; then
     complete=1
-    for lib in libish.a libish_emu.a libfakefs.a libfakefsify.a libarchive.a; do
+    for lib in libish.a libish_emu.a libfakefs.a; do
         [ -f "$OUT/$lib" ] || complete=""
     done
     if [ -n "$complete" ]; then
@@ -212,69 +216,6 @@ for lib in libish.a libish_emu.a libfakefs.a; do
     [ -f "$MESON_BUILD/$lib" ] || die "$lib was not produced"
     cp "$MESON_BUILD/$lib" "$OUT/$lib"
 done
-
-# --- libfakefsify (fakefs_import) -------------------------------------------
-# tools/fakefs.c is a standalone program upstream. XForge links fakefs_import()
-# into the app to unpack the bundled rootfs on first launch, so it is compiled
-# here as a plain object rather than built as the `fakefsify` executable (which
-# could not run on iOS anyway). The progress callback it takes is exactly what
-# XForge's import screen reports from.
-log "Compiling tools/fakefs.c (fakefs_import)"
-clang -c "$ISH/tools/fakefs.c" -o "$MESON_BUILD/xforge-fakefs.o" \
-    -target "$TRIPLE" -isysroot "$SDK" -O2 \
-    -I"$ISH" -I"$ISH/deps/libarchive/libarchive" \
-    -DGUEST_ARM64=1
-ar rcs "$OUT/libfakefsify.a" "$MESON_BUILD/xforge-fakefs.o"
-
-# --- libarchive (unpacking the rootfs archive) -------------------------------
-# Built from ish-arm64's own vendored copy so the app and the engine agree on a
-# single libarchive. The iOS SDK ships none.
-log "Building libarchive for iOS"
-ARCHIVE_PROJ="$ISH/deps/libarchive.xcodeproj"
-ARCHIVE_LOG="$MESON_BUILD/archive-build.log"
-if [ -d "$ARCHIVE_PROJ" ]; then
-    # One native target. Avoid `xcodebuild -list`, whose target discovery
-    # initialises Simulator services and can fail on a headless build host even
-    # though the device build is valid.
-    #
-    # This is a *nested* xcodebuild when the engine is built from Xcode's build
-    # phase (EmbeddedLinux/build-engine-for-xcode.sh) rather than from a shell, and
-    # Xcode exports SYMROOT, OBJROOT, BUILD_DIR and friends to script phases —
-    # which xcodebuild itself honours. Left in place, the inner build tries to
-    # write into the outer build's directories, the outer build already owns that
-    # build description, and the whole thing dies with
-    #
-    #     The following build commands failed: CreateBuildDescription
-    #
-    # so the inherited layout is cleared and this build gets a products/objects
-    # directory of its own. (`-derivedDataPath` is not usable here: it requires
-    # `-scheme`, and libarchive.xcodeproj has no shared scheme — only the target,
-    # which is why this builds with `-target`.)
-    #
-    # The output goes to a log rather than /dev/null: a hidden failure here is a
-    # failure nobody can read.
-    if ! (
-        unset SYMROOT OBJROOT BUILD_DIR BUILD_ROOT DERIVED_FILE_DIR PROJECT_TEMP_DIR \
-              TARGET_BUILD_DIR CONFIGURATION_BUILD_DIR BUILT_PRODUCTS_DIR
-        xcodebuild -project "$ARCHIVE_PROJ" -target libarchive \
-            -configuration Release -sdk iphoneos ARCHS=arm64 \
-            SYMROOT="$MESON_BUILD/archive" \
-            OBJROOT="$MESON_BUILD/archive-obj" \
-            CONFIGURATION_BUILD_DIR="$MESON_BUILD/archive" \
-            CODE_SIGNING_ALLOWED=NO ONLY_ACTIVE_ARCH=NO build
-    ) > "$ARCHIVE_LOG" 2>&1; then
-        printf '\nerror: building libarchive for iOS failed. Last lines:\n' >&2
-        tail -n 30 "$ARCHIVE_LOG" >&2
-        die "xcodebuild could not build $ARCHIVE_PROJ (full log: $ARCHIVE_LOG)"
-    fi
-    [ -f "$MESON_BUILD/archive/libarchive.a" ] || {
-        tail -n 30 "$ARCHIVE_LOG" >&2
-        die "xcodebuild produced no libarchive.a (full log: $ARCHIVE_LOG)"
-    }
-    cp "$MESON_BUILD/archive/libarchive.a" "$OUT/libarchive.a"
-else
-    die "$ARCHIVE_PROJ missing (init the deps/libarchive submodule)"
-fi
 
 log "Staged into $OUT"
 ls -lh "$OUT"

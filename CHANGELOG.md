@@ -16,6 +16,14 @@ All notable changes to **XForge** are documented here.
   missing header rather than a missing engine. Simulator builds skip the phase
   (they compile the stub branch of the bridge), as do `XFORGE_SKIP_ENGINE=1` and
   `XFORGE_REBUILD_ENGINE=1` forces a rebuild.
+- **The app no longer links libarchive or the fakefs import tool.** The bundled
+  root is already a fakefs ZIP, unpacked with ZIPFoundation, so `fakefs_import` was
+  never called — the app's own headers said so. `-larchive`, `-lfakefsify`, the
+  libarchive header path, the `deps/libarchive` submodule fetch and the libarchive
+  iOS build are gone. That was worth more than the bytes: libarchive has no iOS build
+  system here, so it was built by a *nested* `xcodebuild`, which inside an Xcode build
+  phase crashed the build system (`unexpected service error: The Xcode build system
+  has crashed`) after all 90 engine targets had built.
 - **The engine build records what it built** (`.engine-stamp`: the submodule commit,
   a hash of `build-ish-core.sh` and of `project.yml`, the guest arch and the
   minimum iOS version) so the phase costs a couple of file reads on every

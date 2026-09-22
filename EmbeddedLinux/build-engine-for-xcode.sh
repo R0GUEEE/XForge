@@ -65,12 +65,9 @@ export PATH
 # ---------------------------------------------------------------------------
 if [ ! -f Vendor/ish-arm64/meson.build ]; then
     echo "note: Vendor/ish-arm64 is empty — fetching the engine submodule"
+    # Only the engine itself: its own submodules (libarchive, libapps, linux) are
+    # not read by this build — see EmbeddedLinux/build-ish-core.sh.
     git submodule update --init --depth 1 Vendor/ish-arm64
-    git -C Vendor/ish-arm64 submodule update --init --depth 1 deps/libarchive
-fi
-if [ ! -d Vendor/ish-arm64/deps/libarchive ] || [ -z "$(ls -A Vendor/ish-arm64/deps/libarchive 2>/dev/null)" ]; then
-    echo "note: fetching the engine's libarchive submodule (fakefsify and the archive reader need it)"
-    git -C Vendor/ish-arm64 submodule update --init --depth 1 deps/libarchive
 fi
 
 # ---------------------------------------------------------------------------

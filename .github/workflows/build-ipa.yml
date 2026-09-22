@@ -147,19 +147,17 @@ jobs:
         run: |
           set -euo pipefail
           git submodule update --init --depth 1 "$ENGINE_ROOT"
-          # libarchive builds the archive reader used by the engine's own
-          # fakefs tools. The other two are deliberately skipped: deps/libapps
-          # is for the native host shells XForge does not embed, and deps/linux
-          # is only used with -Dkernel=linux, which XForge does not build.
-          git -C "$ENGINE_ROOT" submodule update --init --depth 1 deps/libarchive
+          # The engine's own submodules are deliberately skipped: deps/libarchive
+          # and deps/libapps feed tools this app does not link, and deps/linux is
+          # only used with -Dkernel=linux, which XForge does not build.
           git -C "$ENGINE_ROOT" log --oneline -1
 
       - name: Install the build tools
         run: |
           set -euo pipefail
           # xcodegen generates the Xcode project from project.yml; meson/ninja
-          # build the engine. libarchive is deliberately NOT installed: the app
-          # links the copy built from the vendored submodule.
+          # build the engine. libarchive is not needed at all: the app unpacks the
+          # fakefs ZIP with ZIPFoundation instead of importing an archive.
           # llvm/lld provide the aarch64-linux cross-compiler the guest VDSO
           # needs (`clang -target aarch64-linux-gnu -fuse-ld=lld`) — Apple's
           # clang cannot link that. shellcheck validates the pinned zsign
@@ -181,10 +179,6 @@ jobs:
         id: engine-revision
         run: echo "value=$(git -C "$ENGINE_ROOT" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Identify libarchive cache input
-        id: archive-revision
-        run: echo "value=$(git -C "$ENGINE_ROOT/deps/libarchive" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
       - name: Identify the iOS compiler toolchain
         id: toolchain-versions
         run: |
@@ -197,7 +191,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.ENGINE_LIB_DIR }}
-          key: ${{ runner.os }}-${{ runner.arch }}-engine-${{ hashFiles('.gitmodules', 'EmbeddedLinux/build-ish-core.sh', 'project.yml') }}-${{ steps.engine-revision.outputs.value }}-${{ steps.archive-revision.outputs.value }}-${{ steps.toolchain-versions.outputs.value }}
+          key: ${{ runner.os }}-${{ runner.arch }}-engine-${{ hashFiles('.gitmodules', 'EmbeddedLinux/build-ish-core.sh', 'project.yml') }}-${{ steps.engine-revision.outputs.value }}-${{ steps.toolchain-versions.outputs.value }}
 
       - name: Build the embedded Linux engine (ish-arm64, iOS arm64)
         if: steps.engine-cache.outputs.cache-hit != 'true'
