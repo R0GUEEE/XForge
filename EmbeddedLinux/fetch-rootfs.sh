@@ -61,20 +61,28 @@ fi
 log "Fetching the pinned Alpine rootfs: $TAG"
 note "into $TARGET"
 
-# `gh` when it is there (it is on GitHub runners, and it handles the API and any
-# token in the environment), plain curl otherwise — these releases are public, so
-# nothing needs a credential.
-if command -v gh >/dev/null 2>&1; then
+# `gh` when it is installed *and* has a token, plain curl otherwise. These releases
+# are public, so no credential is needed — and a `gh` with no token is not an error
+# to report, it is a reason to use curl (which is how a pipeline that does not pass
+# GH_TOKEN gets its rootfs; treating that as fatal is how this step failed once).
+BASE="https://github.com/$SLUG/releases/download/$TAG"
+
+if command -v gh >/dev/null 2>&1 \
+   && { [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; }; then
+    note "using gh (a token is in the environment)"
     rm -f "$TARGET"
-    gh release download "$TAG" --repo "$SLUG" \
-        --pattern "$ASSET" --pattern "$ASSET.sha256" \
-        --dir "$DEST" --clobber \
-        || die "gh could not download $ASSET from $SLUG release $TAG"
-else
-    # A half-downloaded asset must not survive the failure: the next run (or a
-    # human) would find a plausible-looking file of the wrong size.
+    if ! gh release download "$TAG" --repo "$SLUG" \
+            --pattern "$ASSET" --pattern "$ASSET.sha256" \
+            --dir "$DEST" --clobber; then
+        note "gh could not fetch it — falling back to curl"
+    fi
+fi
+
+if [ ! -f "$TARGET" ]; then
+    # A half-downloaded asset must not survive a failure: the next run (or a human)
+    # would find a plausible-looking file of the wrong size.
     trap 'rm -f "$TARGET.partial"' EXIT
-    BASE="https://github.com/$SLUG/releases/download/$TAG"
+    note "downloading $BASE/$ASSET"
     curl -fL --retry 3 --retry-delay 2 -o "$TARGET.partial" "$BASE/$ASSET" \
         || die "could not download $BASE/$ASSET"
     mv "$TARGET.partial" "$TARGET"
