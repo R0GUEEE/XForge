@@ -251,11 +251,11 @@ final class TerminalSession: ObservableObject {
     private func banner() {
         buffer.appendLine("XForge terminal — the guest's own console.",
                           style: TerminalStyle(foreground: .index(11)))
-        buffer.appendLine("Alpine boots /sbin/init as pid 1, which puts a root login on this",
+        buffer.appendLine("Alpine boots /sbin/init as pid 1, which starts root's login shell on this",
                           style: TerminalStyle(foreground: .index(8)))
-        buffer.appendLine("terminal. Ctrl-C interrupts the foreground program; `exit` logs out",
+        buffer.appendLine("terminal — the shell /etc/passwd names for root. Ctrl-C interrupts the",
                           style: TerminalStyle(foreground: .index(8)))
-        buffer.appendLine("and init gives you a fresh login.",
+        buffer.appendLine("foreground program; `exit` ends the session and init starts a fresh one.",
                           style: TerminalStyle(foreground: .index(8)))
         buffer.appendLine("")
         revision += 1
