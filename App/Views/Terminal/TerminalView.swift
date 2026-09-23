@@ -99,11 +99,11 @@ struct TerminalView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            VStack(spacing: 0) {
-                Text("Alpine Linux").font(.footnote.bold())
-                Text(session.cwd).font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
+            // No working-directory line: the shell owns its cwd and nothing here
+            // can see it, so a hardcoded "/root" was wrong the moment anyone ran
+            // `cd`. (Asking the guest for it would mean a command per keystroke;
+            // if it is wanted, that is what it costs.)
+            Text("Alpine Linux").font(.footnote.bold())
         }
         ToolbarItem(placement: .primaryAction) {
             Menu {

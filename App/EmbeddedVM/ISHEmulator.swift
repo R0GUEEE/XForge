@@ -353,6 +353,12 @@ final class BridgeConsole: GuestConsole, @unchecked Sendable {
         guard !text.isEmpty, let data = text.data(using: .utf8), !data.isEmpty else {
             return false
         }
+        // `GuestConsole` promises `false` for "there is no console to write to",
+        // and the terminal reports that to the user. Returning `true` here
+        // unconditionally meant input was accepted, queued against a console that
+        // was stopped or not up yet, and silently dropped — the one failure mode a
+        // terminal must not have.
+        guard !isStopped, isReady else { return false }
         inputQueue.async { [weak self] in self?.push(data) }
         return true
     }

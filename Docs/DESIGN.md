@@ -159,18 +159,25 @@ Everything XForge generates lives in `Documents` — which iOS backs up to iClou
 because the app declares `UIFileSharingEnabled`, shows in the Files app. Two kinds of
 things live there and they want opposite treatment:
 
-- **Regenerable**: the host-side downloads, staged build artifacts and the engine log.
-  These are marked `isExcludedFromBackup` at launch (`XForgeEnvironment.prepareStorage`).
-  Backing them up bloats every device backup with data the app can produce again — the
-  storage guidelines forbid it, and a multi-gigabyte backup is what gets an app rejected.
-- **Not regenerable**: the user's projects. They live *inside the guest filesystem's
-  fakefs*, in the same opaque database as the rootfs — and with `XFORGE_PROVISION=all`
-  that filesystem is now several gigabytes of toolchain. Nothing in the app can separate
-  the two, so the guest filesystem is deliberately **not** excluded: the alternative is
-  silently dropping user work from backups. The cost is a large backup; the mitigation
-  is that `/host` (visible in the Files app) and the Terminal are how a project leaves
-  the device. If projects ever need to be backed up cheaply, they have to live outside
-  the fakefs — not inside it with a flag on the directory.
+- **Regenerable**: host-side downloads, staged build artifacts, the engine log. Marked
+  `isExcludedFromBackup` at launch (`XForgeEnvironment.prepareStorage`). Backing them up
+  bloats every device backup with data the app can produce again, which the storage
+  guidelines forbid.
+- **The guest filesystem** (`Documents/embedded-linux`): excluded as well. It is the
+  bundled rootfs imported into fakefs, and with `XFORGE_PROVISION=all` that is several
+  gigabytes of Alpine, Swift, xtool and the Darwin SDK — the least suited thing to
+  upload to iCloud once per device.
+
+The price of the second one is that **the user's projects live inside it**, in the same
+opaque fakefs, and nothing in the app can mark one without the other. That is why the
+export exists: "Export project" on a project's screen tars it *inside the guest* and
+copies the archive to `Documents/exports`, which is deliberately **not** excluded — it is
+user data, it is small, and it is the thing that should survive a device restore. The
+`/host` share (also visible in the Files app) and the Terminal remain the escape hatch
+for anything else.
+
+If projects ever need to be backed up as projects rather than as archives, they have to
+live outside the fakefs. Nothing about a flag on the directory can do it.
 
 ## 4. BuildExecutor abstraction
 

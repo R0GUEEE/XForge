@@ -2,6 +2,36 @@
 
 All notable changes to **XForge** are documented here.
 
+## Projects can leave the device, and the guest filesystem stays out of backups
+
+### Added
+- **"Export project"** on a project's screen: it tars the project *inside* the guest
+  and copies the archive to `Documents/exports`, where the Files app shows it and
+  the share sheet can hand it on (`App/Services/ProjectExporter.swift`). Projects
+  live inside the guest filesystem, which is not backed up, so this is how work
+  leaves the device — a first-class action rather than `tar` typed into the
+  Terminal.
+
+### Changed
+- **The guest filesystem is now excluded from iCloud backup**, along with the
+  downloads, staged artifacts and engine log. It is the bundled rootfs imported
+  into fakefs: several gigabytes of Alpine, Swift, xtool and the SDK, which is the
+  last thing that should be uploaded to iCloud once per device. The trade-off is
+  real and documented (`Docs/DESIGN.md`, "What is backed up"): a project is not in
+  device backups until it is exported, because nothing can mark the megabyte of
+  source without the gigabytes of toolchain around it in the same fakefs.
+
+### Fixed
+- **The console bridge accepted input it could not deliver.** `BridgeConsole.write`
+  returned `true` unconditionally, so keystrokes written to a stopped console — or
+  one that was not up yet — were queued and dropped, while the terminal reported
+  nothing. It now answers with the console's real state, which is what the
+  caller's error message is for.
+- **File transfers leaked their staged copy when they failed.** `copyIn`/`copyOut`
+  stage through the `/host` share; a failed transfer left the staged file behind
+  for good, and the files moved that way are large (an Xcode.xip is gigabytes).
+- **The terminal's toolbar showed a working directory it never knew.** It read a
+  `cwd` property that nothing ever updated, so it displayed `/root` after any `cd`.
 ## Your own Xcode.xip can replace the SDK the rootfs ships
 
 ### Fixed

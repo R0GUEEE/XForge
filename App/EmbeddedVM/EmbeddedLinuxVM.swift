@@ -374,6 +374,11 @@ final class EmbeddedLinuxVM: LinuxVM {
             let staged = share
                 .appendingPathComponent(Self.transferDir, isDirectory: true)
                 .appendingPathComponent(name)
+            // Whatever happens next, the staged copy is ours to clean up: a
+            // *failed* copy used to leave it in the share folder for good, and the
+            // things copied through here are large (an Xcode.xip is gigabytes, and
+            // the container has no room to keep two of them).
+            defer { try? FileManager.default.removeItem(at: staged) }
             guard FileManager.default.fileExists(atPath: staged.path) else {
                 throw LinuxVMError.fileCopyFailed
             }
@@ -412,6 +417,9 @@ final class EmbeddedLinuxVM: LinuxVM {
                 at: staging.deletingLastPathComponent(), withIntermediateDirectories: true)
             try? FileManager.default.removeItem(at: staging)
             try FileManager.default.copyItem(at: hostURL, to: staging)
+            // The guest deletes the shared copy when it has taken it, and this
+            // covers the case where it does not get that far.
+            defer { try? FileManager.default.removeItem(at: staging) }
 
             let dir = (guestPath as NSString).deletingLastPathComponent
             let status = try await run(

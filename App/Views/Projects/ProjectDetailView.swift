@@ -40,6 +40,9 @@ private struct OverviewSection: View {
     @State private var showingFiles = false
     @State private var showingInfo = false
     @State private var showingDeps = false
+    @State private var exporting = false
+    @State private var exportedArchive: URL?
+    @State private var exportError: String?
     @State private var appInfo: AppInfo
 
     init(project: Project) {
@@ -173,8 +176,48 @@ private struct OverviewSection: View {
                 }
                 .buttonStyle(.bordered)
             }
+
+            // The project itself, not just the built app: its sources live inside
+            // the guest filesystem, which is not backed up, so this is how work
+            // leaves the device.
+            if let exportedArchive {
+                ShareLink(item: exportedArchive) {
+                    Label("Share project archive", systemImage: "archivebox")
+                }
+                .buttonStyle(.bordered)
+            } else {
+                Button {
+                    Task { await exportProject() }
+                } label: {
+                    Label(exporting ? "Exporting…" : "Export project",
+                          systemImage: "archivebox")
+                }
+                .buttonStyle(.bordered)
+                .disabled(exporting || manager.snapshot.isRunning)
+            }
         }
         .padding(.horizontal).padding(.bottom)
+        .alert("Export failed", isPresented: Binding(
+            get: { exportError != nil },
+            set: { if !$0 { exportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: {
+            Text(exportError ?? "")
+        }
+    }
+
+    /// Archive the project inside the guest and stage it for sharing.
+    private func exportProject() async {
+        exporting = true
+        defer { exporting = false }
+        do {
+            let vm = XForgeEnvironment.makeVM()
+            await vm.prepareRootfs()
+            exportedArchive = try await ProjectExporter.export(project, via: vm)
+        } catch {
+            exportError = error.localizedDescription
+        }
     }
 
     private func symbol(for stage: BuildStage) -> String {

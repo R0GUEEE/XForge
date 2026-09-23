@@ -28,7 +28,6 @@ final class TerminalSession: ObservableObject {
     /// True while the guest console is attached and input is being forwarded to it.
     @Published private(set) var running = false
     @Published private(set) var booting = false
-    @Published private(set) var cwd = "/root"
     /// Commands handed over by other screens, run through the same console.
     @Published private(set) var pending: [QueuedLine] = []
     @Published private(set) var activeLabel: String?

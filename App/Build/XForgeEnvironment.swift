@@ -52,31 +52,43 @@ enum XForgeEnvironment {
         return Int64(values?.volumeAvailableCapacityForImportantUsage ?? 0)
     }
 
-    /// Create the app's own directories and keep the regenerable ones out of
-    /// iCloud backup.
+    /// Create the app's own directories and keep what should not be backed up out
+    /// of iCloud backup.
     ///
     /// Everything XForge generates lives in `Documents`, which iOS backs up and
     /// (because the app declares `UIFileSharingEnabled`) shows in the Files app.
-    /// Downloads, build artifacts and logs are all *regenerable* — the downloads
-    /// are fetched again, an artifact is rebuilt, the log is written again — and
-    /// backing up gigabytes of regenerable data is exactly what the iOS data
-    /// storage guidelines forbid: it bloats every backup and can get an app
-    /// rejected. So those three are marked excluded.
+    /// Backing up gigabytes of downloaded or regenerable data is exactly what the
+    /// iOS data storage guidelines forbid — it bloats every backup and can get an
+    /// app rejected — so:
     ///
-    /// The guest filesystem is deliberately *not* marked, and that is a trade-off
-    /// rather than an oversight: it holds the imported rootfs — the regenerable
-    /// part, now several gigabytes with the toolchain in it — *and* the user's
-    /// projects, which live in the same fakefs and have no export of their own.
-    /// Nothing here can separate the two, so the choice is between backing up
-    /// several gigabytes per device and silently dropping user work from backups.
-    /// See Docs/DESIGN.md, "What is backed up".
+    ///  - the downloads, staged artifacts and engine log are excluded: each is
+    ///    produced again by downloading, rebuilding or running;
+    ///  - **the guest filesystem is excluded too.** It is the bundled rootfs
+    ///    imported into fakefs, and with `XFORGE_PROVISION=all` that is several
+    ///    gigabytes of Alpine, Swift, xtool and the SDK. The user's projects live
+    ///    *inside* it — nothing here can separate one from the other — so this is
+    ///    a real trade-off: projects are no longer in device backups. The way out
+    ///    is `ProjectExporter` ("Export project" on a project's screen, and the
+    ///    archive appears in `Documents/exports`, which *is* backed up), plus the
+    ///    `/host` share and the Terminal for anything else.
+    ///
+    /// See Docs/DESIGN.md, "What is backed up", for why the two cannot be split.
     static func prepareStorage() {
         let fm = FileManager.default
-        let regenerable = [downloadsDirectory, stagingDirectory, logsDirectory]
-        for directory in regenerable {
+        let excluded = [embeddedRoot, downloadsDirectory, stagingDirectory, logsDirectory]
+        for directory in excluded {
             try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
             excludeFromBackup(directory)
         }
+        // Exports are the user's work leaving the guest, so they are left alone:
+        // backed up, and visible in the Files app.
+        try? fm.createDirectory(at: exportsDirectory, withIntermediateDirectories: true)
+    }
+
+    /// Where `ProjectExporter` writes project archives (`<Documents>/exports`).
+    /// Kept here rather than in the exporter so the storage rules live in one file.
+    static var exportsDirectory: URL {
+        documentDirectory.appendingPathComponent("exports", isDirectory: true)
     }
 
     /// Best-effort: a container that refuses the flag is not a reason to fail
