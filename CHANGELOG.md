@@ -2,6 +2,22 @@
 
 All notable changes to **XForge** are documented here.
 
+## Installing the Swift toolchain goes through the guest's own script
+
+### Changed
+- **The Toolchain screen no longer spells out swift.org's install steps itself.**
+  `SystemComponents.swiftInstallCommand` ran `curl` → `tar zxf` → `./swiftly init
+  --quiet-shell-followup -y` unconditionally, which had two problems that only a
+  device shows: on a root that already carries the toolchain (every published root
+  does now) it downloaded 28 MB and ran `swiftly init` over a working installation,
+  and `swiftly init` launches a child process that this engine does not allow —
+  it stops with "Failed to launch the new process. Underlying error: Invalid
+  argument" before downloading anything. The command now runs the guest's own
+  provisioning script (`glibc`, `swiftly`, `swift`), which is guarded at every
+  step — a provisioned guest answers instantly, an empty one installs — and is the
+  same code the rootfs is built with, so there is one implementation of
+  provisioning rather than two that drift.
+
 ## The bundled Alpine root ships with the build toolchain installed
 
 ### Changed

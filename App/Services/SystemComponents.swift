@@ -58,23 +58,31 @@ enum SystemComponents {
         "sh \(guestInstallerScript) \(component.rawValue)"
     }
 
-    /// The Swift toolchain, installed exactly the way swift.org documents it —
-    /// the command the user would type into a Linux box.
+    /// The Swift toolchain, installed by the guest's own provisioning script.
     ///
-    /// Two XForge-specific adjustments, both needed to run it in the guest:
-    ///  - `swiftly init -y`, because there is no tty to answer its prompt (the
-    ///    bridge runs one command, not an interactive session);
-    ///  - the glibc layer first, because the toolchain swiftly installs is a
-    ///    glibc build and this guest is musl.
+    /// This used to spell out swift.org's documented steps inline — `curl` the
+    /// swiftly tarball, `tar zxf`, `./swiftly init`, `env.sh`, `hash -r` — which
+    /// had two problems that only showed up on a device:
+    ///
+    ///  - it was *unconditional*, so on a root that already carried the toolchain
+    ///    (every published root does now: `EmbeddedLinux/build-rootfs.sh` with
+    ///    `XFORGE_PROVISION=all`) it downloaded 28 MB and ran `swiftly init` over a
+    ///    working installation;
+    ///  - `swiftly init` launches a child process, and this engine does not let it:
+    ///    it fails with "Failed to launch the new process. Underlying error:
+    ///    Invalid argument" before downloading anything.
+    ///
+    /// The script's steps are the same work with the guards that belong on them —
+    /// `swiftly` is a no-op when `/usr/local/bin/swiftly` is already there, and
+    /// `swift` installs a toolchain only when the toolchains directory is empty —
+    /// so a provisioned guest answers instantly and an empty one still gets a
+    /// toolchain. It is also the same code the rootfs is built with, which is the
+    /// point: one implementation of provisioning, not two that drift.
     static var swiftInstallCommand: String {
         """
         sh \(guestInstallerScript) glibc && \
-        cd /root && \
-        curl -fLO https://download.swift.org/swiftly/linux/swiftly-$(uname -m).tar.gz && \
-        tar zxf swiftly-$(uname -m).tar.gz && \
-        ./swiftly init --quiet-shell-followup -y && \
-        . "${SWIFTLY_HOME_DIR:-$HOME/.local/share/swiftly}/env.sh" && \
-        hash -r && \
+        sh \(guestInstallerScript) swiftly && \
+        sh \(guestInstallerScript) swift && \
         swift --version
         """
     }
