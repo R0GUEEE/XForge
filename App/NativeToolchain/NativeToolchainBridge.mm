@@ -1,0 +1,171 @@
+#include "NativeToolchainBridge.h"
+#include <algorithm>
+#include <cstring>
+#include <string>
+#include <vector>
+
+static void xf_copy_diag(const std::string &value, char *buffer, size_t capacity) {
+    if (!buffer || capacity == 0) return;
+    const size_t n = std::min(value.size(), capacity - 1);
+    std::memcpy(buffer, value.data(), n);
+    buffer[n] = '\0';
+}
+
+#if defined(XFORGE_HAS_LLVM) && \
+    __has_include(<clang/CodeGen/CodeGenAction.h>) && \
+    __has_include(<clang/Frontend/CompilerInstance.h>) && \
+    __has_include(<clang/Frontend/CompilerInvocation.h>) && \
+    __has_include(<clang/Frontend/TextDiagnosticPrinter.h>) && \
+    __has_include(<lld/Common/Driver.h>)
+
+#include <clang/Basic/Diagnostic.h>
+#include <clang/CodeGen/CodeGenAction.h>
+#include <clang/Frontend/CompilerInstance.h>
+#include <clang/Frontend/CompilerInvocation.h>
+#include <clang/Frontend/TextDiagnosticPrinter.h>
+#include <lld/Common/Driver.h>
+#include <llvm/ADT/ArrayRef.h>
+#include <llvm/Support/Host.h>
+#include <llvm/Support/raw_ostream.h>
+
+LLD_HAS_DRIVER(macho)
+
+extern "C" bool xf_native_toolchain_available(void) {
+    return true;
+}
+
+extern "C" const char *xf_native_toolchain_version(void) {
+    return "LLVM/Clang/LLD native iOS backend";
+}
+
+extern "C" int xf_native_clang_compile(const char *source_path,
+                                        const char *object_path,
+                                        const char *sdk_path,
+                                        const char *target_triple,
+                                        const char *language,
+                                        char *diagnostics,
+                                        size_t diagnostics_capacity) {
+    if (!source_path || !object_path || !sdk_path || !target_triple) {
+        xf_copy_diag("native clang: missing required argument", diagnostics, diagnostics_capacity);
+        return 64;
+    }
+
+    std::string diagText;
+    llvm::raw_string_ostream diagOS(diagText);
+
+    auto diagOpts = llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions>(
+        new clang::DiagnosticOptions());
+    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, &*diagOpts);
+    auto diagIDs = llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs());
+    clang::DiagnosticsEngine diags(diagIDs, &*diagOpts, diagPrinter.get(), false);
+
+    std::vector<std::string> owned = {
+        "-triple", target_triple,
+        "-emit-obj",
+        "-o", object_path,
+        "-isysroot", sdk_path,
+        "-fblocks",
+        "-fobjc-arc"
+    };
+
+    const std::string lang = language ? language : "c";
+    if (lang == "objective-c" || lang == "objc") {
+        owned.insert(owned.end(), {"-x", "objective-c"});
+    } else if (lang == "objective-c++" || lang == "objc++") {
+        owned.insert(owned.end(), {"-x", "objective-c++"});
+    } else if (lang == "c++" || lang == "cpp") {
+        owned.insert(owned.end(), {"-x", "c++"});
+    } else {
+        owned.insert(owned.end(), {"-x", "c"});
+    }
+    owned.push_back(source_path);
+
+    std::vector<const char *> args;
+    args.reserve(owned.size());
+    for (const auto &arg : owned) args.push_back(arg.c_str());
+
+    auto invocation = std::make_shared<clang::CompilerInvocation>();
+    if (!clang::CompilerInvocation::CreateFromArgs(*invocation, args, diags)) {
+        diagOS.flush();
+        xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+        return 65;
+    }
+
+    clang::CompilerInstance compiler;
+    compiler.setInvocation(std::move(invocation));
+    compiler.createDiagnostics(diagPrinter.release(), true);
+    if (!compiler.hasDiagnostics()) {
+        xf_copy_diag("native clang: failed to create diagnostics engine", diagnostics, diagnostics_capacity);
+        return 66;
+    }
+
+    clang::EmitObjAction action;
+    const bool ok = compiler.ExecuteAction(action);
+    diagOS.flush();
+    xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+    return ok ? 0 : 1;
+}
+
+extern "C" int xf_native_lld_link(int argc,
+                                   const char * const *argv,
+                                   char *diagnostics,
+                                   size_t diagnostics_capacity) {
+    if (argc <= 0 || !argv) {
+        xf_copy_diag("native lld: empty argument list", diagnostics, diagnostics_capacity);
+        return 64;
+    }
+
+    llvm::ArrayRef<const char *> args(argv, static_cast<size_t>(argc));
+    std::string stdoutText;
+    std::string stderrText;
+    llvm::raw_string_ostream stdoutOS(stdoutText);
+    llvm::raw_string_ostream stderrOS(stderrText);
+
+    const lld::DriverDef drivers[] = {{lld::Darwin, &lld::macho::link}};
+    const lld::Result result = lld::lldMain(args, stdoutOS, stderrOS, drivers);
+    stdoutOS.flush();
+    stderrOS.flush();
+
+    std::string combined = stdoutText;
+    if (!combined.empty() && !stderrText.empty()) combined += "\n";
+    combined += stderrText;
+    if (!result.canRunAgain) {
+        if (!combined.empty()) combined += "\n";
+        combined += "lld reported that the linker cannot be safely re-entered.";
+    }
+    xf_copy_diag(combined, diagnostics, diagnostics_capacity);
+    return result.retCode;
+}
+
+#else
+
+extern "C" bool xf_native_toolchain_available(void) {
+    return false;
+}
+
+extern "C" const char *xf_native_toolchain_version(void) {
+    return "Native LLVM backend not linked";
+}
+
+extern "C" int xf_native_clang_compile(const char *,
+                                        const char *,
+                                        const char *,
+                                        const char *,
+                                        const char *,
+                                        char *diagnostics,
+                                        size_t diagnostics_capacity) {
+    xf_copy_diag("XForge was built without XFORGE_HAS_LLVM and the native LLVM bundle.",
+                 diagnostics, diagnostics_capacity);
+    return 78;
+}
+
+extern "C" int xf_native_lld_link(int,
+                                   const char * const *,
+                                   char *diagnostics,
+                                   size_t diagnostics_capacity) {
+    xf_copy_diag("XForge was built without XFORGE_HAS_LLVM and the native LLVM bundle.",
+                 diagnostics, diagnostics_capacity);
+    return 78;
+}
+
+#endif
