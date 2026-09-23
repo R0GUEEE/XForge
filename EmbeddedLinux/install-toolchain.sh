@@ -11,7 +11,7 @@
 #
 # Set XFORGE_INSTALL_XTOOL=0 for a base build root that leaves xtool for the
 # app's on-device component installer.
-# Steps: deps | glibc | xtool | swiftly | swift | sdk | verify
+# Steps: deps | glibc | xtool | swiftly | swift | sdk | sdk-remove | verify
 #
 # Every step is idempotent: re-running it is a no-op once it has succeeded.
 #
@@ -637,6 +637,14 @@ step_sdk() {
         exit 1
     fi
 
+    # An explicit replacement removes what is installed first — SwiftPM will not
+    # install a second bundle carrying the same artifact ID, and the bundled rootfs
+    # already carries one. The default is the idempotent path: a root that has an
+    # SDK keeps it.
+    if [ "${XFORGE_DARWIN_SDK_REPLACE:-0}" = "1" ]; then
+        step_sdk_remove
+    fi
+
     # Idempotence, answered by SwiftPM rather than by a marker file: an SDK that
     # was installed and then removed must be reinstalled, and only SwiftPM knows.
     sdk_listing="/tmp/xforge-sdk-list.$$"
@@ -755,6 +763,52 @@ EOF
     log "                     at ${sdk_install_dir%/}"
 }
 
+# ---------------------------------------------------------------------------
+# Removing the installed Darwin SDK
+#
+# SwiftPM refuses to install a bundle whose artifact ID is already present —
+# `swiftSDKArtifactAlreadyInstalled`, whose message tells the user to remove one
+# of them — and the published rootfs *ships* the darwin artifact. So a user's own
+# Xcode.xip could not be installed on top of the bundled SDK at all: the install
+# failed before xtool had finished, with nothing in the UI to say why.
+#
+# This is the removal that makes room for it, and it is what the Toolchain screen
+# runs before `xtool sdk install`. The store entry is deleted rather than a
+# subcommand being called: the directory is what SwiftPM consults before it
+# installs, and `swift sdk` does not offer a removal in every version.
+# ---------------------------------------------------------------------------
+step_sdk_remove() {
+    log "Removing any installed Swift SDK bundles"
+    stores="$HOME/.swiftpm/swift-sdks"
+    # SwiftPM's store follows XDG_CONFIG_HOME when it is set (it is not, in the
+    # guest, but the rootfs build must not be the only caller this works for).
+    if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+        stores="$stores $XDG_CONFIG_HOME/swiftpm/swift-sdks"
+    fi
+
+    found=""
+    for store in $stores; do
+        [ -d "$store" ] || continue
+        for bundle in "$store"/*.artifactbundle; do
+            [ -d "$bundle" ] || continue
+            echo "    $bundle"
+            rm -rf "$bundle"
+            found="$found $bundle"
+        done
+    done
+
+    # The record of what was installed goes with it, so nothing downstream claims
+    # an SDK this root no longer has.
+    rm -f "$SHARE/darwin-sdk.txt"
+
+    if [ -n "$found" ]; then
+        log "Removed $(printf '%s' "$found" | wc -w) SDK bundle(s)"
+    else
+        log "No Swift SDK bundle was installed — nothing to remove"
+    fi
+    return 0
+}
+
 # Report what actually runs, and do not pretend. Each tool is checked through
 # the same path a user's command would take.
 step_verify() {
@@ -840,6 +894,7 @@ case "${1:-all}" in
     swiftly) step_swiftly ;;
     swift)   step_swift ;;
     sdk)     step_sdk ;;
+    sdk-remove) step_sdk_remove ;;
     verify)  step_verify ;;
     all)
         step_deps
@@ -859,7 +914,7 @@ case "${1:-all}" in
         touch "$SHARE/build-environment-v2"
         ;;
     *)
-        echo "usage: $0 [deps|glibc|xtool|swiftly|swift|sdk|verify|all]" >&2
+        echo "usage: $0 [deps|glibc|xtool|swiftly|swift|sdk|sdk-remove|verify|all]" >&2
         exit 2
         ;;
 esac

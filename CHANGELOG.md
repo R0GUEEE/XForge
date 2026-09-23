@@ -2,6 +2,26 @@
 
 All notable changes to **XForge** are documented here.
 
+## Your own Xcode.xip can replace the SDK the rootfs ships
+
+### Fixed
+- **Importing an Xcode.xip failed because the bundled rootfs already has a Darwin
+  SDK.** SwiftPM refuses to install a bundle whose artifact ID is already present
+  (`swiftSDKArtifactAlreadyInstalled` — its message tells you to remove one of
+  them), so with the provisioned root the Toolchain screen's install ran
+  `xtool sdk install`, got that refusal from the last step, and reported a failure
+  with nothing to explain it. Both SDK paths now remove the installed SDK first,
+  through a new `sdk-remove` step in the guest's own provisioning script:
+  `sh /root/install-toolchain.sh sdk-remove` deletes SwiftPM's store entry (the
+  directory it consults before installing, since `swift sdk` has no removal in
+  every version) and the record of what was installed. It is idempotent — a guest
+  with no SDK reports that and succeeds — and it is the same implementation the
+  rootfs build uses, with `XFORGE_DARWIN_SDK_REPLACE=1` for a deliberate
+  replacement.
+- The prebuilt-SDK download had the identical defect: it also ran
+  `swift sdk install` on top of a guest that already had the artifact, so
+  "Install the prebuilt Darwin SDK…" failed on a provisioned root too.
+
 ## Installing the Swift toolchain goes through the guest's own script
 
 ### Changed

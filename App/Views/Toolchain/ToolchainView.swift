@@ -66,7 +66,9 @@ struct ToolchainView: View {
                      + "storage and then installed there with "
                      + "`xtool sdk install \"path/to/xip\"`. Without one, XForge's "
                      + "prebuilt darwin.artifactbundle is fetched and installed inside "
-                     + "the guest instead.")
+                     + "the guest instead. Either way the SDK already in the guest is "
+                     + "removed first — SwiftPM will not install a second bundle "
+                     + "carrying the same artifact ID, and the bundled rootfs ships one.")
             }
 
             Section {

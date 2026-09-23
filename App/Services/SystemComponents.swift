@@ -103,17 +103,37 @@ enum SystemComponents {
     /// The `.xip` is copied into the guest's *own* storage first (`/root/xforge`),
     /// and xtool is pointed at that path: xtool does the extraction and the SDK
     /// post-processing itself, so nothing has to be unpacked on the host.
+    ///
+    /// The removal first is not tidiness. SwiftPM refuses to install a bundle
+    /// whose artifact ID is already present (`swiftSDKArtifactAlreadyInstalled`,
+    /// which tells the user to remove one of them) — and the bundled rootfs ships
+    /// the darwin artifact, so without this the whole point of the import, using
+    /// *your* Xcode, was unreachable: the install failed with nothing in the UI to
+    /// explain it. `sdk-remove` deletes SwiftPM's store entry, which is what it
+    /// consults before installing, and it is the guest's own script so there is
+    /// one implementation of this rather than one here and one in the rootfs
+    /// build.
     static func darwinSDKInstallCommand(guestXIPPath: String) -> String {
-        "xtool sdk install \(GuestShell.quote(guestXIPPath)) && swift sdk list"
+        """
+        sh \(guestInstallerScript) sdk-remove && \
+        xtool sdk install \(GuestShell.quote(guestXIPPath)) && \
+        swift sdk list
+        """
     }
 
     /// The prebuilt-bundle alternative, for when the user has no Xcode.xip to
     /// hand (it downloads XForge's own darwin.artifactbundle inside the guest).
+    ///
+    /// The same removal as the `.xip` path, for the same reason: SwiftPM will not
+    /// install a bundle whose artifact ID is already there, and the bundled rootfs
+    /// ships one — so "install the prebuilt SDK" over a provisioned guest failed
+    /// exactly like the import did.
     static func darwinSDKDownloadCommand(from url: URL) -> String {
         let archive = guestSDKCache + "/darwin-sdk.zip"
         let bundle = guestSDKCache + "/darwin.artifactbundle"
         return """
         set -eu
+        sh \(guestInstallerScript) sdk-remove
         mkdir -p \(GuestShell.quote(guestSDKCache))
         curl -fL --retry 3 \(GuestShell.quote(url.absoluteString)) -o \(GuestShell.quote(archive))
         rm -rf \(GuestShell.quote(bundle))
