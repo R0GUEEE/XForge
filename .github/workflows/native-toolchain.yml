@@ -109,8 +109,12 @@ jobs:
           # Flatten the static dependency graph into one archive. XForge then
           # links a single library instead of depending on LLVM's internal
           # archive ordering.
-          mapfile -d '' ARCHIVES < <(find llvm-build/lib -maxdepth 1 -type f -name '*.a' -print0 | sort -z)
-          test "${#ARCHIVES[@]}" -gt 0
+          find llvm-build/lib -maxdepth 1 -type f -name '*.a' -print | sort > /tmp/llvm-archives.txt
+          test -s /tmp/llvm-archives.txt
+          ARCHIVES=()
+          while IFS= read -r archive; do
+            ARCHIVES+=("$archive")
+          done < /tmp/llvm-archives.txt
           /usr/bin/libtool -static -o dist/lib/libXForgeNativeToolchain.a "${ARCHIVES[@]}"
 
           cat > /tmp/native_link_smoke.mm <<'EOF'
