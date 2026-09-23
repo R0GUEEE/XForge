@@ -158,14 +158,33 @@ final class TerminalSession: ObservableObject {
     /// Hand a line to the console from another screen. It is written like anything
     /// else, so it runs in the same session — with the same environment, the same
     /// directory, and after whatever is already queued.
+    ///
+    /// Booting this session is part of the job. A screen that queues a command
+    /// boots the *guest* first, and that is not the same as this console being
+    /// attached to it: only the Terminal tab called `boot()`. So a command queued
+    /// before the Terminal tab had ever been opened — which is every install from
+    /// the Toolchain, Downloads and Settings screens on a fresh launch, since
+    /// SwiftUI does not build an unselected tab — was reported as undeliverable to
+    /// a buffer nobody was looking at, while the screen that queued it said it was
+    /// running in the Terminal.
     func enqueue(_ line: String, label: String? = nil) {
-        pending.append(QueuedLine(text: line, label: label))
-        drainQueue()
+        enqueue(QueuedLine(text: line, label: label))
     }
 
     func enqueue(_ line: QueuedLine) {
         pending.append(line)
-        drainQueue()
+        guard shell?.isRunning != true else {
+            drainQueue()
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.boot()
+            // If the boot failed the queue is still drained, which reports the
+            // line as undelivered — the honest outcome, and the reason the drop
+            // path stays.
+            self.drainQueue()
+        }
     }
 
     private func drainQueue() {
