@@ -1,4 +1,5 @@
 import Foundation
+import ZIPFoundation
 
 struct NativeSDKLayout: Sendable {
     let bundle: URL
@@ -102,6 +103,46 @@ enum NativeSDK {
             try fm.removeItem(at: destination)
         }
         try fm.moveItem(at: staging, to: destination)
+    }
+
+    static func installLatestPrebuilt() async throws {
+        let remote = try await XForgeReleases.darwinSDKURL()
+        let (downloaded, response) = try await URLSession.shared.download(from: remote)
+        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw DownloadError.http(status: http.statusCode, url: remote)
+        }
+
+        let fm = FileManager.default
+        let extractionRoot = XForgeEnvironment.nativeSDKDirectory
+            .appendingPathComponent("download-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: extractionRoot) }
+
+        try fm.createDirectory(at: extractionRoot, withIntermediateDirectories: true)
+        try fm.unzipItem(at: downloaded, to: extractionRoot)
+
+        let direct = extractionRoot.appendingPathComponent("darwin.artifactbundle", isDirectory: true)
+        if fm.fileExists(atPath: direct.path) {
+            try install(from: direct)
+            return
+        }
+
+        let children = try fm.contentsOfDirectory(
+            at: extractionRoot,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )
+        if let bundle = children.first(where: { $0.lastPathComponent == "darwin.artifactbundle" }) {
+            try install(from: bundle)
+            return
+        }
+
+        // Some release zips contain the bundle contents at the archive root.
+        if fm.fileExists(atPath: extractionRoot.appendingPathComponent("swift-sdk.json").path) {
+            try install(from: extractionRoot)
+            return
+        }
+
+        throw NativeSDKError.missingBundle
     }
 
     static func remove() throws {
