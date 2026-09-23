@@ -1,0 +1,120 @@
+name: Native iOS Toolchain
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - native-toolchain-poc
+    paths:
+      - "App/NativeToolchain/**"
+      - ".github/workflows/native-toolchain.yml"
+
+jobs:
+  llvm-ios:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: brew install cmake ninja
+
+      - name: Checkout LLVM
+        uses: actions/checkout@v4
+        with:
+          repository: llvm/llvm-project
+          path: llvm-project
+          fetch-depth: 1
+
+      - name: Configure LLVM for iPhoneOS arm64
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          cmake -S llvm-project/llvm -B llvm-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD=AArch64 \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_CURL=OFF \
+            -DLLVM_ENABLE_RTTI=ON \
+            -DLLVM_BUILD_TOOLS=OFF \
+            -DCLANG_INCLUDE_TESTS=OFF \
+            -DLLD_INCLUDE_TESTS=OFF
+
+      - name: Build Clang and Mach-O LLD libraries
+        run: |
+          set -euxo pipefail
+          ninja -C llvm-build \
+            clangCodeGen \
+            clangFrontend \
+            clangFrontendTool \
+            clangDriver \
+            clangSerialization \
+            clangSema \
+            clangParse \
+            clangAST \
+            clangLex \
+            clangBasic \
+            lldMachO \
+            lldCommon
+
+      - name: Compile-check XForge bridge against LLVM headers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun --sdk iphoneos clang++ \
+            -std=c++20 \
+            -arch arm64 \
+            -miphoneos-version-min=16.0 \
+            -isysroot "$SDK" \
+            -DXFORGE_HAS_LLVM=1 \
+            -I llvm-project/llvm/include \
+            -I llvm-build/include \
+            -I llvm-project/clang/include \
+            -I llvm-build/tools/clang/include \
+            -I llvm-project/lld/include \
+            -I App/NativeToolchain \
+            -c App/NativeToolchain/NativeToolchainBridge.mm \
+            -o /tmp/NativeToolchainBridge.o
+
+      - name: Stage native toolchain SDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist/include dist/lib
+          cp -R llvm-project/llvm/include/llvm dist/include/
+          cp -R llvm-build/include/llvm dist/include/
+          cp -R llvm-project/clang/include/clang dist/include/
+          if [ -d llvm-build/tools/clang/include/clang ]; then
+            cp -R llvm-build/tools/clang/include/clang dist/include/
+          fi
+          cp -R llvm-project/lld/include/lld dist/include/
+          find llvm-build/lib -maxdepth 1 -type f -name '*.a' -exec cp {} dist/lib/ \;
+          cp /tmp/NativeToolchainBridge.o dist/
+          cat > dist/manifest.txt <<EOF
+          target=arm64-apple-ios
+          deployment_target=16.0
+          llvm_commit=$(git -C llvm-project rev-parse HEAD)
+          built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+          tar -C dist -czf XForgeNativeToolchain-arm64-ios.tar.gz .
+
+      - name: Upload native toolchain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XForgeNativeToolchain-arm64-ios
+          path: XForgeNativeToolchain-arm64-ios.tar.gz
+          if-no-files-found: error
+          compression-level: 0
