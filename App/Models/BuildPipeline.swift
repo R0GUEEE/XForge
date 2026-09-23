@@ -33,26 +33,12 @@ enum BuildStageState: Equatable {
     case failed
 }
 
-/// A per-stage outcome after a build.
-struct BuildStageOutcome: Equatable {
-    let stage: BuildStage
-    let state: BuildStageState
-    let duration: TimeInterval
-}
-
 /// Everything needed to produce one `.ipa`.
 struct BuildRequest {
     var project: Project
     var configuration: BuildConfiguration
     var appInfo: AppInfo
     var identity: SigningIdentity?
-}
-
-/// The finished product of a build.
-struct BuildResult {
-    let ipaURL: URL
-    let outcomes: [BuildStageOutcome]
-    let buildNumber: Int
 }
 
 /// A snapshot of the pipeline for the UI.

@@ -80,6 +80,24 @@ final class BuildManager: ObservableObject {
         let executor = makeExecutor()
         markRunning(.sdk)
         do {
+            // Ask the guest before the network. Every published rootfs ships a
+            // darwin SDK, and the release lookup below is a network call — so a
+            // device that is offline (or rate-limited by the GitHub API) failed a
+            // build at this stage for an SDK it already had. The probe mirrors
+            // ToolchainManager's: `swift sdk list` is a program, so its output goes
+            // to the pipe rather than /dev/null, which this engine kills.
+            let vm = XForgeEnvironment.makeVM()
+            if !vm.isBooted { try await vm.boot() }
+            let installed = try await vm.run(
+                "command -v swift >/dev/null 2>&1 && swift sdk list 2>&1 | grep -qi darwin",
+                environment: nil
+            ) { _ in }
+            if installed == 0 {
+                appendConsole("▸ darwin SDK: already installed in the guest")
+                markSucceeded(.sdk)
+                return
+            }
+
             // Resolve the published asset first: the darwin SDK lives under its own
             // `darwin-sdk-*` release series, so `releases/latest/download/…` 404s.
             let url = try await XForgeReleases.darwinSDKURL()
@@ -183,19 +201,24 @@ final class BuildManager: ObservableObject {
         markSucceeded(.package)
     }
 
+    /// The artifact is already on the host — the executor copied it out of the
+    /// guest during the compile stage, and this stage's job is to say so where the
+    /// user can see it. It used to build a `BuildResult` (with a fabricated
+    /// `duration: 0`), discard it, and report success whether or not the file was
+    /// there, which is the one thing a final stage should check.
     private func stageArtifact() async {
         markRunning(.artifact)
         guard let ipa = snapshot.lastIpa else {
             markFailed(.artifact, BuildError.noArtifact)
             return
         }
-        let result = BuildResult(
-            ipaURL: ipa,
-            outcomes: snapshot.stages.map { BuildStageOutcome(stage: $0.key, state: $0.value, duration: 0) },
-            buildNumber: buildNumber
-        )
-        _ = result
-        appendConsole("✓ artifact: \(ipa.lastPathComponent)")
+        let size = (try? ipa.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        guard size > 0 else {
+            markFailed(.artifact, BuildError.noArtifact)
+            return
+        }
+        appendConsole("✓ artifact: \(ipa.lastPathComponent) "
+                      + "(\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file)))")
         markSucceeded(.artifact)
     }
 
