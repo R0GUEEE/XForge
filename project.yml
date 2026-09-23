@@ -108,6 +108,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_PREVIEWS: YES
         OTHER_SWIFT_FLAGS: "-Xcc -fmacro-backtrace-limit=0"
+        CLANG_CXX_LANGUAGE_STANDARD: c++20
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
         # --- signing ------------------------------------------------------
         # Automatic signing with the team above. CI builds pass
@@ -139,9 +140,11 @@ targets:
         HEADER_SEARCH_PATHS:
           - $(SRCROOT)/App/EmbeddedVM
           - $(SRCROOT)/App/Services
+          - $(SRCROOT)/App/NativeToolchain
         "HEADER_SEARCH_PATHS[sdk=iphoneos*]":
           - $(SRCROOT)/App/EmbeddedVM
           - $(SRCROOT)/App/Services
+          - $(SRCROOT)/App/NativeToolchain
           - $(ISH_ROOT)
         "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]":
           - $(ISH_LIB_DIR)
