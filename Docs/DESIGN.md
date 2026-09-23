@@ -153,6 +153,25 @@ XForge.app
                                           →  `xtool new` / `xtool dev build -s -i`
 ```
 
+## 3b. What is backed up, and what is not
+
+Everything XForge generates lives in `Documents` — which iOS backs up to iCloud and,
+because the app declares `UIFileSharingEnabled`, shows in the Files app. Two kinds of
+things live there and they want opposite treatment:
+
+- **Regenerable**: the host-side downloads, staged build artifacts and the engine log.
+  These are marked `isExcludedFromBackup` at launch (`XForgeEnvironment.prepareStorage`).
+  Backing them up bloats every device backup with data the app can produce again — the
+  storage guidelines forbid it, and a multi-gigabyte backup is what gets an app rejected.
+- **Not regenerable**: the user's projects. They live *inside the guest filesystem's
+  fakefs*, in the same opaque database as the rootfs — and with `XFORGE_PROVISION=all`
+  that filesystem is now several gigabytes of toolchain. Nothing in the app can separate
+  the two, so the guest filesystem is deliberately **not** excluded: the alternative is
+  silently dropping user work from backups. The cost is a large backup; the mitigation
+  is that `/host` (visible in the Files app) and the Terminal are how a project leaves
+  the device. If projects ever need to be backed up cheaply, they have to live outside
+  the fakefs — not inside it with a flag on the directory.
+
 ## 4. BuildExecutor abstraction
 
 ```swift

@@ -42,6 +42,9 @@ struct RootTabView: View {
                 .tag(AppTab.settings)
         }
         .task {
+            // Create the app's own directories and keep the regenerable ones out
+            // of iCloud backup — before anything writes into them.
+            XForgeEnvironment.prepareStorage()
             // Install the bundled rootfs early, but do not make app presentation
             // depend on booting the guest. The guest command bridge can take time
             // to initialize on a physical device; Terminal and Toolchain perform

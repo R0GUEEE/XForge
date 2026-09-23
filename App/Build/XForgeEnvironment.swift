@@ -52,6 +52,46 @@ enum XForgeEnvironment {
         return Int64(values?.volumeAvailableCapacityForImportantUsage ?? 0)
     }
 
+    /// Create the app's own directories and keep the regenerable ones out of
+    /// iCloud backup.
+    ///
+    /// Everything XForge generates lives in `Documents`, which iOS backs up and
+    /// (because the app declares `UIFileSharingEnabled`) shows in the Files app.
+    /// Downloads, build artifacts and logs are all *regenerable* — the downloads
+    /// are fetched again, an artifact is rebuilt, the log is written again — and
+    /// backing up gigabytes of regenerable data is exactly what the iOS data
+    /// storage guidelines forbid: it bloats every backup and can get an app
+    /// rejected. So those three are marked excluded.
+    ///
+    /// The guest filesystem is deliberately *not* marked, and that is a trade-off
+    /// rather than an oversight: it holds the imported rootfs — the regenerable
+    /// part, now several gigabytes with the toolchain in it — *and* the user's
+    /// projects, which live in the same fakefs and have no export of their own.
+    /// Nothing here can separate the two, so the choice is between backing up
+    /// several gigabytes per device and silently dropping user work from backups.
+    /// See Docs/DESIGN.md, "What is backed up".
+    static func prepareStorage() {
+        let fm = FileManager.default
+        let regenerable = [downloadsDirectory, stagingDirectory, logsDirectory]
+        for directory in regenerable {
+            try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            excludeFromBackup(directory)
+        }
+    }
+
+    /// Best-effort: a container that refuses the flag is not a reason to fail
+    /// anything the user asked for, and the flag is re-applied on every launch.
+    private static func excludeFromBackup(_ url: URL) {
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutable = url
+        do {
+            try mutable.setResourceValues(values)
+        } catch {
+            XForgeLog.note("storage: could not exclude \(url.lastPathComponent) from backup: \(error.localizedDescription)")
+        }
+    }
+
     /// List built `.ipa` artifacts currently staged for export/install.
     static func stagedArtifacts() -> [BuildArtifact] {
         let dir = stagingDirectory
