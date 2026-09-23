@@ -12,6 +12,7 @@ import Foundation
 /// The archive is built *inside* the guest — that is where the files are — and
 /// copied out into the app's own `Documents/exports`, where the Files app shows it
 /// and the share sheet can hand it on.
+@MainActor
 enum ProjectExporter {
     /// Where exported archives land: `<Documents>/exports`, which is user data and
     /// is backed up (unlike the guest filesystem it came from). Defined by
@@ -20,7 +21,12 @@ enum ProjectExporter {
 
     /// Archive `project` inside the guest and copy the archive out.
     ///
-    /// Returns the host URL of the archive, ready to share.
+    /// Returns the host URL of the archive, ready to share. Main-actor isolated
+    /// because everything it works with is: the guest bridge, and
+    /// `XForgeEnvironment`'s paths.
+    ///
+    /// The storage rules live in `XForgeEnvironment`, and reading them from a
+    /// nonisolated type is exactly what failed the first build of this file.
     static func export(_ project: Project, via vm: LinuxVM) async throws -> URL {
         guard project.hasSafeRootPath else { throw ProjectValidationError.unsafePath }
         let name = try Project.validatedName(project.name)
