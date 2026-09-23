@@ -40,6 +40,9 @@ targets:
   XForge:
     type: application
     platform: iOS
+    configFiles:
+      Debug: Support/NativeToolchain.generated.xcconfig
+      Release: Support/NativeToolchain.generated.xcconfig
     sources:
       - path: App
       - path: Support
@@ -138,21 +141,31 @@ targets:
         # compile the bridge's stub instead and link nothing extra.
         SWIFT_OBJC_BRIDGING_HEADER: Support/XForge-Bridging-Header.h
         HEADER_SEARCH_PATHS:
+          - $(inherited)
           - $(SRCROOT)/App/EmbeddedVM
           - $(SRCROOT)/App/Services
           - $(SRCROOT)/App/NativeToolchain
+          - $(XFORGE_NATIVE_HEADER_SEARCH_PATHS)
         "HEADER_SEARCH_PATHS[sdk=iphoneos*]":
+          - $(inherited)
           - $(SRCROOT)/App/EmbeddedVM
           - $(SRCROOT)/App/Services
           - $(SRCROOT)/App/NativeToolchain
           - $(ISH_ROOT)
+          - $(XFORGE_NATIVE_HEADER_SEARCH_PATHS)
         "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]":
+          - $(inherited)
           - $(ISH_LIB_DIR)
+          - $(XFORGE_NATIVE_LIBRARY_SEARCH_PATHS)
         # Must match the guest-arch configuration the core was built with
         # (-Dguest_arch=arm64); struct layouts differ per enabled arch.
         "OTHER_CFLAGS[sdk=iphoneos*]":
+          - $(inherited)
           - -DGUEST_ARM64=1
+          - $(XFORGE_NATIVE_CFLAGS)
         "OTHER_LDFLAGS[sdk=iphoneos*]":
+          - $(inherited)
+          - $(XFORGE_NATIVE_LDFLAGS)
           - -lish
           - -lish_emu
           - -lfakefs
