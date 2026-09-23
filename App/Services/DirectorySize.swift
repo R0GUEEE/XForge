@@ -14,10 +14,16 @@ enum DirectorySize {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             return Int64(size)
         }
+        // No `.skipsHiddenFiles`: in the guest rootfs the interesting things *are*
+        // hidden — the Swift toolchain is /root/.local/share/swiftly, the SDK is
+        // /root/.swiftpm/swift-sdks, the caches are /root/.cache — so skipping
+        // hidden entries reported a few MB for a download that is several GB, and
+        // reported almost none of the rootfs's own size. (Symlinks are not
+        // followed by this enumerator, so counting them cannot loop.)
         guard let enumerator = fm.enumerator(
             at: url,
             includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: []
         ) else { return 0 }
 
         var total: Int64 = 0

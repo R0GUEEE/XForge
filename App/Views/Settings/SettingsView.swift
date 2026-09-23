@@ -62,14 +62,43 @@ struct SettingsView: View {
     }
 
     /// Where a component's bytes live on the host.
+    ///
+    /// The guest's `/` is the installed fakefs's `data/` directory — the files are
+    /// there, their modes are in `meta.db` — so this maps a guest path onto the
+    /// app container. Naming the *component's* directory rather than the whole
+    /// fakefs is not a detail: every component used to report the size of the
+    /// entire root (the same five gigabytes four times over), and measuring it four
+    /// times meant four walks of a thirty-thousand-file tree on every settings
+    /// visit.
     private func storageURL(for component: ToolchainManager.Component) -> URL {
+        let guest = RootfsInstaller.installedRoot(in: XForgeEnvironment.rootsDirectory)
+            .appendingPathComponent("data", isDirectory: true)
         switch component {
         case .rootfs:
             return XForgeEnvironment.rootsDirectory
-        case .swift, .xtool, .sdk:
-            // Every tool and SDK lives in the imported Alpine fakefs.
-            return RootfsInstaller.installedRoot(in: XForgeEnvironment.rootsDirectory)
+        case .swift:
+            return guest.appendingPathComponent("root/.local/share/swiftly", isDirectory: true)
+        case .xtool:
+            return guest.appendingPathComponent("opt/xtool", isDirectory: true)
+        case .sdk:
+            // Whatever the install recorded, which is the only reliable answer:
+            // SwiftPM's store has moved between releases.
+            return recordedSDKPath(under: guest) ?? guest.appendingPathComponent(
+                "root/.swiftpm/swift-sdks", isDirectory: true)
         }
+    }
+
+    /// The Darwin SDK's installed path, from the record the installer writes next
+    /// to the manifest (`darwin-sdk-path:`), mapped into the app container.
+    private func recordedSDKPath(under guest: URL) -> URL? {
+        let record = guest.appendingPathComponent("usr/local/share/xforge/darwin-sdk.txt")
+        guard let text = try? String(contentsOf: record, encoding: .utf8) else { return nil }
+        for line in text.split(separator: "\n") where line.hasPrefix("path:") {
+            let value = line.dropFirst("path:".count).trimmingCharacters(in: .whitespaces)
+            guard value.hasPrefix("/") else { return nil }
+            return guest.appendingPathComponent(String(value.dropFirst()), isDirectory: true)
+        }
+        return nil
     }
 
     private var preferencesSection: some View {
@@ -135,6 +164,10 @@ struct SettingsView: View {
                     toolchain.message = "xtool: installing in the Terminal tab."
                 case .sdk:
                     let url = try await XForgeReleases.darwinSDKURL()
+                    // The command removes the installed SDK first (SwiftPM will not
+                    // install a second bundle with the same artifact ID), so the
+                    // script it calls has to be in the guest.
+                    try await SystemComponents.ensureInstallerScript(in: vm)
                     terminal.enqueue(SystemComponents.darwinSDKDownloadCommand(from: url),
                                      label: "Settings")
                     toolchain.message = "Darwin SDK: downloading and installing in the Terminal tab."
@@ -153,9 +186,11 @@ struct SettingsView: View {
         case (.rootfs, false):
             return "Bundled in the app · installs offline"
         case (.sdk, true):
-            return "Installed in the guest · \(size) staged"
+            return "Installed in the guest · \(size)"
+        case (.swift, true), (.xtool, true):
+            return "Installed in the embedded Linux · \(size)"
         case (.sdk, false):
-            return "Downloads on demand (214 MB)"
+            return "Downloads on demand (457 MB)"
         case (_, true):
             return "Installed in the embedded Linux"
         case (_, false):

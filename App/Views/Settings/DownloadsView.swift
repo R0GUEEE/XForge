@@ -89,6 +89,9 @@ struct DownloadsView: View {
                 let vm = XForgeEnvironment.makeVM()
                 await vm.prepareRootfs()
                 try await vm.boot()
+                // The command runs the guest's script first, to remove the SDK the
+                // rootfs already carries: same preparation as the other installs.
+                try await SystemComponents.ensureInstallerScript(in: vm)
                 terminal.enqueue(SystemComponents.darwinSDKDownloadCommand(from: url),
                                  label: "Settings")
                 toolchain.message = "Darwin SDK: downloading and installing in the Terminal tab."

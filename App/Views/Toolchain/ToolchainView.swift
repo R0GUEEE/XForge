@@ -280,6 +280,7 @@ struct ToolchainView: View {
             let vm = XForgeEnvironment.makeVM()
             await vm.prepareRootfs()
             try await vm.boot()
+            try await SystemComponents.ensureInstallerScript(in: vm)
             terminal.enqueue(SystemComponents.darwinSDKDownloadCommand(from: url),
                              label: "Toolchain")
             toolchain.message = "Downloading and installing the Darwin SDK in the Terminal tab."
