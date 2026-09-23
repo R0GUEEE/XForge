@@ -28,6 +28,13 @@ static void xf_copy_diag(const std::string &value, char *buffer, size_t capacity
 #include <llvm/Support/Host.h>
 #include <llvm/Support/raw_ostream.h>
 
+#if defined(XFORGE_HAS_SWIFT_FRONTEND) && __has_include(<swift/FrontendTool/FrontendTool.h>)
+#include <swift/FrontendTool/FrontendTool.h>
+#define XFORGE_SWIFT_FRONTEND_READY 1
+#else
+#define XFORGE_SWIFT_FRONTEND_READY 0
+#endif
+
 LLD_HAS_DRIVER(macho)
 
 extern "C" bool xf_native_toolchain_available(void) {
@@ -35,7 +42,49 @@ extern "C" bool xf_native_toolchain_available(void) {
 }
 
 extern "C" const char *xf_native_toolchain_version(void) {
+#if XFORGE_SWIFT_FRONTEND_READY
+    return "LLVM/Clang/LLD + Swift frontend native iOS backend";
+#else
     return "LLVM/Clang/LLD native iOS backend";
+#endif
+}
+
+extern "C" bool xf_native_swift_available(void) {
+#if XFORGE_SWIFT_FRONTEND_READY
+    return true;
+#else
+    return false;
+#endif
+}
+
+extern "C" int xf_native_swift_frontend(int argc,
+                                         const char * const *argv,
+                                         char *diagnostics,
+                                         size_t diagnostics_capacity) {
+#if XFORGE_SWIFT_FRONTEND_READY
+    if (argc <= 0 || !argv) {
+        xf_copy_diag("native swift: empty frontend argument list", diagnostics, diagnostics_capacity);
+        return 64;
+    }
+    llvm::ArrayRef<const char *> args(argv, static_cast<size_t>(argc));
+    const int rc = swift::performFrontend(
+        args,
+        "swift-frontend",
+        reinterpret_cast<void *>(&xf_native_swift_frontend),
+        nullptr
+    );
+    if (rc != 0) {
+        xf_copy_diag("swift::performFrontend returned a non-zero status", diagnostics, diagnostics_capacity);
+    } else {
+        xf_copy_diag("", diagnostics, diagnostics_capacity);
+    }
+    return rc;
+#else
+    (void) argc; (void) argv;
+    xf_copy_diag("Swift frontend libraries are not linked into this XForge build.",
+                 diagnostics, diagnostics_capacity);
+    return 78;
+#endif
 }
 
 extern "C" int xf_native_clang_compile(const char *source_path,
@@ -145,6 +194,19 @@ extern "C" bool xf_native_toolchain_available(void) {
 
 extern "C" const char *xf_native_toolchain_version(void) {
     return "Native LLVM backend not linked";
+}
+
+extern "C" bool xf_native_swift_available(void) {
+    return false;
+}
+
+extern "C" int xf_native_swift_frontend(int,
+                                         const char * const *,
+                                         char *diagnostics,
+                                         size_t diagnostics_capacity) {
+    xf_copy_diag("Native LLVM/Swift backend not linked.",
+                 diagnostics, diagnostics_capacity);
+    return 78;
 }
 
 extern "C" int xf_native_clang_compile(const char *,
