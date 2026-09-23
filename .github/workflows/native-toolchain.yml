@@ -105,13 +105,52 @@ jobs:
             cp -R llvm-build/tools/clang/include/clang dist/include/
           fi
           cp -R llvm-project/lld/include/lld dist/include/
-          find llvm-build/lib -maxdepth 1 -type f -name '*.a' -exec cp {} dist/lib/ \;
+
+          # Flatten the static dependency graph into one archive. XForge then
+          # links a single library instead of depending on LLVM's internal
+          # archive ordering.
+          mapfile -d '' ARCHIVES < <(find llvm-build/lib -maxdepth 1 -type f -name '*.a' -print0 | sort -z)
+          test "${#ARCHIVES[@]}" -gt 0
+          /usr/bin/libtool -static -o dist/lib/libXForgeNativeToolchain.a "${ARCHIVES[@]}"
+
+          cat > /tmp/native_link_smoke.mm <<'EOF'
+          #include "NativeToolchainBridge.h"
+          int main(void) {
+              return xf_native_toolchain_available() ? 0 : 1;
+          }
+          EOF
+
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          xcrun --sdk iphoneos clang++ \
+            -std=c++20 \
+            -arch arm64 \
+            -miphoneos-version-min=16.0 \
+            -isysroot "$SDK" \
+            -I App/NativeToolchain \
+            -c /tmp/native_link_smoke.mm \
+            -o /tmp/native_link_smoke.o
+
+          xcrun --sdk iphoneos clang++ \
+            -arch arm64 \
+            -miphoneos-version-min=16.0 \
+            -isysroot "$SDK" \
+            /tmp/native_link_smoke.o \
+            /tmp/NativeToolchainBridge.o \
+            dist/lib/libXForgeNativeToolchain.a \
+            -lc++ -lz -liconv -lsqlite3 \
+            -framework Foundation \
+            -o /tmp/XForgeNativeToolchainSmoke
+
+          file /tmp/XForgeNativeToolchainSmoke
+          file /tmp/NativeToolchainBridge.o
           cp /tmp/NativeToolchainBridge.o dist/
+
           cat > dist/manifest.txt <<EOF
           target=arm64-apple-ios
           deployment_target=16.0
           llvm_commit=$(git -C llvm-project rev-parse HEAD)
           built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          archive=lib/libXForgeNativeToolchain.a
           EOF
           tar -C dist -czf XForgeNativeToolchain-arm64-ios.tar.gz .
 
