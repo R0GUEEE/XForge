@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 struct NativeToolchainResult: Sendable {
     let exitCode: Int32
@@ -54,6 +55,7 @@ enum NativeToolchain {
         }
 
         var diagnostics = [CChar](repeating: 0, count: 64 * 1024)
+        let diagnosticsCapacity = diagnostics.count
         let code: Int32 = source.path.withCString { sourcePath in
             object.path.withCString { objectPath in
                 sdk.path.withCString { sdkPath in
@@ -66,7 +68,7 @@ enum NativeToolchain {
                                 targetTriple,
                                 lang,
                                 &diagnostics,
-                                diagnostics.count
+                                diagnosticsCapacity
                             ))
                         }
                     }
@@ -93,12 +95,13 @@ enum NativeToolchain {
 
         let argv: [UnsafePointer<CChar>?] = duplicated.map { UnsafePointer($0) }
         var diagnostics = [CChar](repeating: 0, count: 64 * 1024)
+        let diagnosticsCapacity = diagnostics.count
         let code = argv.withUnsafeBufferPointer { buffer -> Int32 in
             Int32(xf_native_lld_link(
                 Int32(arguments.count),
                 buffer.baseAddress,
                 &diagnostics,
-                diagnostics.count
+                diagnosticsCapacity
             ))
         }
         return NativeToolchainResult(
