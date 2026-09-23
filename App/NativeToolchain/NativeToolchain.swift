@@ -39,6 +39,10 @@ enum NativeToolchain {
         String(cString: xf_native_toolchain_version())
     }
 
+    static var isSwiftAvailable: Bool {
+        xf_native_swift_available()
+    }
+
     static func compileC(
         source: URL,
         object: URL,
@@ -81,6 +85,54 @@ enum NativeToolchain {
         )
     }
 
+    static func compileSwift(
+        source: URL,
+        object: URL,
+        sdk: NativeSDKLayout,
+        target: String = "arm64-apple-ios16.0.0",
+        moduleName: String = "XForgeModule"
+    ) throws -> NativeToolchainResult {
+        guard isSwiftAvailable else { throw NativeToolchainError.unavailable }
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw NativeToolchainError.io("Swift source file does not exist: \(source.path)")
+        }
+        guard let swiftResources = sdk.swiftResources else {
+            throw NativeToolchainError.io("Darwin SDK does not define swiftResourcesPath.")
+        }
+
+        let arguments = [
+            "-c",
+            source.path,
+            "-target", target,
+            "-sdk", sdk.sdkRoot.path,
+            "-resource-dir", swiftResources.path,
+            "-module-name", moduleName,
+            "-o", object.path
+        ]
+
+        let duplicated: [UnsafeMutablePointer<CChar>] = arguments.compactMap { strdup($0) }
+        defer { duplicated.forEach { free($0) } }
+        guard duplicated.count == arguments.count else {
+            throw NativeToolchainError.io("Could not allocate Swift frontend arguments.")
+        }
+
+        let argv: [UnsafePointer<CChar>?] = duplicated.map { UnsafePointer($0) }
+        var diagnostics = [CChar](repeating: 0, count: 64 * 1024)
+        let diagnosticsCapacity = diagnostics.count
+        let code = argv.withUnsafeBufferPointer { buffer -> Int32 in
+            Int32(xf_native_swift_frontend(
+                Int32(arguments.count),
+                buffer.baseAddress,
+                &diagnostics,
+                diagnosticsCapacity
+            ))
+        }
+        return NativeToolchainResult(
+            exitCode: code,
+            diagnostics: String(cString: diagnostics)
+        )
+    }
+
     static func linkMachO(arguments: [String]) throws -> NativeToolchainResult {
         guard isAvailable else { throw NativeToolchainError.unavailable }
         guard !arguments.isEmpty else {
@@ -110,7 +162,7 @@ enum NativeToolchain {
         )
     }
 
-    /// End-to-end smoke test used before wiring the native backend into normal projects.
+    /// End-to-end C smoke test used before wiring the native backend into normal projects.
     /// Produces an arm64 iOS object file entirely in-process.
     static func smokeCompile(sdk: URL) throws -> URL {
         let dir = FileManager.default.temporaryDirectory
@@ -128,6 +180,30 @@ enum NativeToolchain {
         }
         guard FileManager.default.fileExists(atPath: object.path) else {
             throw NativeToolchainError.compile("Clang returned success but produced no object file.")
+        }
+        return object
+    }
+
+    static func smokeCompileSwift(sdk: NativeSDKLayout) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xforge-native-swift-smoke-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let source = dir.appendingPathComponent("Smoke.swift")
+        let object = dir.appendingPathComponent("Smoke.o")
+        try """
+        public func xforgeNativeSwiftSmoke() -> Int {
+            42
+        }
+        """
+        .write(to: source, atomically: true, encoding: .utf8)
+
+        let result = try compileSwift(source: source, object: object, sdk: sdk, moduleName: "XForgeSmoke")
+        guard result.succeeded else {
+            throw NativeToolchainError.compile(result.diagnostics)
+        }
+        guard FileManager.default.fileExists(atPath: object.path) else {
+            throw NativeToolchainError.compile("Swift frontend returned success but produced no object file.")
         }
         return object
     }
