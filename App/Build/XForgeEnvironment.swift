@@ -38,6 +38,11 @@ enum XForgeEnvironment {
         documentDirectory.appendingPathComponent("downloads", isDirectory: true)
     }
 
+    /// Host-side Darwin SDK used by the native compiler path.
+    static var nativeSDKDirectory: URL {
+        documentDirectory.appendingPathComponent("native-sdk", isDirectory: true)
+    }
+
     /// Diagnostics (`XForgeLog` writes the engine log here).
     static var logsDirectory: URL { XForgeLog.directory }
 
@@ -75,7 +80,7 @@ enum XForgeEnvironment {
     /// See Docs/DESIGN.md, "What is backed up", for why the two cannot be split.
     static func prepareStorage() {
         let fm = FileManager.default
-        let excluded = [embeddedRoot, downloadsDirectory, stagingDirectory, logsDirectory]
+        let excluded = [embeddedRoot, downloadsDirectory, nativeSDKDirectory, stagingDirectory, logsDirectory]
         for directory in excluded {
             try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
             excludeFromBackup(directory)
