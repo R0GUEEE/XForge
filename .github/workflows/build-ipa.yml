@@ -289,6 +289,14 @@ jobs:
           grep -q 'install-zsign.sh' project.yml
           grep -q 'patch-zsign-password-file.py' project.yml
 
+      - name: Prepare the native toolchain configuration
+        run: |
+          set -euo pipefail
+          if [ -x NativeToolchain/prepare-xcode.sh ] || [ -f NativeToolchain/prepare-xcode.sh ]; then
+            bash NativeToolchain/prepare-xcode.sh
+          fi
+          cat Support/NativeToolchain.generated.xcconfig 2>/dev/null || true
+
       - name: Generate the Xcode project
         run: xcodegen generate --spec project.yml
 
@@ -424,7 +432,7 @@ jobs:
             echo
             echo "- binary: ${binary_info#*: } (${size_mb} MB)"
             echo "- bundled rootfs: $ROOTFS_TAG ($(du -h "$ROOTFS" | cut -f1))"
-            echo "- guest toolchain: $(unzip -p "$ROOTFS" alpine-rootfs/usr/local/share/xforge/rootfs-manifest.txt \
+            echo "- guest toolchain: $(unzip -p "$ROOTFS" alpine-rootfs/data/usr/local/share/xforge/rootfs-manifest.txt \
               | awk '/^[[:space:]]*toolchain:/ { sub(/^[[:space:]]*toolchain:[[:space:]]*/, ""); print; exit }')"
             echo "- version: $(get CFBundleShortVersionString)"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -466,6 +474,65 @@ jobs:
             exit 1
           fi
           echo "ipa=$IPA" >> "$GITHUB_ENV"
+
+      - name: Verify the final IPA
+        run: |
+          set -euo pipefail
+          IPA="$ipa"
+          VERIFY_DIR="$(mktemp -d)"
+          trap 'rm -rf "$VERIFY_DIR"' EXIT
+
+          unzip -q "$IPA" -d "$VERIFY_DIR"
+
+          # A sideloadable IPA must contain exactly one application directly
+          # below Payload/.
+          mapfile -d '' apps < <(find "$VERIFY_DIR/Payload" -mindepth 1 -maxdepth 1 -type d -name '*.app' -print0)
+          [ "${#apps[@]}" -eq 1 ] || {
+            echo "::error::expected exactly one .app in Payload, found ${#apps[@]}"
+            find "$VERIFY_DIR" -maxdepth 3 -print
+            exit 1
+          }
+          FINAL_APP="${apps[0]}"
+          FINAL_PLIST="$FINAL_APP/Info.plist"
+
+          test -f "$FINAL_PLIST" || { echo '::error::IPA app has no Info.plist'; exit 1; }
+          test -x "$FINAL_APP/XForge" || { echo '::error::IPA app has no executable XForge binary'; exit 1; }
+          test -f "$FINAL_APP/Assets.car" || { echo '::error::IPA app has no compiled asset catalog'; exit 1; }
+          test -f "$FINAL_APP/alpine-rootfs.zip" || { echo '::error::IPA app has no bundled rootfs'; exit 1; }
+
+          get_final() { /usr/libexec/PlistBuddy -c "Print :$1" "$FINAL_PLIST"; }
+          [ "$(get_final CFBundleIdentifier)" = "com.r0gueee.xforge" ]             || { echo "::error::wrong bundle identifier in final IPA"; exit 1; }
+          [ "$(get_final CFBundleExecutable)" = "XForge" ]             || { echo "::error::wrong CFBundleExecutable in final IPA"; exit 1; }
+          [ "$(get_final CFBundleShortVersionString)" = "$EXPECTED_VERSION" ]             || { echo "::error::wrong version in final IPA"; exit 1; }
+
+          final_arch="$(lipo -info "$FINAL_APP/XForge")"
+          case "$final_arch" in
+            *arm64*) ;;
+            *) echo "::error::final IPA executable is not arm64: $final_arch"; exit 1 ;;
+          esac
+
+          # Ensure packaging did not alter the application executable.
+          original_sha="$(shasum -a 256 "$APP_PATH/XForge" | awk '{print $1}')"
+          final_sha="$(shasum -a 256 "$FINAL_APP/XForge" | awk '{print $1}')"
+          [ "$original_sha" = "$final_sha" ] || {
+            echo "::error::the executable changed while packaging the IPA"
+            exit 1
+          }
+
+          # Check the rootfs inside the final IPA, not only the archive source.
+          unzip -t "$FINAL_APP/alpine-rootfs.zip" >/dev/null
+          unzip -Z1 "$FINAL_APP/alpine-rootfs.zip" > /tmp/final-rootfs-entries.txt
+          grep -qx 'alpine-rootfs/meta.db' /tmp/final-rootfs-entries.txt             || { echo '::error::final IPA rootfs has no meta.db'; exit 1; }
+          grep -qx 'alpine-rootfs/data/bin/sh' /tmp/final-rootfs-entries.txt             || { echo '::error::final IPA rootfs has no /bin/sh'; exit 1; }
+
+          # Reject common malformed packaging layouts.
+          [ ! -d "$VERIFY_DIR/Payload/Payload" ]             || { echo '::error::IPA contains a nested Payload/Payload directory'; exit 1; }
+          ! find "$VERIFY_DIR" -name '__MACOSX' -print -quit | grep -q .             || { echo '::error::IPA contains __MACOSX metadata'; exit 1; }
+
+          echo "Final IPA verified: $(basename "$IPA")"
+          echo "  app: $(basename "$FINAL_APP")"
+          echo "  architecture: ${final_arch#*: }"
+          echo "  executable sha256: $final_sha"
 
       - name: Upload the IPA
         uses: actions/upload-artifact@v4
