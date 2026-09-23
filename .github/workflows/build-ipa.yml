@@ -19,6 +19,8 @@ name: Build XForge IPA
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       release:
@@ -486,13 +488,13 @@ jobs:
 
           # A sideloadable IPA must contain exactly one application directly
           # below Payload/.
-          mapfile -d '' apps < <(find "$VERIFY_DIR/Payload" -mindepth 1 -maxdepth 1 -type d -name '*.app' -print0)
-          [ "${#apps[@]}" -eq 1 ] || {
-            echo "::error::expected exactly one .app in Payload, found ${#apps[@]}"
+          app_count="$(find "$VERIFY_DIR/Payload" -mindepth 1 -maxdepth 1 -type d -name '*.app' | wc -l | tr -d ' ')"
+          [ "$app_count" -eq 1 ] || {
+            echo "::error::expected exactly one .app in Payload, found $app_count"
             find "$VERIFY_DIR" -maxdepth 3 -print
             exit 1
           }
-          FINAL_APP="${apps[0]}"
+          FINAL_APP="$(find "$VERIFY_DIR/Payload" -mindepth 1 -maxdepth 1 -type d -name '*.app' -print -quit)"
           FINAL_PLIST="$FINAL_APP/Info.plist"
 
           test -f "$FINAL_PLIST" || { echo '::error::IPA app has no Info.plist'; exit 1; }
