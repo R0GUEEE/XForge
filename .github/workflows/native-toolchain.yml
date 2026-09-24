@@ -234,10 +234,10 @@ jobs:
           # executable without a BUNDLE destination, and cmark installs its
           # command-line tool. The target is still iOS — sysroot, architecture and
           # compiler target below say so — and nothing is installed here anyway.
+          # Static archives are cmark's default; naming CMARK_TESTS/CMARK_SHARED here
+          # only produces "manually-specified variables were not used" warnings.
           cmake -S swift-cmark -B cmark-ios-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMARK_TESTS=OFF \
-            -DCMARK_SHARED=OFF \
             -DCMAKE_SYSTEM_NAME=Darwin \
             -DCMAKE_OSX_SYSROOT="$SDK" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -246,7 +246,9 @@ jobs:
             -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET
           # cmark-gfm-extensions is a separate archive and swift's Markup references
           # symbols from both.
-          ninja -C cmark-ios-build cmark-gfm cmark-gfm-extensions
+          # The *library* targets are libcmark-gfm and libcmark-gfm-extensions; the
+          # bare names are the command-line tool, which only the host build needs.
+          ninja -C cmark-ios-build libcmark-gfm libcmark-gfm-extensions
           find cmark-ios-build -name 'libcmark-gfm*.a'
 
       - name: Configure LLVM for iPhoneOS arm64
