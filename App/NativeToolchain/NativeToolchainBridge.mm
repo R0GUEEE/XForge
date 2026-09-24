@@ -101,12 +101,13 @@ extern "C" int xf_native_clang_compile(const char *source_path,
     std::string diagText;
     llvm::raw_string_ostream diagOS(diagText);
 
-    auto diagOpts = llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions>(
-        new clang::DiagnosticOptions());
-    // Both take the options by reference (LLVM 19+); the older API took a pointer.
-    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, *diagOpts);
+    // DiagnosticOptions is a plain value and is taken by reference by both the
+    // printer and the engine; it is no longer refcounted (LLVM 19+), so it must
+    // not be wrapped in an IntrusiveRefCntPtr.
+    clang::DiagnosticOptions diagOpts;
+    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts);
     auto diagIDs = llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs());
-    clang::DiagnosticsEngine diags(diagIDs, *diagOpts, diagPrinter.get(), false);
+    clang::DiagnosticsEngine diags(diagIDs, diagOpts, diagPrinter.get(), false);
 
     std::vector<std::string> owned = {
         "-triple", target_triple,
@@ -140,8 +141,9 @@ extern "C" int xf_native_clang_compile(const char *source_path,
         return 65;
     }
 
-    clang::CompilerInstance compiler;
-    compiler.setInvocation(std::move(invocation));
+    // CompilerInstance takes its invocation through the constructor now;
+    // setInvocation() no longer exists.
+    clang::CompilerInstance compiler(invocation);
     compiler.createDiagnostics(diagPrinter.release(), true);
     if (!compiler.hasDiagnostics()) {
         xf_copy_diag("native clang: failed to create diagnostics engine", diagnostics, diagnostics_capacity);
