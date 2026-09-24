@@ -64,7 +64,7 @@ final class IPASigningJob: ObservableObject {
             )
 
             let profileData = try provisioningProfile.map { try Data(contentsOf: $0) }
-            let entitlementsDictionary = try entitlements.map { try readEntitlements($0) }
+            let entitlementsPlist = try entitlements.map { try Data(contentsOf: $0) }
 
             status = "Unpacking \(inputIPA.lastPathComponent)…"
             let work = FileManager.default.temporaryDirectory
@@ -88,7 +88,7 @@ final class IPASigningJob: ObservableObject {
                     certificateDER: keyMaterial.certificate,
                     privateKey: keyMaterial.key,
                     provisioningProfile: profileData,
-                    entitlements: entitlementsDictionary
+                    entitlementsPlist: entitlementsPlist
                 )
             )
 
@@ -149,21 +149,11 @@ final class IPASigningJob: ObservableObject {
         )
         try updated.write(to: plistURL, options: .atomic)
     }
-
-    private func readEntitlements(_ url: URL) throws -> [String: Any] {
-        let data = try Data(contentsOf: url)
-        guard let plist = try PropertyListSerialization.propertyList(from: data, format: nil)
-            as? [String: Any] else {
-            throw SigningJobError.unreadableEntitlements
-        }
-        return plist
-    }
 }
 
 enum SigningJobError: LocalizedError {
     case expectedOneApp([String])
     case unreadableInfoPlist
-    case unreadableEntitlements
 
     var errorDescription: String? {
         switch self {
@@ -172,8 +162,6 @@ enum SigningJobError: LocalizedError {
             return "The IPA must contain exactly one .app in Payload/; found \(list)."
         case .unreadableInfoPlist:
             return "The app's Info.plist could not be read."
-        case .unreadableEntitlements:
-            return "The entitlements file is not a property list."
         }
     }
 }

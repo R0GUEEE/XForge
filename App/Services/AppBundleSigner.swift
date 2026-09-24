@@ -14,16 +14,22 @@ import XKit
 /// `DeveloperServices` path), which is a separate, device-only piece of work. This
 /// signs with an identity the user already has (a `.p12` and a profile).
 enum AppBundleSigner {
-    struct Identity {
+    /// Everything needed to sign, as `Sendable` values.
+    ///
+    /// The entitlements travel as property-list *bytes* rather than a dictionary
+    /// so this stays `Sendable`: `[String: Any]` is not, and passing one into an
+    /// async signer is a data-race error under strict concurrency. Decoding inside
+    /// the signer keeps the non-`Sendable` value in the scope that consumes it.
+    struct Identity: Sendable {
         /// DER bytes of the signing certificate.
         var certificateDER: Data
         /// The private key, in the format `PrivateKey(data:)` accepts (PEM).
         var privateKey: Data
         /// `embedded.mobileprovision` contents, when the identity has one.
         var provisioningProfile: Data?
-        /// Entitlements to seal into the signature. Empty means none beyond the
-        /// profile's own.
-        var entitlements: [String: Any]?
+        /// A property list of entitlements to seal into the signature. Nil means
+        /// none beyond the profile's own.
+        var entitlementsPlist: Data?
     }
 
     enum SigningError: LocalizedError {
@@ -57,30 +63,25 @@ enum AppBundleSigner {
             )
         }
 
-        let entitlements = try entitlements(from: identity.entitlements)
+        let sealedEntitlements = try entitlements(from: identity.entitlementsPlist)
 
         let signer = try Signer.first()
         try await signer.sign(
             app: appBundleURL,
             identity: .real(certificate, privateKey),
-            entitlementMapping: [appBundleURL: entitlements],
+            entitlementMapping: [appBundleURL: sealedEntitlements],
             progress: { _ in }
         )
     }
 
-    /// `Entitlements` decodes from a property list, so a dictionary has to be
-    /// serialized back into one. Building the type directly is not public API.
-    private static func entitlements(from dictionary: [String: Any]?) throws -> Entitlements {
-        guard let dictionary, !dictionary.isEmpty else {
+    /// `Entitlements` decodes from a property list. Building the type directly is
+    /// not public API, so the bytes are decoded here.
+    private static func entitlements(from plist: Data?) throws -> Entitlements {
+        guard let plist, !plist.isEmpty else {
             return try Entitlements(entitlements: [])
         }
         do {
-            let data = try PropertyListSerialization.data(
-                fromPropertyList: dictionary,
-                format: .xml,
-                options: 0
-            )
-            return try PropertyListDecoder().decode(Entitlements.self, from: data)
+            return try PropertyListDecoder().decode(Entitlements.self, from: plist)
         } catch {
             throw SigningError.entitlementsUnreadable(error.localizedDescription)
         }
