@@ -105,6 +105,24 @@ jobs:
             echo "value=$(xcodebuild -version | tr '\n' ' ')-$(xcrun --sdk iphoneos --show-sdk-version)"
           } >> "$GITHUB_OUTPUT"
 
+      # The build trees, from the last toolchain run that produced them. This is what
+      # makes the staging and link half checkable in minutes: the archives and
+      # generated headers are the expensive part, and they arrive as an artifact
+      # rather than as a cache entry that may or may not be there.
+      - name: Download the build trees
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          mkdir -p build-trees
+          if gh run download --repo "$GITHUB_REPOSITORY" --name XForgeBuildTrees --dir build-trees; then
+            tar -xf build-trees/build-trees.tar
+            echo "build trees restored:"
+            ls -d llvm-build/lib swift-build/lib cmark-ios-build 2>/dev/null || true
+          else
+            echo "::warning::no XForgeBuildTrees artifact yet; falling back to the caches, then to configure only"
+          fi
+
       # The same keys the toolchain workflow writes, so this reuses what it built.
       - name: Restore the LLVM builds
         id: llvm-cache

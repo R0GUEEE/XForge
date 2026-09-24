@@ -517,6 +517,49 @@ jobs:
             -c App/NativeToolchain/NativeToolchainBridge.mm \
             -o /tmp/NativeToolchainBridge.o
 
+      # The iteration substrate. Caches were the wrong tool for this: the entries
+      # either never stored (a 6-second "save" of a multi-gigabyte tree) or were
+      # evicted, so a workflow that restored them found nothing and failed steps this
+      # one passes. Artifacts are not evicted, and this is only what a check needs —
+      # the static archives and the generated headers — not the object files and
+      # CMake metadata that make up most of the trees.
+      #
+      # Uploaded with `always()` so a failure *after* the builds still publishes them:
+      # that is exactly the case the fast loop exists to iterate on.
+      - name: Package the build trees
+        if: ${{ always() && !inputs.configure_only }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p build-trees
+          ITEMS=()
+          for item in \
+            llvm-build/lib \
+            swift-build/lib \
+            cmark-ios-build \
+            llvm-build/include \
+            llvm-build/tools/clang/include \
+            swift-build/include \
+            swift-build/tools/swift/include; do
+            [ -d "$item" ] && ITEMS+=("$item")
+          done
+          if [ "${#ITEMS[@]}" -eq 0 ]; then
+            echo "nothing to package"
+            exit 0
+          fi
+          tar -cf build-trees/build-trees.tar "${ITEMS[@]}"
+          du -sh build-trees/build-trees.tar
+
+      - name: Upload the build trees
+        if: ${{ always() && !inputs.configure_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: XForgeBuildTrees
+          path: build-trees/build-trees.tar
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+
       - name: Stage native toolchain SDK
         if: ${{ !inputs.configure_only }}
         shell: bash
