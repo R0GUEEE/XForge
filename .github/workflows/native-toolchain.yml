@@ -157,22 +157,6 @@ jobs:
           path: swift-build
           key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ env.SWIFT_REF }}-${{ env.SWIFT_LLVM_REF }}-${{ steps.toolchain-versions.outputs.value }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
 
-      # A restored build tree looks *older* than the sources that were just
-      # checked out, and ninja compares timestamps: it would rebuild everything the
-      # cache was meant to save. Touching the restored outputs puts them ahead of
-      # the sources again, which is sound because a change to any source ref
-      # changes the cache key and therefore misses the cache entirely.
-      - name: Make the restored builds newer than the sources
-        if: ${{ steps.llvm-cache.outputs.cache-hit == 'true' || steps.swift-cache.outputs.cache-hit == 'true' }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-          for tree in llvm-host-build llvm-build cmark-host-build swift-build; do
-            if [ -d "$tree" ]; then
-              find "$tree" -exec touch -c {} + 2>/dev/null || true
-            fi
-          done
-
       - name: Build host TableGen tools
         shell: bash
         run: |
@@ -263,6 +247,22 @@ jobs:
             -DCLANG_BUILD_TOOLS=ON \
             -DLLD_INCLUDE_TESTS=OFF \
             -DLLD_BUILD_TOOLS=OFF
+
+      # A restored build tree looks *older* than the sources that were just checked
+      # out, and ninja compares timestamps — so it would rebuild everything the
+      # cache exists to save. Touching the outputs puts them ahead again. It has to
+      # happen *after* CMake's configure, not before: configure rewrites generated
+      # headers (llvm/Config/…), and a header newer than the outputs invalidates
+      # every edge that includes it, which is nearly all of them. Sound either way,
+      # because a change to any source ref changes the cache key.
+      - name: Make the restored LLVM build newer than its inputs
+        if: ${{ steps.llvm-cache.outputs.cache-hit == 'true' }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for tree in llvm-host-build llvm-build cmark-host-build; do
+            [ -d "$tree" ] && find "$tree" -exec touch -c {} + 2>/dev/null || true
+          done
 
       - name: Build Clang and Mach-O LLD libraries
         if: ${{ !inputs.configure_only }}
@@ -363,6 +363,13 @@ jobs:
             || test -f swift-build/lib/libswiftFrontendTool.a \
             || echo "::warning::swiftFrontendTool archive not found where expected; listing swift-build/lib"
           ls -la swift-build/lib | head -40 || true
+
+      - name: Make the restored Swift build newer than its inputs
+        if: ${{ steps.swift-cache.outputs.cache-hit == 'true' }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          [ -d swift-build ] && find swift-build -exec touch -c {} + 2>/dev/null || true
 
       - name: Build the Swift frontend libraries
         if: ${{ inputs.with_swift && !inputs.configure_only }}
