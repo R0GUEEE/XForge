@@ -15,6 +15,15 @@ packages:
   zipfoundation:
     url: https://github.com/weichsel/ZIPFoundation
     from: 0.9.19
+  # Reading an existing .xcodeproj (App/Models/XcodeProject.swift). Pure Swift and
+  # iOS 17, so an Xcode project can be parsed on-device. PathKit is XcodeProj's own
+  # path type, imported directly by that file.
+  xcodeproj:
+    url: https://github.com/tuist/XcodeProj
+    from: 9.17.0
+  pathkit:
+    url: https://github.com/kylef/PathKit
+    from: 1.0.1
 
 # ---------------------------------------------------------------------------
 # App identity + shared build settings.
@@ -65,6 +74,10 @@ targets:
         product: XKit
       - package: zipfoundation
         product: ZIPFoundation
+      - package: xcodeproj
+        product: XcodeProj
+      - package: pathkit
+        product: PathKit
       - sdk: WebKit.framework
       - sdk: SystemConfiguration.framework
     preBuildScripts:
