@@ -137,8 +137,9 @@ jobs:
       # key deliberately does not include the workflow file: editing this file —
       # which is what iterating on it looks like — must not force a rebuild of a
       # compiler that did not change. `cache_salt` is the way to ask for one.
-      - name: Cache the iOS builds
-        uses: actions/cache@v4
+      - name: Restore the iOS builds
+        id: toolchain-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             llvm-host-build
@@ -241,6 +242,18 @@ jobs:
 
       # The step this workflow exists for. Everything above is shared with the
       # LLVM-only bundle; everything below only happens when Swift is asked for.
+      # Saved here, before the step most likely to fail, and with `if: always()`:
+      # a failed Swift configure must not cost another LLVM cross-build.
+      - name: Save the iOS builds
+        if: ${{ always() && steps.toolchain-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.toolchain-cache.outputs.cache-primary-key }}
+          path: |
+            llvm-host-build
+            llvm-build
+            cmark-host-build
+
       - name: Configure the Swift frontend for iPhoneOS
         if: ${{ inputs.with_swift }}
         shell: bash
@@ -264,6 +277,8 @@ jobs:
             -DClang_DIR="$PWD/llvm-build/lib/cmake/clang" \
             -DLLVM_HOST_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
             -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_TABLEGEN="$PWD/llvm-host-build/bin/llvm-tblgen" \
+            -DCLANG_TABLEGEN="$PWD/llvm-host-build/bin/clang-tblgen" \
             -DSWIFT_NATIVE_LLVM_TOOLS_PATH="$PWD/llvm-host-build/bin" \
             -DSWIFT_NATIVE_CLANG_TOOLS_PATH="$PWD/llvm-host-build/bin" \
             -DSWIFT_NATIVE_SWIFT_TOOLS_PATH="$HOST_SWIFT_BIN" \
