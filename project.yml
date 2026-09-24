@@ -13,6 +13,9 @@ packages:
   zipfoundation:
     url: https://github.com/weichsel/ZIPFoundation
     from: 0.9.19
+  xtoolMobileKit:
+    url: https://github.com/R0GUEEE/Xtool-iOS-Library
+    branch: feature/native-unsigned-backend
 
 # ---------------------------------------------------------------------------
 # App identity + shared build settings.
@@ -58,6 +61,8 @@ targets:
     dependencies:
       - package: xtool
         product: XKit
+      - package: xtoolMobileKit
+        product: XtoolMobileKit
       - package: zipfoundation
         product: ZIPFoundation
       - sdk: WebKit.framework
