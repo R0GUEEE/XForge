@@ -157,6 +157,22 @@ jobs:
           path: swift-build
           key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ env.SWIFT_REF }}-${{ env.SWIFT_LLVM_REF }}-${{ steps.toolchain-versions.outputs.value }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
 
+      # A restored build tree looks *older* than the sources that were just
+      # checked out, and ninja compares timestamps: it would rebuild everything the
+      # cache was meant to save. Touching the restored outputs puts them ahead of
+      # the sources again, which is sound because a change to any source ref
+      # changes the cache key and therefore misses the cache entirely.
+      - name: Make the restored builds newer than the sources
+        if: ${{ steps.llvm-cache.outputs.cache-hit == 'true' || steps.swift-cache.outputs.cache-hit == 'true' }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for tree in llvm-host-build llvm-build cmark-host-build swift-build; do
+            if [ -d "$tree" ]; then
+              find "$tree" -exec touch -c {} + 2>/dev/null || true
+            fi
+          done
+
       - name: Build host TableGen tools
         shell: bash
         run: |
