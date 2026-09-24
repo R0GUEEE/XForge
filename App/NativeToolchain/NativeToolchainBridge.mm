@@ -16,6 +16,7 @@ static void xf_copy_diag(const std::string &value, char *buffer, size_t capacity
     __has_include(<clang/Frontend/CompilerInstance.h>) && \
     __has_include(<clang/Frontend/CompilerInvocation.h>) && \
     __has_include(<clang/Frontend/TextDiagnosticPrinter.h>) && \
+    __has_include(<clang/Serialization/PCHContainerOperations.h>) && \
     __has_include(<lld/Common/Driver.h>)
 
 // Apple's SDK predefines IBAction and IBOutlet as macros (`#define IBOutlet
@@ -38,6 +39,7 @@ static void xf_copy_diag(const std::string &value, char *buffer, size_t capacity
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/CompilerInvocation.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
+#include <clang/Serialization/PCHContainerOperations.h>
 #include <lld/Common/Driver.h>
 #include <llvm/ADT/ArrayRef.h>
 #include <llvm/ADT/IntrusiveRefCntPtr.h>
@@ -175,7 +177,15 @@ extern "C" int xf_native_clang_compile(const char *source_path,
         return 65;
     }
 
-    clang::CompilerInstance compiler;
+    // The three signatures that differ between clang revisions, as this one
+    // declares them (swiftlang/llvm-project swift/release/6.2):
+    //   DiagnosticsEngine(IntrusiveRefCntPtr<DiagnosticIDs>,
+    //                     IntrusiveRefCntPtr<DiagnosticOptions>, DiagnosticConsumer *,
+    //                     bool)                        ← options are refcounted here
+    //   TextDiagnosticPrinter(raw_ostream &, DiagnosticOptions *)  ← pointer to them
+    //   CompilerInstance(shared_ptr<PCHContainerOperations>, ModuleCache *)
+    // and the invocation goes in through setInvocation().
+    clang::CompilerInstance compiler(std::make_shared<clang::PCHContainerOperations>());
     compiler.setInvocation(invocation);
     compiler.createDiagnostics(diagPrinter.release(), true);
     if (!compiler.hasDiagnostics()) {
