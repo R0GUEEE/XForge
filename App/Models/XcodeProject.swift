@@ -1,32 +1,39 @@
 import Foundation
-import PathKit
-import XcodeProj
 
 /// A read-only view of an existing Xcode project (`Foo.xcodeproj`).
 ///
 /// This is the foundation of the "Xcode alternative" path: an Xcode project file
-/// is the only description of what an existing app is made of, and it is a plain
+/// is the only description of what an existing app is made of, and it is a text
 /// property list, so it can be read on-device — no Mac, no `xcodebuild`.
-/// `tuist/XcodeProj` is pure Swift and (like XKit) declares iOS 17, which is where
-/// the app's own floor comes from.
 ///
 /// It answers the questions a build driver has to ask first: which targets are
 /// there, what they produce, which sources they compile, and what their build
 /// settings are after the project's own inheritance rules — project settings,
 /// project xcconfig, target xcconfig, target settings, in Xcode's order.
 ///
+/// **Why the parser is written here.** `tuist/XcodeProj` would do this, but it
+/// cannot be used: the app's `xtool` dependency resolves `XcodeGen`, which pins
+/// `XcodeProj` with `exact:` (9.14.0 today), so a newer XcodeProj is
+/// unsatisfiable — asking for one made SwiftPM's resolver spin for 40+ minutes in
+/// CI — and the pinned version declares no iOS support at all. `project.pbxproj`
+/// is an OpenStep property list, and the subset it uses is small, so XForge owns
+/// a parser instead of fighting the graph. See Docs/XCODE-ALTERNATIVE.md.
+///
 /// Deliberately *not* here yet:
 ///  - anything that compiles (see `NativeToolchain`/`EmbeddedLinuxExecutor`);
-///  - `$(...)` evaluation, `SWIFT_ACTIVE_COMPILATION_CONDITIONS`-style variants and
-///    `[config=...]` conditions: values are reported as written;
+///  - `$(...)` evaluation, `[config=…]` conditions and Xcode's huge default
+///    settings table: values are reported as written;
 ///  - schemes, asset catalogs and storyboards. `actool`/`ibtool` are Xcode's own
 ///    tools and have no iOS build, so an app that needs them cannot be built
 ///    on-device at all — see Docs/XCODE-ALTERNATIVE.md.
+///  - the JSON project format Xcode 27 can write (`project.xcproj`): only
+///    `project.pbxproj` is read.
 struct XcodeTargetSummary: Identifiable, Sendable {
     /// The target name, which is unique inside a project.
     let id: String
     let name: String
     /// `PBXProductType` raw value, e.g. `com.apple.product-type.application`.
+    /// Empty when the target records none (an aggregate or legacy target).
     let productType: String
     let productName: String
     let bundleIdentifier: String?
@@ -40,7 +47,7 @@ struct XcodeTargetSummary: Identifiable, Sendable {
     let configurationNames: [String]
     let defaultConfiguration: String?
 
-    var isApplication: Bool { productType == PBXProductType.application.rawValue }
+    var isApplication: Bool { productType == "com.apple.product-type.application" }
     var containsSwift: Bool { sourceFiles.contains { $0.hasSuffix(".swift") } }
 }
 
@@ -74,30 +81,50 @@ enum XcodeProjectReader {
     static func read(at url: URL) throws -> XcodeProjectSummary {
         let projectURL = try locate(from: url)
 
-        let project: XcodeProj
+        let pbxprojURL = projectURL.appendingPathComponent("project.pbxproj", isDirectory: false)
+        guard let data = try? Data(contentsOf: pbxprojURL),
+              let text = String(data: data, encoding: .utf8) else {
+            throw XcodeProjectError.malformed("no readable project.pbxproj inside \(projectURL.lastPathComponent)")
+        }
+
+        let parsed: PbxValue
         do {
-            project = try XcodeProj(path: Path(projectURL.path))
+            parsed = try PbxValue.parse(text)
         } catch {
             throw XcodeProjectError.malformed(error.localizedDescription)
         }
-        guard let root = project.pbxproj.rootObject else {
-            throw XcodeProjectError.malformed("the project file has no root object")
-        }
 
+        let plist = parsed.dictionaryValue
+        let objects = plist["objects"]?.dictionaryValue ?? [:]
+        guard let rootID = plist["rootObject"]?.stringValue,
+              let root = objects[rootID]?.dictionaryValue,
+              !root.isEmpty else {
+            throw XcodeProjectError.malformed("the project file names no root object")
+        }
+        // Xcode < 16 projects often carry no `name`; the bundle's name is then the
+        // only name the project has.
+        let name = root["name"]?.stringValue ?? projectURL.deletingPathExtension().lastPathComponent
+
+        let paths = groupPaths(root: root, objects: objects)
         let sourceDirectory = projectURL.deletingLastPathComponent()
-        var paths: [ObjectIdentifier: String] = [:]
-        if let mainGroup = root.mainGroup {
-            index(mainGroup, prefix: "", into: &paths)
-        }
 
-        let targets = root.targets.map {
-            summarize($0, in: root, paths: paths, sourceDirectory: sourceDirectory)
+        let targets = (root["targets"]?.arrayValue ?? []).compactMap { value -> XcodeTargetSummary? in
+            guard let targetID = value.stringValue, let target = objects[targetID]?.dictionaryValue else {
+                return nil
+            }
+            return summarize(
+                target,
+                objects: objects,
+                root: root,
+                paths: paths,
+                sourceDirectory: sourceDirectory
+            )
         }
 
         return XcodeProjectSummary(
             projectURL: projectURL,
             projectDirectory: sourceDirectory,
-            name: root.name,
+            name: name,
             targets: targets
         )
     }
@@ -131,125 +158,345 @@ enum XcodeProjectReader {
     /// Walk the project's group tree once, so a source file can be reported with the
     /// path it has inside the project rather than the single component its build
     /// phase records.
-    private static func index(
-        _ element: PBXFileElement,
-        prefix: String,
-        into paths: inout [ObjectIdentifier: String]
-    ) {
-        let component = element.path ?? element.name ?? ""
-        let full = component.isEmpty ? prefix : (prefix.isEmpty ? component : prefix + "/" + component)
-        paths[ObjectIdentifier(element)] = full
+    private static func groupPaths(root: [String: PbxValue], objects: [String: PbxValue]) -> [String: String] {
+        var paths: [String: String] = [:]
 
-        guard let group = element as? PBXGroup else { return }
-        for child in group.children {
-            index(child, prefix: full, into: &paths)
+        func walk(_ id: String, prefix: String) {
+            guard let element = objects[id]?.dictionaryValue else { return }
+            let component = element["path"]?.stringValue ?? element["name"]?.stringValue ?? ""
+            let full = component.isEmpty
+                ? prefix
+                : (prefix.isEmpty ? component : prefix + "/" + component)
+            paths[id] = full
+            for child in element["children"]?.arrayValue ?? [] {
+                if let childID = child.stringValue { walk(childID, prefix: full) }
+            }
         }
+
+        if let mainGroup = root["mainGroup"]?.stringValue {
+            walk(mainGroup, prefix: "")
+        }
+        return paths
     }
 
     // MARK: - Targets
 
     private static func summarize(
-        _ target: PBXTarget,
-        in root: PBXProject,
-        paths: [ObjectIdentifier: String],
+        _ target: [String: PbxValue],
+        objects: [String: PbxValue],
+        root: [String: PbxValue],
+        paths: [String: String],
         sourceDirectory: URL
     ) -> XcodeTargetSummary {
-        let configurations = target.buildConfigurationList?.buildConfigurations ?? []
-        let projectConfigurations = root.buildConfigurationList?.buildConfigurations ?? []
-        let defaultName = target.buildConfigurationList?.defaultConfigurationName
-            ?? root.buildConfigurationList?.defaultConfigurationName
-        let chosen = configurations.first { $0.name == defaultName } ?? configurations.first
+        let configurationList = objects[target["buildConfigurationList"]?.stringValue ?? ""]?.dictionaryValue ?? [:]
+        let configurationIDs = (configurationList["buildConfigurations"]?.arrayValue ?? []).compactMap(\.stringValue)
+        let defaultName = configurationList["defaultConfigurationName"]?.stringValue
+
+        let configurations = configurationIDs.compactMap { id -> [String: PbxValue]? in
+            objects[id]?.dictionaryValue
+        }
+        let chosen = configurations.first { $0["name"]?.stringValue == defaultName } ?? configurations.first
+
+        let projectList = objects[root["buildConfigurationList"]?.stringValue ?? ""]?.dictionaryValue ?? [:]
+        let projectConfigurations = (projectList["buildConfigurations"]?.arrayValue ?? [])
+            .compactMap { objects[$0.stringValue ?? ""]?.dictionaryValue }
+        let projectConfiguration = projectConfigurations.first {
+            $0["name"]?.stringValue == chosen?["name"]?.stringValue
+        } ?? projectConfigurations.first
 
         var settings: [String: String] = [:]
         var xcconfigs: [String] = []
         // Xcode's precedence: the project's settings are the base, the target's win
         // over them, and inside each pair the xcconfig is the base.
-        if let configuration = projectConfigurations.first(where: { $0.name == chosen?.name })
-            ?? projectConfigurations.first {
-            let (values, referenced) = resolve(configuration, sourceDirectory: sourceDirectory)
+        if let projectConfiguration {
+            let (values, referenced) = resolve(projectConfiguration, objects: objects, sourceDirectory: sourceDirectory)
             settings.merge(values) { _, target in target }
             xcconfigs.append(contentsOf: referenced)
         }
         if let chosen {
-            let (values, referenced) = resolve(chosen, sourceDirectory: sourceDirectory)
+            let (values, referenced) = resolve(chosen, objects: objects, sourceDirectory: sourceDirectory)
             settings.merge(values) { _, target in target }
             xcconfigs.append(contentsOf: referenced)
         }
 
-        let sources = target.buildPhases
-            .compactMap { $0 as? PBXSourcesBuildPhase }
-            .flatMap { $0.files ?? [] }
-            .compactMap { buildFile -> String? in
-                guard let file = buildFile.file else { return nil }
-                // Identity lookup first: the same element is reachable from the group
-                // tree and from the build phase. Fall back to the recorded path, which
-                // is at least the file's own name.
-                return paths[ObjectIdentifier(file)] ?? file.path
+        var sources: [String] = []
+        for phaseID in (target["buildPhases"]?.arrayValue ?? []).compactMap(\.stringValue) {
+            guard let phase = objects[phaseID]?.dictionaryValue,
+                  phase["isa"]?.stringValue == "PBXSourcesBuildPhase" else { continue }
+            for fileID in (phase["files"]?.arrayValue ?? []).compactMap(\.stringValue) {
+                guard let buildFile = objects[fileID]?.dictionaryValue,
+                      let referenceID = buildFile["fileRef"]?.stringValue else { continue }
+                // The group tree has the full project-relative path; a build file
+                // whose reference is not in it (or is a variant group) at least has
+                // its own path.
+                let path = paths[referenceID] ?? objects[referenceID]?.dictionaryValue["path"]?.stringValue
+                if let path, !path.isEmpty { sources.append(path) }
             }
+        }
 
+        let targetName = target["name"]?.stringValue ?? ""
         return XcodeTargetSummary(
-            id: target.name,
-            name: target.name,
-            productType: target.productType?.rawValue ?? "",
-            productName: settings["PRODUCT_NAME"] ?? target.productName ?? target.name,
+            id: targetName,
+            name: targetName,
+            productType: target["productType"]?.stringValue ?? "",
+            productName: settings["PRODUCT_NAME"] ?? targetName,
             bundleIdentifier: settings["PRODUCT_BUNDLE_IDENTIFIER"],
             deploymentTarget: settings["IPHONEOS_DEPLOYMENT_TARGET"],
             sourceFiles: Array(Set(sources)).sorted(),
             xcconfigPaths: xcconfigs,
             buildSettings: settings,
-            configurationNames: configurations.map(\.name),
-            defaultConfiguration: chosen?.name
+            configurationNames: configurations.compactMap { $0["name"]?.stringValue },
+            defaultConfiguration: chosen?["name"]?.stringValue
         )
     }
 
     // MARK: - Build settings
 
     private static func resolve(
-        _ configuration: XCBuildConfiguration,
+        _ configuration: [String: PbxValue],
+        objects: [String: PbxValue],
         sourceDirectory: URL
     ) -> ([String: String], [String]) {
-        var settings = flatten(configuration.buildSettings)
+        var settings = flatten(configuration["buildSettings"]?.dictionaryValue ?? [:])
         var paths: [String] = []
 
-        guard let relative = configuration.baseConfigurationReferenceRelativePath else {
-            return (settings, paths)
-        }
-        let url = sourceDirectory.appendingPathComponent(relative)
-        guard FileManager.default.fileExists(atPath: url.path),
-              let xcconfig = try? XCConfig(
-                path: Path(url.path),
-                projectPath: Path(sourceDirectory.path)
-              ) else {
+        guard let referenceID = configuration["baseConfigurationReference"]?.stringValue,
+              let reference = objects[referenceID]?.dictionaryValue,
+              let relative = reference["path"]?.stringValue else {
             return (settings, paths)
         }
 
         paths.append(relative)
-        paths.append(contentsOf: xcconfig.includes.map { $0.include.string })
-        // The xcconfig is the base of its layer; the project file's own settings win.
-        settings.merge(flatten(xcconfig)) { _, declared in declared }
+        let url = sourceDirectory.appendingPathComponent(relative)
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return (settings, paths) }
+
+        // The xcconfig is the base of its layer: settings written in the project
+        // file itself win over it.
+        settings.merge(xcconfigSettings(text)) { _, declared in declared }
         return (settings, paths)
     }
 
-    private static func flatten(_ xcconfig: XCConfig) -> [String: String] {
+    /// `KEY = VALUE` lines, `//` comments and `#include` ignored: enough to see what
+    /// a real project's xcconfig says, without pretending to be Xcode's evaluator.
+    private static func xcconfigSettings(_ text: String) -> [String: String] {
         var settings: [String: String] = [:]
-        for included in xcconfig.includes {
-            settings.merge(flatten(included.config)) { _, new in new }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("//"), !trimmed.hasPrefix("#") else { continue }
+            guard let separator = trimmed.firstIndex(of: "=") else { continue }
+            let key = String(trimmed[..<separator]).trimmingCharacters(in: .whitespaces)
+            let value = String(trimmed[trimmed.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
+            if !key.isEmpty { settings[key] = value }
         }
-        settings.merge(flatten(xcconfig.buildSettings)) { _, new in new }
         return settings
     }
 
-    private static func flatten(_ buildSettings: BuildSettings) -> [String: String] {
+    private static func flatten(_ buildSettings: [String: PbxValue]) -> [String: String] {
         var settings: [String: String] = [:]
         for (key, value) in buildSettings {
             if let string = value.stringValue {
                 settings[key] = string
             } else if let array = value.arrayValue {
-                settings[key] = array.joined(separator: " ")
-            } else if let flag = value.boolValue {
-                settings[key] = flag ? "YES" : "NO"
+                settings[key] = array.compactMap(\.stringValue).joined(separator: " ")
             }
         }
         return settings
+    }
+}
+
+// MARK: - OpenStep property list
+
+/// The value tree of an OpenStep property list, which is what a `project.pbxproj`
+/// is. Xcode writes dictionaries, arrays, quoted and unquoted strings, hex data,
+/// and `/* comments */` between everything.
+enum PbxValue {
+    case string(String)
+    case array([PbxValue])
+    case dictionary([String: PbxValue])
+    case data(Data)
+
+    /// Values that matter here are strings; anything else is reported as missing.
+    var stringValue: String? {
+        if case .string(let value) = self { return value }
+        return nil
+    }
+
+    var arrayValue: [PbxValue]? {
+        if case .array(let value) = self { return value }
+        return nil
+    }
+
+    var dictionaryValue: [String: PbxValue] {
+        if case .dictionary(let value) = self { return value }
+        return [:]
+    }
+
+    static func parse(_ text: String) throws -> PbxValue {
+        var scanner = PbxScanner(text)
+        let value = try scanner.value()
+        return value
+    }
+}
+
+enum PbxParseError: LocalizedError {
+    case unexpectedEnd
+    case unexpectedCharacter(Character)
+    case unterminated(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unexpectedEnd: return "the project file ends in the middle of a value."
+        case .unexpectedCharacter(let character): return "unexpected '\(character)' in the project file."
+        case .unterminated(let what): return "the project file has an unterminated \(what)."
+        }
+    }
+}
+
+/// Recursive-descent reader for the OpenStep format. The grammar is small enough to
+/// own: `{ key = value; … }`, `( value, … )`, quoted and bare strings, `<hex>`, and
+/// two comment forms.
+private struct PbxScanner {
+    private let characters: [Character]
+    private var index = 0
+
+    init(_ text: String) {
+        characters = Array(text)
+    }
+
+    mutating func value() throws -> PbxValue {
+        skipTrivia()
+        guard index < characters.count else { throw PbxParseError.unexpectedEnd }
+        switch characters[index] {
+        case "{": return try dictionary()
+        case "(": return try array()
+        case "\"": return .string(try quotedString())
+        case "<": return .data(try hexData())
+        default: return .string(try bareString())
+        }
+    }
+
+    private mutating func dictionary() throws -> PbxValue {
+        index += 1  // "{"
+        var result: [String: PbxValue] = [:]
+        while true {
+            skipTrivia()
+            guard index < characters.count else { throw PbxParseError.unterminated("dictionary") }
+            if characters[index] == "}" {
+                index += 1
+                return .dictionary(result)
+            }
+            let key = try value().stringValue ?? ""
+            skipTrivia()
+            guard index < characters.count, characters[index] == "=" else {
+                throw PbxParseError.unterminated("dictionary entry")
+            }
+            index += 1
+            result[key] = try value()
+            skipTrivia()
+            if index < characters.count, characters[index] == ";" { index += 1 }
+        }
+    }
+
+    private mutating func array() throws -> PbxValue {
+        index += 1  // "("
+        var result: [PbxValue] = []
+        while true {
+            skipTrivia()
+            guard index < characters.count else { throw PbxParseError.unterminated("array") }
+            if characters[index] == ")" {
+                index += 1
+                return .array(result)
+            }
+            result.append(try value())
+            skipTrivia()
+            if index < characters.count, characters[index] == "," { index += 1 }
+        }
+    }
+
+    private mutating func quotedString() throws -> String {
+        index += 1  // "\""
+        var result = ""
+        while index < characters.count {
+            let character = characters[index]
+            if character == "\\" {
+                let next = index + 1 < characters.count ? characters[index + 1] : nil
+                switch next {
+                case "n": result.append("\n"); index += 2
+                case "t": result.append("\t"); index += 2
+                case "r": result.append("\r"); index += 2
+                case "U", "u":
+                    let digits = String(characters[index + 2 ..< min(index + 6, characters.count)])
+                    if let scalar = UInt32(digits, radix: 16), let unicode = Unicode.Scalar(scalar) {
+                        result.unicodeScalars.append(unicode)
+                    }
+                    index += 6
+                case .some(let escaped): result.append(escaped); index += 2
+                case .none: throw PbxParseError.unterminated("string")
+                }
+            } else if character == "\"" {
+                index += 1
+                return result
+            } else {
+                result.append(character)
+                index += 1
+            }
+        }
+        throw PbxParseError.unterminated("string")
+    }
+
+    private mutating func hexData() throws -> Data {
+        guard let end = characters[index...].firstIndex(of: ">") else {
+            throw PbxParseError.unterminated("data value")
+        }
+        let digits = String(characters[(index + 1) ..< end]).filter { !$0.isWhitespace }
+        index = end + 1
+
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(digits.count / 2)
+        var pending: UInt8?
+        for character in digits {
+            guard let nibble = character.hexDigitValue else { continue }
+            if let high = pending {
+                bytes.append(high << 4 | UInt8(nibble))
+                pending = nil
+            } else {
+                pending = UInt8(nibble)
+            }
+        }
+        return Data(bytes)
+    }
+
+    private mutating func bareString() throws -> String {
+        let start = index
+        while index < characters.count {
+            let character = characters[index]
+            if character.isWhitespace || "=;,(){}\"<>".contains(character) { break }
+            if character == "/", index + 1 < characters.count,
+               characters[index + 1] == "/" || characters[index + 1] == "*" { break }
+            index += 1
+        }
+        guard index > start else { throw PbxParseError.unexpectedCharacter(characters[index]) }
+        return String(characters[start ..< index])
+    }
+
+    /// Whitespace and both comment forms, which Xcode sprinkles between everything.
+    private mutating func skipTrivia() {
+        while index < characters.count {
+            let character = characters[index]
+            if character.isWhitespace {
+                index += 1
+            } else if character == "/", index + 1 < characters.count, characters[index + 1] == "*" {
+                index += 2
+                while index + 1 < characters.count,
+                      !(characters[index] == "*" && characters[index + 1] == "/") {
+                    index += 1
+                }
+                index = min(index + 2, characters.count)
+            } else if character == "/", index + 1 < characters.count, characters[index + 1] == "/" {
+                while index < characters.count, characters[index] != "\n" { index += 1 }
+            } else {
+                return
+            }
+        }
     }
 }
