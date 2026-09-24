@@ -25,7 +25,6 @@ static void xf_copy_diag(const std::string &value, char *buffer, size_t capacity
 #include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <lld/Common/Driver.h>
 #include <llvm/ADT/ArrayRef.h>
-#include <llvm/Support/Host.h>
 #include <llvm/Support/raw_ostream.h>
 
 #if defined(XFORGE_HAS_SWIFT_FRONTEND) && __has_include(<swift/FrontendTool/FrontendTool.h>)
@@ -104,9 +103,10 @@ extern "C" int xf_native_clang_compile(const char *source_path,
 
     auto diagOpts = llvm::IntrusiveRefCntPtr<clang::DiagnosticOptions>(
         new clang::DiagnosticOptions());
-    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, &*diagOpts);
+    // Both take the options by reference (LLVM 19+); the older API took a pointer.
+    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, *diagOpts);
     auto diagIDs = llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs());
-    clang::DiagnosticsEngine diags(diagIDs, &*diagOpts, diagPrinter.get(), false);
+    clang::DiagnosticsEngine diags(diagIDs, *diagOpts, diagPrinter.get(), false);
 
     std::vector<std::string> owned = {
         "-triple", target_triple,
