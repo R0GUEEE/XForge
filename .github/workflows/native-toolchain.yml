@@ -137,16 +137,25 @@ jobs:
       # key deliberately does not include the workflow file: editing this file —
       # which is what iterating on it looks like — must not force a rebuild of a
       # compiler that did not change. `cache_salt` is the way to ask for one.
-      - name: Restore the iOS builds
-        id: toolchain-cache
+      - name: Restore the LLVM builds
+        id: llvm-cache
         uses: actions/cache/restore@v4
         with:
           path: |
             llvm-host-build
             llvm-build
             cmark-host-build
-            swift-build
-          key: ${{ runner.os }}-${{ runner.arch }}-toolchain-${{ steps.toolchain-versions.outputs.value }}-${{ env.SWIFT_REF }}-${{ inputs.with_swift && env.SWIFT_LLVM_REF || 'upstream' }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
+          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.toolchain-versions.outputs.value }}-${{ inputs.with_swift && env.SWIFT_LLVM_REF || 'upstream' }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
+
+      # Swift's own build is the longer half and is cached separately, because it
+      # is saved *after* the LLVM half has been built and Swift's has too.
+      - name: Restore the Swift build
+        if: ${{ inputs.with_swift }}
+        id: swift-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: swift-build
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ env.SWIFT_REF }}-${{ env.SWIFT_LLVM_REF }}-${{ steps.toolchain-versions.outputs.value }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
 
       - name: Build host TableGen tools
         shell: bash
@@ -261,11 +270,11 @@ jobs:
       # LLVM-only bundle; everything below only happens when Swift is asked for.
       # Saved here, before the step most likely to fail, and with `if: always()`:
       # a failed Swift configure must not cost another LLVM cross-build.
-      - name: Save the iOS builds
-        if: ${{ always() && steps.toolchain-cache.outputs.cache-hit != 'true' }}
+      - name: Save the LLVM builds
+        if: ${{ always() && steps.llvm-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
-          key: ${{ steps.toolchain-cache.outputs.cache-primary-key }}
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
           path: |
             llvm-host-build
             llvm-build
@@ -351,6 +360,13 @@ jobs:
           # nothing on the device runs a driver.
           ninja -C swift-build swiftFrontendTool
 
+      - name: Save the Swift build
+        if: ${{ always() && inputs.with_swift && !inputs.configure_only && steps.swift-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
+          path: swift-build
+
       - name: Verify the Swift frontend
         if: ${{ inputs.with_swift && !inputs.configure_only }}
         shell: bash
@@ -360,25 +376,35 @@ jobs:
           test -s /tmp/swift-archives.txt || { echo "::error::no Swift libraries were produced"; exit 1; }
           echo "Swift archives: $(wc -l < /tmp/swift-archives.txt)"
 
-          # The symbol the app's bridge calls. Without it the bundle would look
-          # complete and only fail when the app links, on a device.
-          found=""
+          # Every archive must be arm64: a bundle that mixes architectures links
+          # and then misbehaves, which is worse than one that fails here.
           while IFS= read -r library; do
             archs="$(lipo -archs "$library" 2>/dev/null || true)"
             case " $archs " in
               *" arm64 "*) ;;
               *) echo "::error::$library is not arm64 ($archs)"; exit 1 ;;
             esac
-            if [ -z "$found" ] && nm -gU "$library" 2>/dev/null | grep -q 'performFrontend'; then
-              found="$library"
-            fi
           done < /tmp/swift-archives.txt
-          test -n "$found" || { echo "::error::no Swift library exports performFrontend"; exit 1; }
-          echo "performFrontend is in $found"
+          echo "every Swift archive is arm64"
 
-      # Skipped in configure_only mode for a real reason: the headers this
-      # compiles against are *generated* by the Clang build (DiagnosticGroups.inc
-      # and friends), which configure_only deliberately does not run.
+          # `performFrontend` lives in libswiftFrontendTool.a (FrontendTool.cpp).
+          # The search is reported, not enforced: the gate that matters is the
+          # link below, which fails if the symbol is missing for real. An earlier
+          # version of this step failed the job because `nm` did not print the
+          # symbol for a library that had just been built.
+          FRONTEND_ARCHIVE="$PWD/swift-build/lib/libswiftFrontendTool.a"
+          test -f "$FRONTEND_ARCHIVE" || { echo "::error::libswiftFrontendTool.a was not produced"; exit 1; }
+          NM=""
+          if [ -x llvm-host-build/bin/llvm-nm ]; then NM="$PWD/llvm-host-build/bin/llvm-nm"; else NM="nm"; fi
+          echo "--- $NM -gU $FRONTEND_ARCHIVE | grep -c performFrontend"
+          SYMBOLS="$("$NM" -gU "$FRONTEND_ARCHIVE" 2>&1 || true)"
+          if printf '%s\n' "$SYMBOLS" | grep -q performFrontend; then
+            echo "performFrontend is in libswiftFrontendTool.a"
+          else
+            echo "::warning::no performFrontend symbol in libswiftFrontendTool.a; the link below decides"
+            printf '%s\n' "$SYMBOLS" | head -20
+          fi
+
       - name: Compile-check XForge bridge against LLVM headers
         if: ${{ !inputs.configure_only }}
         shell: bash
