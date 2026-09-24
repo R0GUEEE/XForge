@@ -5,7 +5,11 @@ import Foundation
 @MainActor
 enum XForgeEnvironment {
     /// App sandbox root.
-    static var documentDirectory: URL {
+    ///
+    /// `nonisolated`: it is a pure lookup in `FileManager`, and the native
+    /// toolchain path (`NativeSDK`, which runs off the main actor) resolves
+    /// sandbox directories while compiling. Same for `nativeSDKDirectory`.
+    nonisolated static var documentDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     }
 
@@ -39,7 +43,7 @@ enum XForgeEnvironment {
     }
 
     /// Host-side Darwin SDK used by the native compiler path.
-    static var nativeSDKDirectory: URL {
+    nonisolated static var nativeSDKDirectory: URL {
         documentDirectory.appendingPathComponent("native-sdk", isDirectory: true)
     }
 
