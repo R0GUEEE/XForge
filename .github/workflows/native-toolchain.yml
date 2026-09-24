@@ -199,6 +199,14 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # CLANG_BUILD_TOOLS is ON on purpose, and nothing builds that target.
+          # Swift's CMake assumes the unified build it is configured against has a
+          # `clang` executable target — lib/Tooling/libSwiftScan/CMakeLists.txt
+          # does `add_dependencies(libSwiftScan clang …)` — and generation fails
+          # outright when the target does not exist ("The dependency target
+          # \"clang\" of target \"libSwiftScan\" does not exist"), even though
+          # neither target is ever built here. Defining it is cheaper than
+          # disabling Swift's subdirectories one generation error at a time.
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           cmake -S llvm-project/llvm -B llvm-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -227,7 +235,7 @@ jobs:
             -DLLVM_ENABLE_CURL=OFF \
             -DLLVM_ENABLE_RTTI=ON \
             -DCLANG_INCLUDE_TESTS=OFF \
-            -DCLANG_BUILD_TOOLS=OFF \
+            -DCLANG_BUILD_TOOLS=ON \
             -DLLD_INCLUDE_TESTS=OFF \
             -DLLD_BUILD_TOOLS=OFF
 
