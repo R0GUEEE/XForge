@@ -1,7 +1,54 @@
 name: Native iOS Toolchain
 
+# Builds the compiler that XForge links into the app: Clang + Mach-O LLD for
+# iPhoneOS, and — when `with_swift` is set — Swift's frontend libraries.
+#
+# Two things about the Swift half are worth knowing before editing it:
+#
+#  * Swift's frontend is *not* built against upstream LLVM. Swift depends on the
+#    LLVM fork it is developed with (the `swiftasync` calling convention, the
+#    coroutine passes, and the C++ API surface it compiles against), so the Swift
+#    path checks out `swiftlang/llvm-project` at the matching `swift/release/X.Y`
+#    branch. The upstream checkout is kept for the LLVM-only path.
+#  * `-DSWIFT_INSTALL_COMPONENTS=` is load-bearing. Swift's CMake writes that as a
+#    *cache* variable, so an empty value on the command line survives its default
+#    and no component is ever installed — which means `swift_install_in_component`
+#    returns early and its `install(TARGETS ...)` never runs. That rule is what
+#    aborts the configure when Swift is cross-configured for iOS: CMake refuses
+#    `install(TARGETS)` for an executable without a BUNDLE destination on an iOS
+#    target, and Swift's host tools have no such destination.
+#
+# The Swift version must match the Swift runtime inside the darwin SDK the app
+# compiles against (that SDK is built from an Xcode; Xcode 26.6 ships Swift
+# 6.2.4), otherwise the frontend cannot read the SDK's standard-library modules.
+
 on:
   workflow_dispatch:
+    inputs:
+      with_swift:
+        description: Build the Swift frontend libraries as well
+        type: boolean
+        default: false
+      swift_ref:
+        description: swiftlang/swift tag or branch
+        type: string
+        default: swift-6.2.4-RELEASE
+      swift_llvm_ref:
+        description: swiftlang/llvm-project branch paired with swift_ref
+        type: string
+        default: swift/release/6.2
+      configure_only:
+        description: Stop after configuring the Swift build (cheap iteration)
+        type: boolean
+        default: false
+      deployment_target:
+        description: Minimum iOS version
+        type: string
+        default: "17.0"
+      cache_salt:
+        description: Bump to discard the cached iOS builds
+        type: string
+        default: "1"
   pull_request:
     paths:
       - "App/NativeToolchain/**"
@@ -16,24 +63,98 @@ on:
 jobs:
   llvm-ios:
     runs-on: macos-15
-    timeout-minutes: 180
+    timeout-minutes: 350
+    env:
+      IOS_DEPLOYMENT_TARGET: ${{ inputs.deployment_target || '17.0' }}
+      SWIFT_REF: ${{ inputs.swift_ref || 'swift-6.2.4-RELEASE' }}
+      SWIFT_LLVM_REF: ${{ inputs.swift_llvm_ref || 'swift/release/6.2' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build tools
         run: brew install cmake ninja
 
+      # The LLVM the compiler is built from: upstream for the LLVM-only bundle,
+      # Swift's own fork when the frontend is part of it.
       - name: Checkout LLVM
         uses: actions/checkout@v4
         with:
-          repository: llvm/llvm-project
+          repository: ${{ inputs.with_swift && 'swiftlang/llvm-project' || 'llvm/llvm-project' }}
+          ref: ${{ inputs.with_swift && env.SWIFT_LLVM_REF || '' }}
           path: llvm-project
           fetch-depth: 1
+
+      - name: Checkout Swift
+        if: ${{ inputs.with_swift }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift
+          ref: ${{ env.SWIFT_REF }}
+          path: swift
+          fetch-depth: 1
+
+      # Swift's configure step executes `cmark --version` and generates
+      # documentation with it, so a native cmark has to exist before the
+      # cross-configure runs.
+      - name: Checkout cmark
+        if: ${{ inputs.with_swift }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift-cmark
+          ref: release/6.2
+          path: swift-cmark
+          fetch-depth: 1
+
+      # Only needed to *find* the sources at configure time; the macro and ASTGen
+      # libraries are switched off, because a macro plugin is a separate process
+      # and iOS has no way to run one.
+      - name: Checkout swift-syntax
+        if: ${{ inputs.with_swift }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift-syntax
+          ref: release/6.2
+          path: swift-syntax
+          fetch-depth: 1
+
+      - name: Checkout swift-experimental-string-processing
+        if: ${{ inputs.with_swift }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift-experimental-string-processing
+          ref: release/6.2
+          path: swift-experimental-string-processing
+          fetch-depth: 1
+
+      - name: Identify the iOS compiler toolchain
+        id: toolchain-versions
+        run: |
+          {
+            echo "value=$(xcodebuild -version | tr '\n' ' ')-$(xcrun --sdk iphoneos --show-sdk-version)"
+          } >> "$GITHUB_OUTPUT"
+
+      # The expensive half is LLVM's cross-build and (when enabled) Swift's. The
+      # key deliberately does not include the workflow file: editing this file —
+      # which is what iterating on it looks like — must not force a rebuild of a
+      # compiler that did not change. `cache_salt` is the way to ask for one.
+      - name: Cache the iOS builds
+        uses: actions/cache@v4
+        with:
+          path: |
+            llvm-host-build
+            llvm-build
+            cmark-host-build
+            swift-build
+          key: ${{ runner.os }}-${{ runner.arch }}-toolchain-${{ steps.toolchain-versions.outputs.value }}-${{ env.SWIFT_REF }}-${{ inputs.with_swift && env.SWIFT_LLVM_REF || 'upstream' }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
 
       - name: Build host TableGen tools
         shell: bash
         run: |
           set -euxo pipefail
+          if [ -x llvm-host-build/bin/llvm-tblgen ] && [ -x llvm-host-build/bin/clang-tblgen ]; then
+            echo "host TableGen tools already cached"
+            exit 0
+          fi
           cmake -S llvm-project/llvm -B llvm-host-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_PROJECTS="clang" \
@@ -48,6 +169,22 @@ jobs:
             -DLLVM_ENABLE_CURL=OFF
           ninja -C llvm-host-build llvm-tblgen clang-tblgen
 
+      - name: Build native cmark
+        if: ${{ inputs.with_swift }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -x cmark-host-build/src/cmark-gfm ]; then
+            echo "native cmark already cached"
+            exit 0
+          fi
+          cmake -S swift-cmark -B cmark-host-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMARK_TESTS=OFF
+          cmake --build cmark-host-build --target cmark-gfm
+          mkdir -p cmark-host-build/src
+          ln -sf cmark-host-build/src/cmark-gfm cmark-host-build/src/cmark
+
       - name: Configure LLVM for iPhoneOS arm64
         shell: bash
         run: |
@@ -59,11 +196,11 @@ jobs:
             -DCMAKE_MACOSX_BUNDLE=OFF \
             -DCMAKE_OSX_SYSROOT="$SDK" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
-            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios17.0 \
-            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios17.0 \
-            -DLLVM_HOST_TRIPLE=arm64-apple-ios17.0 \
-            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios17.0 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_HOST_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
             -DLLVM_NATIVE_TOOL_DIR="$PWD/llvm-host-build/bin" \
             -DLLVM_ENABLE_PROJECTS="clang;lld" \
             -DLLVM_TARGETS_TO_BUILD=AArch64 \
@@ -85,6 +222,7 @@ jobs:
             -DLLD_BUILD_TOOLS=OFF
 
       - name: Build Clang and Mach-O LLD libraries
+        if: ${{ !inputs.configure_only }}
         run: |
           set -euxo pipefail
           ninja -C llvm-build \
@@ -101,27 +239,138 @@ jobs:
             lldMachO \
             lldCommon
 
+      # The step this workflow exists for. Everything above is shared with the
+      # LLVM-only bundle; everything below only happens when Swift is asked for.
+      - name: Configure the Swift frontend for iPhoneOS
+        if: ${{ inputs.with_swift }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          HOST_SWIFT_BIN="$(dirname "$(xcrun -f swiftc)")"
+
+          cmake -S swift -B swift-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_MACOSX_BUNDLE=OFF \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_Swift_COMPILER="$(xcrun -f swiftc)" \
+            -DCMAKE_Swift_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_DIR="$PWD/llvm-build/lib/cmake/llvm" \
+            -DClang_DIR="$PWD/llvm-build/lib/cmake/clang" \
+            -DLLVM_HOST_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DSWIFT_NATIVE_LLVM_TOOLS_PATH="$PWD/llvm-host-build/bin" \
+            -DSWIFT_NATIVE_CLANG_TOOLS_PATH="$PWD/llvm-host-build/bin" \
+            -DSWIFT_NATIVE_SWIFT_TOOLS_PATH="$HOST_SWIFT_BIN" \
+            -DSWIFT_PATH_TO_CMARK_BUILD="$PWD/cmark-host-build" \
+            -DSWIFT_PATH_TO_CMARK_SOURCE="$PWD/swift-cmark" \
+            -DSWIFT_PATH_TO_STRING_PROCESSING_SOURCE="$PWD/swift-experimental-string-processing" \
+            -DSWIFT_PATH_TO_SWIFT_SYNTAX_SOURCE="$PWD/swift-syntax" \
+            -DSWIFT_HOST_VARIANT=iphoneos \
+            -DSWIFT_HOST_VARIANT_SDK=IOS \
+            -DSWIFT_HOST_VARIANT_ARCH=arm64 \
+            -DSWIFT_DARWIN_DEPLOYMENT_VERSION_IOS="$IOS_DEPLOYMENT_TARGET" \
+            -DSWIFT_BUILD_DYNAMIC_STDLIB=OFF \
+            -DSWIFT_BUILD_STATIC_STDLIB=OFF \
+            -DSWIFT_BUILD_DYNAMIC_SDK_OVERLAY=OFF \
+            -DSWIFT_BUILD_STATIC_SDK_OVERLAY=OFF \
+            -DSWIFT_BUILD_STDLIB_EXTRA_TOOLCHAIN_CONTENT=OFF \
+            -DSWIFT_BUILD_SOURCEKIT=OFF \
+            -DSWIFT_BUILD_SWIFT_SYNTAX=OFF \
+            -DSWIFT_BUILD_REMOTE_MIRROR=OFF \
+            -DSWIFT_BUILD_PERF_TESTSUITE=OFF \
+            -DSWIFT_INCLUDE_TESTS=OFF \
+            -DSWIFT_INCLUDE_DOCS=OFF \
+            -DSWIFT_INSTALL_COMPONENTS=
+
+          # Proof that the configure produced what the app will link, before the
+          # hours of building.
+          test -f swift-build/lib/swift/host/libswiftFrontendTool.a \
+            || test -f swift-build/lib/libswiftFrontendTool.a \
+            || echo "::warning::swiftFrontendTool archive not found where expected; listing swift-build/lib"
+          ls -la swift-build/lib | head -40 || true
+
+      - name: Build the Swift frontend libraries
+        if: ${{ inputs.with_swift && !inputs.configure_only }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # The static library holding `swift::performFrontend`. Its transitive
+          # dependencies (swiftAST, swiftSema, the SIL and IRGen libraries, the
+          # Clang importer and Swift's own Clang/LLVM) come along with it; the
+          # swift/driver executable libraries are deliberately not built, because
+          # nothing on the device runs a driver.
+          ninja -C swift-build swiftFrontendTool
+
+      - name: Verify the Swift frontend
+        if: ${{ inputs.with_swift && !inputs.configure_only }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          find swift-build/lib -maxdepth 3 -type f -name 'libswift*.a' | sort > /tmp/swift-archives.txt
+          test -s /tmp/swift-archives.txt || { echo "::error::no Swift libraries were produced"; exit 1; }
+          echo "Swift archives: $(wc -l < /tmp/swift-archives.txt)"
+
+          # The symbol the app's bridge calls. Without it the bundle would look
+          # complete and only fail when the app links, on a device.
+          found=""
+          while IFS= read -r library; do
+            archs="$(lipo -archs "$library" 2>/dev/null || true)"
+            case " $archs " in
+              *" arm64 "*) ;;
+              *) echo "::error::$library is not arm64 ($archs)"; exit 1 ;;
+            esac
+            if [ -z "$found" ] && nm -gU "$library" 2>/dev/null | grep -q 'performFrontend'; then
+              found="$library"
+            fi
+          done < /tmp/swift-archives.txt
+          test -n "$found" || { echo "::error::no Swift library exports performFrontend"; exit 1; }
+          echo "performFrontend is in $found"
+
       - name: Compile-check XForge bridge against LLVM headers
         shell: bash
         run: |
           set -euxo pipefail
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          EXTRA_DEFINES=()
+          EXTRA_INCLUDES=()
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            # Exercises the Swift half of the bridge: with the define and the
+            # headers present, NativeToolchainBridge.mm compiles the code path
+            # that calls swift::performFrontend instead of the stub.
+            EXTRA_DEFINES+=(-DXFORGE_HAS_SWIFT_FRONTEND=1)
+            EXTRA_INCLUDES+=(-I swift/include)
+            if [ -d swift-build/include ]; then
+              EXTRA_INCLUDES+=(-I swift-build/include)
+            fi
+            if [ -d swift-build/tools/swift/include ]; then
+              EXTRA_INCLUDES+=(-I swift-build/tools/swift/include)
+            fi
+          fi
           xcrun --sdk iphoneos clang++ \
             -std=c++20 \
             -arch arm64 \
-            -miphoneos-version-min=17.0 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
             -isysroot "$SDK" \
             -DXFORGE_HAS_LLVM=1 \
+            "${EXTRA_DEFINES[@]}" \
             -I llvm-project/llvm/include \
             -I llvm-build/include \
             -I llvm-project/clang/include \
             -I llvm-build/tools/clang/include \
             -I llvm-project/lld/include \
+            "${EXTRA_INCLUDES[@]}" \
             -I App/NativeToolchain \
             -c App/NativeToolchain/NativeToolchainBridge.mm \
             -o /tmp/NativeToolchainBridge.o
 
       - name: Stage native toolchain SDK
+        if: ${{ !inputs.configure_only }}
         shell: bash
         run: |
           set -euxo pipefail
@@ -134,15 +383,29 @@ jobs:
           fi
           cp -R llvm-project/lld/include/lld dist/include/
 
-          # Flatten the static dependency graph into one archive. XForge then
-          # links a single library instead of depending on LLVM's internal
-          # archive ordering.
-          find llvm-build/lib -maxdepth 1 -type f -name '*.a' -print | sort > /tmp/llvm-archives.txt
-          test -s /tmp/llvm-archives.txt
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            cp -R swift/include/swift dist/include/
+            if [ -d swift-build/include/swift ]; then
+              cp -R swift-build/include/swift dist/include/
+            fi
+            if [ -d swift-build/tools/swift/include/swift ]; then
+              cp -R swift-build/tools/swift/include/swift dist/include/
+            fi
+          fi
+
+          # Flatten the static dependency graph — LLVM's, Clang's, LLD's and (when
+          # built) Swift's — into one archive. XForge then links a single library
+          # instead of depending on archive ordering, and a Swift frontend that
+          # links an LLVM built in the same configuration cannot drift from it.
+          find llvm-build/lib -maxdepth 1 -type f -name '*.a' -print | sort > /tmp/archives.txt
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            find swift-build/lib -maxdepth 3 -type f -name '*.a' -print | sort >> /tmp/archives.txt
+          fi
+          test -s /tmp/archives.txt
           ARCHIVES=()
           while IFS= read -r archive; do
             ARCHIVES+=("$archive")
-          done < /tmp/llvm-archives.txt
+          done < /tmp/archives.txt
           /usr/bin/libtool -static -o dist/lib/libXForgeNativeToolchain.a "${ARCHIVES[@]}"
 
           cat > /tmp/native_link_smoke.mm <<'EOF'
@@ -156,7 +419,7 @@ jobs:
           xcrun --sdk iphoneos clang++ \
             -std=c++20 \
             -arch arm64 \
-            -miphoneos-version-min=17.0 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
             -isysroot "$SDK" \
             -I App/NativeToolchain \
             -c /tmp/native_link_smoke.mm \
@@ -164,14 +427,19 @@ jobs:
 
           xcrun --sdk iphoneos clang++ \
             -arch arm64 \
-            -miphoneos-version-min=17.0 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
             -isysroot "$SDK" \
             /tmp/native_link_smoke.o \
             /tmp/NativeToolchainBridge.o \
             dist/lib/libXForgeNativeToolchain.a \
             -lc++ -lz -liconv -lsqlite3 \
             -framework Foundation \
-            -o /tmp/XForgeNativeToolchainSmoke
+            -o /tmp/XForgeNativeToolchainSmoke \
+            2> /tmp/native-link-errors.txt || {
+              echo "::error::linking the toolchain into an app-shaped target failed"
+              tail -60 /tmp/native-link-errors.txt
+              exit 1
+            }
 
           file /tmp/XForgeNativeToolchainSmoke
           file /tmp/NativeToolchainBridge.o
@@ -179,14 +447,17 @@ jobs:
 
           cat > dist/manifest.txt <<EOF
           target=arm64-apple-ios
-          deployment_target=17.0
+          deployment_target=$IOS_DEPLOYMENT_TARGET
           llvm_commit=$(git -C llvm-project rev-parse HEAD)
+          swift_frontend=${{ inputs.with_swift && '1' || '0' }}
+          swift_ref=${{ inputs.with_swift && env.SWIFT_REF || 'none' }}
           built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           archive=lib/libXForgeNativeToolchain.a
           EOF
           tar -C dist -czf XForgeNativeToolchain-arm64-ios.tar.gz .
 
       - name: Upload native toolchain artifact
+        if: ${{ !inputs.configure_only }}
         uses: actions/upload-artifact@v4
         with:
           name: XForgeNativeToolchain-arm64-ios
