@@ -21,7 +21,14 @@ No Linux rootfs, `fork`, `exec`, `posix_spawn`, or remote build host is required
 - Stub behavior when the LLVM bundle is not linked, so normal XForge builds remain
   buildable while the native toolchain artifact is being produced.
 - `.github/workflows/native-toolchain.yml`: builds the iOS-hosted LLVM/Clang/LLD
-  libraries on a macOS GitHub runner.
+  libraries on a macOS GitHub runner and uploads them as
+  `XForgeNativeToolchain-arm64-ios.tar.gz`.
+- `NativeToolchain/install-bundle.sh <archive>`: unpacks that artifact into
+  `Vendor/NativeToolchain` and runs `NativeToolchain/prepare-xcode.sh`, which writes
+  `Support/NativeToolchain.generated.xcconfig` — the file the app target consumes
+  (checked in with the backend disabled, so an ordinary clone builds without it).
+  `build-ipa.yml` runs `prepare-xcode.sh` too, so CI never depends on the bundle
+  being installed locally.
 
 The existing Alpine executor is intentionally retained as a fallback until the native
 backend can compile Swift and package a complete app.

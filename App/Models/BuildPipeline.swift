@@ -33,14 +33,6 @@ enum BuildStageState: Equatable {
     case failed
 }
 
-/// Everything needed to produce one `.ipa`.
-struct BuildRequest {
-    var project: Project
-    var configuration: BuildConfiguration
-    var appInfo: AppInfo
-    var identity: SigningIdentity?
-}
-
 /// A snapshot of the pipeline for the UI.
 struct PipelineSnapshot: Equatable {
     var stages: [BuildStage: BuildStageState] = [:]

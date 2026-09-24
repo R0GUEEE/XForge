@@ -53,14 +53,26 @@ program*, so a slimmed toolchain fails the build rather than a user's first buil
 ```
 App/                    SwiftUI app — project editing, build pipeline, signing
 App/EmbeddedVM/         ish-arm64 bridge: ISHEmulator, C shim, rootfs unpack
-App/Build/              BuildExecutor protocol + EmbeddedLinuxExecutor
-Vendor/ish-arm64/         git submodule: the embedded Linux engine
+App/Build/              BuildExecutor protocol + EmbeddedLinuxExecutor, IPABuilder
+App/Models/             pipeline, history, project store, XcodeProject (reads .xcodeproj)
+App/NativeToolchain/    in-process Clang/LLD bridge + host-side Darwin SDK store
+App/Services/           auth/signing/device seams, downloads, toolchain components
+App/Views/              screens: Projects, Build, Toolchain, Terminal, Settings
+Vendor/ish-arm64/       git submodule: the embedded Linux engine
+Vendor/NativeToolchain/ where an installed LLVM/Clang bundle goes (empty by default)
 EmbeddedLinux/          build-rootfs.sh, build-ish-core.sh, install-toolchain.sh
-Support/                Info.plist, entitlements, Resources/ (bundled rootfs)
+NativeToolchain/        prepare-xcode.sh (wires a vendor bundle into the project)
+Support/                entitlements, assets, Resources/ (bundled rootfs)
+Tools/                  gen-appicon.py, the engine smoke harness, rootfs test
 project.yml             XcodeGen definition
-.github/workflows/      build-ipa.yml (IPA), build-rootfs.yml (the pinned root)
-Docs/DESIGN.md          full architecture write-up
+.github/workflows/      build-ipa.yml (the IPA), build-rootfs.yml (the pinned root),
+                        native-toolchain.yml (the iOS LLVM cross-build)
+Docs/DESIGN.md                  full architecture write-up
 Docs/ISH-ARM64-INTEGRATION.md   the engine integration vs. its reference implementation
+Docs/IPA-BUILD.md               the build pipeline and its stages
+Docs/XCODE-ALTERNATIVE.md       what building existing Xcode projects on-device takes
+Docs/NATIVE-TOOLCHAIN.md        the in-process LLVM/Clang/LLD path
+CHANGELOG.md            what changed, release by release
 ```
 
 ## App information

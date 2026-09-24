@@ -9,6 +9,8 @@ XForge.xcodeproj/
 # SwiftPM
 .build/
 .swiftpm/
+# Where build-ipa.yml clones package checkouts (`clonedSourcePackagesDirPath`).
+.spm/
 
 # macOS
 .DS_Store

@@ -49,22 +49,33 @@ The current build exports an unsigned `.ipa`, which must be signed by Xcode,
 SideStore/AltStore, or another signing service before installation. XKit-based
 Apple ID authentication and signing are planned but are not wired into this build.
 
-## 5. BuildRequest / BuildResult
+## 5. The pipeline's own types
+
+`BuildManager` owns one run and publishes a `PipelineSnapshot` for the UI
+(`App/Models/BuildPipeline.swift`):
 
 ```swift
-struct BuildRequest {
-    var project: Project
-    var configuration: BuildConfiguration     // debug | release
-    var appInfo: AppInfo                      // bundle id, display name, version…
-    var identity: SigningIdentity?            // nil → ad-hoc
+enum BuildStage: String, CaseIterable {
+    case provision, sdk, configure, resolve, compile, package, artifact
 }
+enum BuildStageState: Equatable { case pending, running, succeeded, failed }
 
-struct BuildResult {
-    let ipaURL: URL
-    let stages: [BuildStageOutcome]           // per-stage timing/success
-    let buildNumber: Int
+struct PipelineSnapshot: Equatable {
+    var stages: [BuildStage: BuildStageState]
+    var consoleText: String
+    var isRunning: Bool
+    var lastIpa: URL?
+    var error: String?
 }
 ```
+
+Each stage is a method on `BuildManager` run in order (`provision` → `ensureSDK` →
+`configure` → `resolve` → `compile` → `package` → `stageArtifact`), and each one stops
+the pipeline on failure. `BuildExecutor` (`App/Models/Project.swift`) is the seam to the
+VM: `bootstrap()`, `createProject`, `installSDK`, `resolve` and `build` all return an
+`AsyncThrowingStream<BuildEvent, Error>`, which `BuildManager.consume` folds into the
+snapshot. Packaging is a single host-side call:
+`IPABuilder.buildIPA(appBundle:appInfo:outputDir:)`.
 
 ## 6. Failure handling
 
@@ -80,17 +91,26 @@ struct BuildResult {
 - `IPABuilder` unit tests build a fake `.app` fixture in the test bundle and assert the
   produced `.ipa` contains `Payload/<Name>.app/Info.plist` with the right values and is
   a valid zip.
-- `BuildManager` transitions are testable by stubbing `BuildExecutor` to succeed/fail
-  at each stage.
+- `XcodeProjectTests` covers the `.xcodeproj` reader against an embedded project file.
+- `ReleaseResolutionTests` drives `ToolchainManager` and `XForgeReleases` through a
+  stubbed `LinuxVM`/`ShellSession`, so SDK resolution is testable without the VM.
 
 ## 8. Files
 
 ```
 Docs/IPA-BUILD.md                     this design
-App/Models/BuildPipeline.swift        BuildStage, BuildRequest, BuildResult, BuildEvent
-App/Build/IPABuilder.swift            host-side packaging (Payload, Info.plist, zip)
-App/Services/SigningService.swift     signing abstraction (integration pending)
+App/Models/BuildPipeline.swift        BuildStage, BuildStageState, PipelineSnapshot
+App/Models/Project.swift              BuildExecutor protocol, BuildEvent
 App/Build/BuildManager.swift          orchestrator / state machine
+App/Build/IPABuilder.swift            host-side packaging (Payload, Info.plist, zip)
+App/Build/EmbeddedLinuxExecutor.swift the VM-backed BuildExecutor
+App/Models/BuildHistoryStore.swift    run history for the History screen
+App/Services/SigningService.swift     signing abstraction (integration pending)
 AppTests/IPABuilderTests.swift        packaging unit tests
-App/Views/Build/*                     UI driven by BuildManager.stages
+App/Views/Build/*                     UI driven by BuildManager.snapshot
 ```
+
+Docs that go with this one: `Docs/DESIGN.md` (the whole app),
+`Docs/XCODE-ALTERNATIVE.md` (building existing Xcode projects on-device),
+`Docs/NATIVE-TOOLCHAIN.md` (the in-process LLVM path) and
+`Docs/ISH-ARM64-INTEGRATION.md` (the embedded Linux engine).
