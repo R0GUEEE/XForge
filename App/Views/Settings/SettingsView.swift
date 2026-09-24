@@ -15,9 +15,6 @@ struct SettingsView: View {
                 NavigationLink { ToolchainView() } label: {
                     Label("Toolchain & SDK", systemImage: "wrench.and.screwdriver")
                 }
-                NavigationLink { NativeToolchainView() } label: {
-                    Label("Native Compiler", systemImage: "cpu")
-                }
                 NavigationLink {
                     SandboxBrowserView(root: XForgeEnvironment.documentDirectory)
                 } label: {

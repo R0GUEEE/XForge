@@ -1,10 +1,7 @@
-.PHONY: bootstrap toolchain icon gen build test ipa clean
+.PHONY: toolchain icon gen build test ipa clean
 
 XCODE := xcodebuild
 SCHEME := XForge
-
-## Everything needed to build locally, in order.
-bootstrap: toolchain gen
 
 ## Install the native toolchain bundle into Vendor/NativeToolchain.
 ##

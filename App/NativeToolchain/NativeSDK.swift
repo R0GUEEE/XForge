@@ -53,9 +53,10 @@ enum NativeSDKError: LocalizedError {
     }
 }
 
-/// Reads the same swift-sdk.json layout that xtool's Darwin SDK builder emits,
-/// but resolves it directly from the iOS app sandbox rather than through SwiftPM
-/// in the Alpine guest.
+/// Reads the same `swift-sdk.json` layout that xtool's Darwin SDK builder emits,
+/// but resolves it directly from the app's container: SwiftPM's SDK store is a
+/// directory inside a toolchain installation, and there is no installation here —
+/// the bundle is a folder the app downloaded and unpacked itself.
 enum NativeSDK {
     static var installedBundle: URL {
         XForgeEnvironment.nativeSDKDirectory

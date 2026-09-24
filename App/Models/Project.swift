@@ -20,9 +20,10 @@ struct Project: Identifiable, Hashable, Codable {
 
     /// The project directory in XForge's own container.
     ///
-    /// Derived from `name` rather than stored. `rootPath` is the guest path this
-    /// model was designed around, and two stored locations for one project is how
-    /// a build ends up reading a directory nobody created.
+    /// Derived from `name` rather than stored: `rootPath` is the string this model
+    /// carries around for display and for the safety check, and two stored
+    /// locations for one project is how a build ends up reading a directory nobody
+    /// created.
     var rootURL: URL {
         XForgeEnvironment.projectsDirectory.appendingPathComponent(name, isDirectory: true)
     }
