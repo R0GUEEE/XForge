@@ -194,11 +194,16 @@ jobs:
             exit 0
           fi
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          # CMAKE_SYSTEM_NAME=Darwin, not iOS, for the same reason the Swift
+          # configure uses it: on iOS CMake refuses \`install(TARGETS ...)\` for an
+          # executable without a BUNDLE destination, and cmark installs its
+          # command-line tool. The target is still iOS — sysroot, architecture and
+          # compiler target below say so — and nothing is installed here anyway.
           cmake -S swift-cmark -B cmark-ios-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMARK_TESTS=OFF \
             -DCMARK_SHARED=OFF \
-            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_NAME=Darwin \
             -DCMAKE_OSX_SYSROOT="$SDK" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
