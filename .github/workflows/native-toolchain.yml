@@ -59,11 +59,11 @@ jobs:
             -DCMAKE_MACOSX_BUNDLE=OFF \
             -DCMAKE_OSX_SYSROOT="$SDK" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
-            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios16.0 \
-            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios16.0 \
-            -DLLVM_HOST_TRIPLE=arm64-apple-ios16.0 \
-            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios16.0 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios17.0 \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios17.0 \
+            -DLLVM_HOST_TRIPLE=arm64-apple-ios17.0 \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios17.0 \
             -DLLVM_NATIVE_TOOL_DIR="$PWD/llvm-host-build/bin" \
             -DLLVM_ENABLE_PROJECTS="clang;lld" \
             -DLLVM_TARGETS_TO_BUILD=AArch64 \
@@ -109,7 +109,7 @@ jobs:
           xcrun --sdk iphoneos clang++ \
             -std=c++20 \
             -arch arm64 \
-            -miphoneos-version-min=16.0 \
+            -miphoneos-version-min=17.0 \
             -isysroot "$SDK" \
             -DXFORGE_HAS_LLVM=1 \
             -I llvm-project/llvm/include \
@@ -156,7 +156,7 @@ jobs:
           xcrun --sdk iphoneos clang++ \
             -std=c++20 \
             -arch arm64 \
-            -miphoneos-version-min=16.0 \
+            -miphoneos-version-min=17.0 \
             -isysroot "$SDK" \
             -I App/NativeToolchain \
             -c /tmp/native_link_smoke.mm \
@@ -164,7 +164,7 @@ jobs:
 
           xcrun --sdk iphoneos clang++ \
             -arch arm64 \
-            -miphoneos-version-min=16.0 \
+            -miphoneos-version-min=17.0 \
             -isysroot "$SDK" \
             /tmp/native_link_smoke.o \
             /tmp/NativeToolchainBridge.o \
@@ -179,7 +179,7 @@ jobs:
 
           cat > dist/manifest.txt <<EOF
           target=arm64-apple-ios
-          deployment_target=16.0
+          deployment_target=17.0
           llvm_commit=$(git -C llvm-project rev-parse HEAD)
           built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           archive=lib/libXForgeNativeToolchain.a

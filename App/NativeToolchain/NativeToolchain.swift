@@ -47,7 +47,7 @@ enum NativeToolchain {
         source: URL,
         object: URL,
         sdk: URL,
-        target: String = "arm64-apple-ios16.0.0",
+        target: String = "arm64-apple-ios17.0.0",
         language: String = "c"
     ) throws -> NativeToolchainResult {
         guard isAvailable else { throw NativeToolchainError.unavailable }
@@ -89,7 +89,7 @@ enum NativeToolchain {
         source: URL,
         object: URL,
         sdk: NativeSDKLayout,
-        target: String = "arm64-apple-ios16.0.0",
+        target: String = "arm64-apple-ios17.0.0",
         moduleName: String = "XForgeModule"
     ) throws -> NativeToolchainResult {
         guard isSwiftAvailable else { throw NativeToolchainError.unavailable }

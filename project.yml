@@ -1,8 +1,10 @@
 name: XForge
 options:
   bundleIdPrefix: com.r0gueee
+  # iOS 17 is the floor: XKit (xtool's on-device signing/install library) declares
+  # .iOS(.v17), and the native Xcode-project model (XcodeProj) the same.
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
 
