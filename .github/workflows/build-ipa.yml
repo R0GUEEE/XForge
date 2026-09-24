@@ -23,6 +23,10 @@ on:
         description: Run simulator unit tests before archiving
         type: boolean
         default: false
+      with_toolchain:
+        description: Download the native toolchain artifact and link it into the app
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -66,6 +70,24 @@ jobs:
           {
             echo "value=$(xcodebuild -version | tr '\n' ' ')-$(clang --version | head -n 1)"
           } >> "$GITHUB_OUTPUT"
+
+      # The build that proves the compiler really is in the app: the bundle is
+      # installed where the generated xcconfig points, so the bridge compiles with
+      # XFORGE_HAS_LLVM / XFORGE_HAS_SWIFT_FRONTEND and the app *links* the merged
+      # archive — the step that no other workflow exercises.
+      - name: Install the native toolchain bundle
+        if: ${{ inputs.with_toolchain }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh run download --repo "$GITHUB_REPOSITORY" \
+            --name XForgeNativeToolchain-arm64-ios \
+            --dir .toolchain-artifact
+          bash NativeToolchain/install-bundle.sh \
+            .toolchain-artifact/XForgeNativeToolchain-arm64-ios.tar.gz
+          cat Vendor/NativeToolchain/manifest.txt
+          cat Support/NativeToolchain.generated.xcconfig
 
       - name: Prepare the native toolchain configuration
         run: |
