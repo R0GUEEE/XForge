@@ -20,12 +20,6 @@ enum XForgeLog {
     /// Rotate past this size so the file stays shareable.
     static let maxBytes = 512 * 1024
 
-    private static let timestamp: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
-
     /// Create the log directory and rotate an oversized log.
     ///
     /// Kept as a separate step from `note(_:)` so the directory exists before the
@@ -53,12 +47,24 @@ enum XForgeLog {
         return true
     }
 
+    /// ISO-8601 UTC, built per call.
+    ///
+    /// `ISO8601DateFormatter` is not `Sendable`, so it cannot live in a static
+    /// that `note(_:)` — a nonisolated function — reaches: Swift 6 rejects that
+    /// outright. Constructing one per line costs a few microseconds on a call that
+    /// always writes a file anyway.
+    private static func timestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: Date())
+    }
+
     /// Append one timestamped breadcrumb line.
     ///
     /// Best effort by design: a diagnostic that can fail a build is worse than a
     /// diagnostic that is missing a line.
     static func note(_ line: String) {
-        let entry = "\(timestamp.string(from: Date())) \(line)\n"
+        let entry = "\(Self.timestamp()) \(line)\n"
         let fm = FileManager.default
         if !fm.fileExists(atPath: url.path) {
             _ = prepare()

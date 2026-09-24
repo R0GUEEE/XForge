@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XKit
 
 /// Signing an app bundle with XKit, in this process.
@@ -150,9 +151,14 @@ enum PKCS12Identity {
     }
 
     /// Wrap raw private-key bytes in a PEM envelope.
+    ///
+    /// `SecKeyCopyExternalRepresentation` returns the key in its *natural* form:
+    /// PKCS#1 for RSA. The label therefore says RSA rather than the PKCS#8
+    /// "PRIVATE KEY" — a parser that trusts the label would read PKCS#1 bytes as
+    /// PKCS#8 and fail on the wrapper it expects to find there.
     private static func pem(_ der: Data) -> Data {
         let base64 = der.base64EncodedString(options: [.lineLength64Characters, .endLineWithLineFeed])
-        let text = "-----BEGIN PRIVATE KEY-----\n\(base64)\n-----END PRIVATE KEY-----\n"
+        let text = "-----BEGIN RSA PRIVATE KEY-----\n\(base64)\n-----END RSA PRIVATE KEY-----\n"
         return Data(text.utf8)
     }
 }

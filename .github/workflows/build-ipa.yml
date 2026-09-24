@@ -2,19 +2,11 @@ name: Build XForge IPA
 
 # Builds the unsigned XForge IPA.
 #
-# There is no rootfs-provisioning job here. The Alpine root — including the build
-# toolchain, when the published root carries one — is built once by the `rootfs`
-# workflow, published as a pinned release asset and downloaded here; see
-# EmbeddedLinux/build-rootfs.sh. Provisioning a Swift toolchain into every CI run
-# is what used to make this job slow and its artifact enormous. What arrives now
-# is a fakefs ZIP the app only unzips: a guest that can build an iOS app on first
-# launch, with nothing to install on the device.
-#
-# The engine (OpenMinis/ish-arm64) is built here, on macOS, because it can only
-# be: the aarch64 gadget sources alias registers with `.req` and only clang's
-# integrated assembler accepts that, so a GNU binutils toolchain cannot assemble
-# them at all. `EmbeddedLinux/build-ish-core.sh` probes for the capability and
-# fails with an explanation rather than a wall of assembler errors.
+# There is no guest to provision and no engine to build: the compiler is linked
+# into the app from the toolchain bundle (Vendor/NativeToolchain), which
+# `native-toolchain.yml` builds in its own workflow. A checkout without the bundle
+# still builds — the bridge compiles to a "not available" stub — so the archive
+# here is the app itself, and the Toolchain screen reports what is missing.
 
 on:
   push:
@@ -48,248 +40,32 @@ jobs:
     env:
       APP_PATH: build/XForge.xcarchive/Products/Applications/XForge.app
       DERIVED_DATA_PATH: build/DerivedData
-      ENGINE_ROOT: Vendor/ish-arm64
-      ENGINE_LIB_DIR: Vendor/ish-arm64-build/lib
       # Must match XFORGE_MARKETING_VERSION in project.yml; asserted below so a
       # version bump cannot silently produce a mislabelled release.
       EXPECTED_VERSION: "0.5.0"
-      # The pinned rootfs. Changing this tag is how the bundled Alpine root is
-      # upgraded; `make rootfs` (or the `rootfs` workflow) builds and publishes
-      # a new one. The sha256 is asserted below, so a tag that is moved — or an
-      # upload that was truncated — fails the build instead of shipping silently.
-      #
-      # rootfs-v5 is the *provisioned* root: plain Alpine plus xtool, swiftly, the
-      # Swift toolchain and the Darwin SDK, so the guest can build without first
-      # installing anything. Its manifest says how it was built, and the checks
-      # below hold it to that.
-      ROOTFS_TAG: rootfs-v5
-      ROOTFS_ASSET: alpine-rootfs.zip
       SPM_CLONES_DIR: .spm
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
 
-      - name: Download the pinned Alpine rootfs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          # The same script any other build calls (and that Xcode users run by
-          # hand): it reads the pinned tag from this file, downloads the asset,
-          # verifies the published sha256 and checks it is a fakefs ZIP.
-          bash EmbeddedLinux/fetch-rootfs.sh
-
-      - name: Verify the downloaded rootfs
-        run: |
-          set -euo pipefail
-          cd Support/Resources
-          # Read the checksum file and verify, rather than piping a listing into
-          # grep: `producer | grep -q` closes the pipe early, the producer dies
-          # of SIGPIPE, and under `set -o pipefail` a check that passed then
-          # reports failure.
-          shasum -a 256 -c "$ROOTFS_ASSET.sha256"
-
-          unzip -Z1 "$ROOTFS_ASSET" > /tmp/rootfs-entries.txt
-          grep -q '^alpine-rootfs/meta\.db$' /tmp/rootfs-entries.txt \
-            || { echo '::error::the rootfs archive has no meta.db'; exit 1; }
-          grep -q '^alpine-rootfs/data/$' /tmp/rootfs-entries.txt \
-            || { echo '::error::the rootfs archive has no data/ directory'; exit 1; }
-          grep -q '^alpine-rootfs/data/bin/sh$' /tmp/rootfs-entries.txt \
-            || { echo '::error::the rootfs archive has no /bin/sh'; exit 1; }
-          # SQLite sidecars are transient; the builder excludes them, and a
-          # regression there would put a stale WAL into every install.
-          ! grep -qE '\.db-(wal|shm)$' /tmp/rootfs-entries.txt
-
-          # The glibc compatibility layer must be in the root *and indexed in
-          # meta.db*: it is installed before the fakefs conversion precisely so
-          # the engine can resolve it. Checking the ZIP listing alone would pass
-          # for a root where the files exist on disk but the database has no rows
-          # for them, which the guest reads as "not there at all".
-          grep -q '^alpine-rootfs/data/opt/glibc/usr/lib/aarch64-linux-gnu/ld-linux-aarch64\.so\.1$' \
-            /tmp/rootfs-entries.txt \
-            || { echo '::error::the rootfs has no glibc layer'; exit 1; }
-          grep -q '^alpine-rootfs/data/usr/local/share/xforge/glibc\.env$' \
-            /tmp/rootfs-entries.txt \
-            || { echo '::error::the rootfs has no glibc.env marker'; exit 1; }
-          unzip -p "$ROOTFS_ASSET" alpine-rootfs/meta.db > /tmp/rootfs-meta.db
-          indexed="$(sqlite3 /tmp/rootfs-meta.db \
-            "SELECT COUNT(*) FROM paths WHERE CAST(path AS TEXT) LIKE '%aarch64-linux-gnu%';")"
-          [ "${indexed:-0}" -gt 0 ] \
-            || { echo "::error::the glibc layer is not indexed in meta.db ($indexed paths)"; exit 1; }
-          echo "glibc layers paths indexed: $indexed"
-
-          # The guest boots /sbin/init, which reads /etc/inittab and respawns
-          # /sbin/xforge-login root on the console — the script that starts root's
-          # login shell in /etc/passwd. That is the whole Terminal tab, and the
-          # shell it names is part of the root's contract, so both are checked
-          # here: a root pinned to a tag that predates them fails the build
-          # instead of shipping a terminal that cannot start a shell.
-          unzip -p "$ROOTFS_ASSET" alpine-rootfs/data/etc/inittab > /tmp/rootfs-inittab.txt
-          grep -qE '^tty1::respawn:/sbin/xforge-login root$' /tmp/rootfs-inittab.txt \
-            || { echo '::error::the rootfs does not respawn xforge-login on the console'; exit 1; }
-          unzip -p "$ROOTFS_ASSET" alpine-rootfs/data/usr/local/share/xforge/rootfs-manifest.txt \
-            > /tmp/rootfs-manifest.txt
-          ROOTFS_SHELL="$(awk '/^[[:space:]]*shell:/ { print $2 }' /tmp/rootfs-manifest.txt)"
-          [ -n "$ROOTFS_SHELL" ] \
-            || { echo '::error::the rootfs manifest does not name a login shell'; exit 1; }
-          unzip -Z1 "$ROOTFS_ASSET" > /tmp/rootfs-files.txt
-          for path in \
-            alpine-rootfs/data/sbin/init \
-            alpine-rootfs/data/bin/login \
-            alpine-rootfs/data/etc/inittab \
-            alpine-rootfs/data/etc/init.d/rcS \
-            alpine-rootfs/data/sbin/xforge-login \
-            "alpine-rootfs/data${ROOTFS_SHELL}" \
-            alpine-rootfs/data/usr/share/terminfo/x/xterm-256color ; do
-            grep -qx "$path" /tmp/rootfs-files.txt \
-              || { echo "::error::the rootfs has no ${path#alpine-rootfs/data}"; exit 1; }
-          done
-          echo "console: /sbin/xforge-login root → $ROOTFS_SHELL"
-
-          # The root's own manifest also says whether the build toolchain is baked
-          # in, and this is the other half of what the root is for: a guest that
-          # can build an iOS app without installing anything first. The checks are
-          # held to the manifest's claim, so the *plain* root still passes and a
-          # provisioned root that lost its toolchain does not — and the SDK is
-          # checked through meta.db as well as the listing, because a file the
-          # engine cannot see is a file the guest does not have.
-          TOOLCHAIN_CLAIM="$(awk '/^[[:space:]]*toolchain:/ { sub(/^[[:space:]]*toolchain:[[:space:]]*/, ""); print; exit }' /tmp/rootfs-manifest.txt)"
-          echo "toolchain: ${TOOLCHAIN_CLAIM:-<none stated>}"
-          case "$TOOLCHAIN_CLAIM" in
-            ""|"not provisioned"*)
-              echo "::error::the pinned rootfs ($ROOTFS_TAG) ships no build toolchain —
-          the guest would have to install Swift and xtool itself on the device. Bump
-          ROOTFS_TAG to a provisioned root, or say so deliberately here."
-              exit 1
-              ;;
-            *)
-              for path in \
-                alpine-rootfs/data/usr/local/bin/xtool \
-                alpine-rootfs/data/usr/local/bin/swift \
-                alpine-rootfs/data/usr/local/bin/swiftc \
-                alpine-rootfs/data/usr/local/bin/swiftly \
-                alpine-rootfs/data/opt/xtool/usr/bin/xtool ; do
-                grep -qx "$path" /tmp/rootfs-entries.txt \
-                  || { echo "::error::the rootfs claims a toolchain but has no ${path#alpine-rootfs/data}"; exit 1; }
-              done
-              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/bin/swift-frontend$' \
-                /tmp/rootfs-entries.txt \
-                || { echo '::error::the rootfs has no Swift toolchain'; exit 1; }
-              # By shape, and *unanchored* at the end, for two reasons that each
-              # cost a build: Swift 6.4 ships linux and linux-musl variants, so
-              # naming one exact directory fails a good root; and a `.swiftmodule`
-              # is a *directory* in Swift 6, whose entry ends in a slash — a
-              # pattern anchored with `$` finds nothing. verify-rootfs.sh asks the
-              # same two questions the same way.
-              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/libswiftCore\.so' \
-                /tmp/rootfs-entries.txt \
-                || { echo '::error::the Swift toolchain has no Linux stdlib'; exit 1; }
-              grep -qE '^alpine-rootfs/data/root/\.local/share/swiftly/toolchains/[^/]+/usr/lib/swift/.*/Swift\.swiftmodule' \
-                /tmp/rootfs-entries.txt \
-                || { echo '::error::the Swift toolchain has no Linux stdlib interface'; exit 1; }
-
-              SDK_PATH="$(awk '/^[[:space:]]*darwin-sdk-path:/ { print $2; exit }' /tmp/rootfs-manifest.txt)"
-              [ -n "$SDK_PATH" ] \
-                || { echo '::error::the rootfs claims a toolchain but names no Darwin SDK path'; exit 1; }
-              grep -qE "^alpine-rootfs/data${SDK_PATH}/" /tmp/rootfs-entries.txt \
-                || { echo "::error::the rootfs has no Darwin SDK at $SDK_PATH"; exit 1; }
-              sdk_indexed="$(sqlite3 /tmp/rootfs-meta.db \
-                "SELECT COUNT(*) FROM paths WHERE CAST(path AS TEXT) LIKE '${SDK_PATH%/}/%';")"
-              [ "${sdk_indexed:-0}" -gt 0 ] \
-                || { echo "::error::the Darwin SDK is in the zip but not indexed in meta.db ($sdk_indexed paths)"; exit 1; }
-              echo "toolchain: xtool, swift, and the Darwin SDK at $SDK_PATH ($sdk_indexed indexed paths)"
-              ;;
-          esac
-
-          echo "rootfs: $(du -h "$ROOTFS_ASSET" | cut -f1), $(wc -l < /tmp/rootfs-entries.txt) entries"
-
-      - name: Check out the embedded Linux engine
-        run: |
-          set -euo pipefail
-          git submodule update --init --depth 1 "$ENGINE_ROOT"
-          # The engine's own submodules are deliberately skipped: deps/libarchive
-          # and deps/libapps feed tools this app does not link, and deps/linux is
-          # only used with -Dkernel=linux, which XForge does not build.
-          git -C "$ENGINE_ROOT" log --oneline -1
-
       - name: Install the build tools
         run: |
           set -euo pipefail
-          # xcodegen generates the Xcode project from project.yml; meson/ninja
-          # build the engine. libarchive is not needed at all: the app unpacks the
-          # fakefs ZIP with ZIPFoundation instead of importing an archive.
-          # llvm/lld provide the aarch64-linux cross-compiler the guest VDSO
-          # needs (`clang -target aarch64-linux-gnu -fuse-ld=lld`) — Apple's
-          # clang cannot link that. shellcheck validates the pinned zsign
-          # installer, hence it is installed with the build tools.
-          required=(xcodegen meson ninja llvm lld shellcheck)
-          missing=()
-          for formula in "${required[@]}"; do
-            if ! brew list --versions "$formula" >/dev/null 2>&1; then
-              missing+=("$formula")
-            fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            brew install "${missing[@]}"
+          # xcodegen generates the Xcode project from project.yml. Nothing else is
+          # needed: the compiler comes from the toolchain bundle, and the app
+          # unpacks archives with ZIPFoundation.
+          if ! brew list --versions xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
           else
             echo "Homebrew tools already installed"
           fi
-
-      - name: Identify engine cache inputs
-        id: engine-revision
-        run: echo "value=$(git -C "$ENGINE_ROOT" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Identify the iOS compiler toolchain
         id: toolchain-versions
         run: |
           {
-            echo "value=$(xcodebuild -version | tr '\n' ' ')-$(clang --version | head -n 1)-$(meson --version)"
+            echo "value=$(xcodebuild -version | tr '\n' ' ')-$(clang --version | head -n 1)"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Cache the embedded Linux engine
-        id: engine-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.ENGINE_LIB_DIR }}
-          key: ${{ runner.os }}-${{ runner.arch }}-engine-${{ hashFiles('.gitmodules', 'EmbeddedLinux/build-ish-core.sh', 'project.yml') }}-${{ steps.engine-revision.outputs.value }}-${{ steps.toolchain-versions.outputs.value }}
-
-      - name: Build the embedded Linux engine (ish-arm64, iOS arm64)
-        if: steps.engine-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euo pipefail
-          bash EmbeddedLinux/build-ish-core.sh
-          # Prove the engine is really there before spending 20 minutes on an
-          # archive that would fail to link.
-          for lib in libish.a libish_emu.a libfakefs.a; do
-            test -f "$ENGINE_LIB_DIR/$lib" \
-              || { echo "::error::the engine build did not produce $lib"; exit 1; }
-          done
-          # The arm64 backend must be the one that was built: app and engine
-          # share struct layouts, so the wrong guest arch links but misbehaves.
-          nm -gU "$ENGINE_LIB_DIR/libish_emu.a" > /tmp/engine-symbols.txt 2>/dev/null || true
-          if grep -qi 'guest_arm64\|gadget' /tmp/engine-symbols.txt; then
-            echo "arm64 gadget backend present in libish_emu.a"
-          else
-            echo "::error::libish_emu.a has no arm64 gadget symbols — wrong guest_arch?"
-            exit 1
-          fi
-
-      - name: Validate the bundled guest tools
-        run: |
-          set -euo pipefail
-          # zsign is built inside Alpine on first use. These two files are the
-          # guest-side installer and the tiny patch that adds -Q/--password-file
-          # to the pinned upstream CLI (so a P12 password never appears in argv).
-          bash -n EmbeddedLinux/install-zsign.sh
-          shellcheck -S error EmbeddedLinux/install-zsign.sh
-          python3 -m py_compile EmbeddedLinux/patch-zsign-password-file.py
-          rm -rf EmbeddedLinux/__pycache__
-          grep -q '^ZSIGN_COMMIT=614caa8d1ca949e260e5746144aa52d27a4b08d6$' \
-            EmbeddedLinux/install-zsign.sh
-          grep -q '^ZSIGN_SHA256=a373dc5ddbf81ba5c435a48c14b4a2857506c3dde02ec62e0136b6968797384b$' \
-            EmbeddedLinux/install-zsign.sh
-          grep -q 'install-zsign.sh' project.yml
-          grep -q 'patch-zsign-password-file.py' project.yml
 
       - name: Prepare the native toolchain configuration
         run: |
@@ -353,51 +129,21 @@ jobs:
             *arm64*) ;;
             *) echo "::error::the app binary is not arm64: $binary_info"; exit 1 ;;
           esac
-          # NOTE: do not try to prove the engine is linked by scanning the app
-          # binary for its symbols. Xcode's Release configuration strips, and on
-          # a stripped binary `nm` reports "no symbols" and finds nothing — so a
-          # symbol check fails for a perfectly good build. The engine's presence
-          # is proven where it can be observed instead: the engine libraries are
-          # asserted after they are built, and the guest is exercised by the
-          # smoke harness. What is worth checking here is that the app is
-          # self-consistent — the rootfs it needs is inside it.
+          # NOTE: do not try to prove the compiler is linked by scanning the app
+          # binary for LLVM symbols. Xcode's Release configuration strips, and on a
+          # stripped binary `nm` reports "no symbols" and finds nothing — so a
+          # symbol check fails for a perfectly good build. What the toolchain can do
+          # is checked where it is observable: the Toolchain screen's smoke test, on
+          # a device.
           size_mb=$(( $(stat -f%z "$APP_PATH/XForge") / 1048576 ))
           echo "app binary: ${binary_info#*: } (${size_mb} MB)"
           test "$size_mb" -gt 1 \
             || { echo '::error::the app binary is implausibly small'; exit 1; }
 
-          # The rootfs must be inside the app, and must be the fakefs ZIP the app
-          # knows how to unpack.
-          ROOTFS="$APP_PATH/alpine-rootfs.zip"
-          test -f "$ROOTFS" \
-            || { echo '::error::the app does not bundle alpine-rootfs.zip'; exit 1; }
-          unzip -Z1 "$ROOTFS" > /tmp/bundled-rootfs.txt
-          grep -q '^alpine-rootfs/meta\.db$' /tmp/bundled-rootfs.txt \
-            || { echo '::error::the bundled rootfs has no meta.db'; exit 1; }
-          grep -q '^alpine-rootfs/data/bin/sh$' /tmp/bundled-rootfs.txt \
-            || { echo '::error::the bundled rootfs has no /bin/sh'; exit 1; }
-
-          # No engine build leftovers in the bundle.
+          # No build leftovers in the bundle.
           strays="$(find "$APP_PATH" \( -name '*.a' -o -name 'meson-*' -o -name 'build.ninja' \) -print -quit)"
           [ -z "$strays" ] \
             || { echo "::error::build leftovers in the app bundle: $strays"; exit 1; }
-
-          # Exactly one rootfs, and it is the one the app reads. This is a real
-          # regression: the app used to bundle a tarball it imported at runtime,
-          # that file stayed committed after the switch to a fakefs ZIP, and the
-          # IPA shipped both — 4 MB of dead weight nothing ever opened.
-          rootfs_files="$(find "$APP_PATH" -maxdepth 1 \
-            \( -name '*.tar.gz' -o -name '*.tar.xz' -o -name 'alpine-rootfs*.zip' \) -print)"
-          count="$(printf '%s\n' "$rootfs_files" | grep -c . || true)"
-          [ "$count" = "1" ] || {
-            echo "::error::expected exactly one rootfs in the bundle, found $count:"
-            printf '  %s\n' $rootfs_files
-            exit 1
-          }
-          case "$rootfs_files" in
-            */alpine-rootfs.zip) ;;
-            *) echo "::error::the bundled rootfs is not alpine-rootfs.zip: $rootfs_files"; exit 1 ;;
-          esac
 
           # Identity and the icon wiring that makes the app installable.
           PLIST="$APP_PATH/Info.plist"
@@ -433,9 +179,6 @@ jobs:
             echo '### Built app'
             echo
             echo "- binary: ${binary_info#*: } (${size_mb} MB)"
-            echo "- bundled rootfs: $ROOTFS_TAG ($(du -h "$ROOTFS" | cut -f1))"
-            echo "- guest toolchain: $(unzip -p "$ROOTFS" alpine-rootfs/data/usr/local/share/xforge/rootfs-manifest.txt \
-              | awk '/^[[:space:]]*toolchain:/ { sub(/^[[:space:]]*toolchain:[[:space:]]*/, ""); print; exit }')"
             echo "- version: $(get CFBundleShortVersionString)"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -454,11 +197,9 @@ jobs:
           ditto -c -k --keepParent dist/Payload "$IPA"
           unzip -t "$IPA" >/dev/null
 
-          # The rootfs is the difference between an app that works on first
-          # launch and one that has nothing to boot.
           unzip -Z1 "$IPA" > /tmp/ipa-contents.txt
-          grep -q 'Payload/XForge.app/alpine-rootfs\.zip$' /tmp/ipa-contents.txt \
-            || { echo '::error::the IPA does not contain the rootfs'; exit 1; }
+          grep -q '^Payload/XForge\.app/XForge$' /tmp/ipa-contents.txt \
+            || { echo '::error::the IPA does not contain the app executable'; exit 1; }
 
           # Exactly one IPA, and it is the version the app says it is.
           count="$(find dist -maxdepth 1 -name '*.ipa' | wc -l | tr -d ' ')"
@@ -467,12 +208,11 @@ jobs:
           test -f "$IPA" || { echo "::error::$IPA was not produced"; exit 1; }
 
           echo "IPA: $IPA ($(du -h "$IPA" | cut -f1))"
-          # A provisioned root makes this a ~1.6 GB IPA, and GitHub refuses a
-          # release asset over 2 GiB. Failing here — with the number — is better
-          # than a publish step that errors out after the whole build.
+          # GitHub refuses a release asset over 2 GiB. The app is tens of MB, so
+          # this only catches a runaway bundle — before the publish step does.
           ipa_bytes="$(stat -f%z "$IPA")"
-          if [ "$ipa_bytes" -gt 1900000000 ]; then
-            echo "::error::the IPA is $((ipa_bytes / 1048576)) MB; GitHub refuses a release asset over 2 GiB"
+          if [ "$ipa_bytes" -gt 2000000000 ]; then
+            echo "::error::the IPA is $((ipa_bytes / 1048576)) MB, over GitHub's 2 GiB release limit"
             exit 1
           fi
           echo "ipa=$IPA" >> "$GITHUB_ENV"
@@ -500,7 +240,6 @@ jobs:
           test -f "$FINAL_PLIST" || { echo '::error::IPA app has no Info.plist'; exit 1; }
           test -x "$FINAL_APP/XForge" || { echo '::error::IPA app has no executable XForge binary'; exit 1; }
           test -f "$FINAL_APP/Assets.car" || { echo '::error::IPA app has no compiled asset catalog'; exit 1; }
-          test -f "$FINAL_APP/alpine-rootfs.zip" || { echo '::error::IPA app has no bundled rootfs'; exit 1; }
 
           get_final() { /usr/libexec/PlistBuddy -c "Print :$1" "$FINAL_PLIST"; }
           [ "$(get_final CFBundleIdentifier)" = "com.r0gueee.xforge" ]             || { echo "::error::wrong bundle identifier in final IPA"; exit 1; }
@@ -521,11 +260,8 @@ jobs:
             exit 1
           }
 
-          # Check the rootfs inside the final IPA, not only the archive source.
-          unzip -t "$FINAL_APP/alpine-rootfs.zip" >/dev/null
-          unzip -Z1 "$FINAL_APP/alpine-rootfs.zip" > /tmp/final-rootfs-entries.txt
-          grep -qx 'alpine-rootfs/meta.db' /tmp/final-rootfs-entries.txt             || { echo '::error::final IPA rootfs has no meta.db'; exit 1; }
-          grep -qx 'alpine-rootfs/data/bin/sh' /tmp/final-rootfs-entries.txt             || { echo '::error::final IPA rootfs has no /bin/sh'; exit 1; }
+          # The app must be self-contained; a missing executable or Info.plist is
+          # what makes an IPA uninstallable, and both were checked above.
 
           # Reject common malformed packaging layouts.
           [ ! -d "$VERIFY_DIR/Payload/Payload" ]             || { echo '::error::IPA contains a nested Payload/Payload directory'; exit 1; }
