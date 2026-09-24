@@ -2,7 +2,7 @@ import Foundation
 
 /// A SwiftPM package that can be built into an iOS app.
 struct Project: Identifiable, Hashable, Codable {
-    static let projectsRoot = "/root/projects"
+    static let projectsRoot = "/host/projects"\n    static let legacyProjectsRoot = "/root/projects"
     var id: UUID = UUID()
     var name: String
     var organizationIdentifier: String = "com.example"
@@ -31,6 +31,19 @@ struct Project: Identifiable, Hashable, Codable {
 
     var hasSafeRootPath: Bool {
         rootPath == Self.path(forValidatedName: name)
+            || rootPath == "\(Self.legacyProjectsRoot)/\(name)"
+    }
+
+    /// Native host URL for projects stored in the shared `/host` mount.
+    ///
+    /// Legacy `/root/projects` entries remain Linux-only until migrated.
+    @MainActor
+    var hostRootURL: URL? {
+        let expected = Self.path(forValidatedName: name)
+        guard rootPath == expected else { return nil }
+        return XForgeEnvironment.hostShareDirectory
+            .appendingPathComponent("projects", isDirectory: true)
+            .appendingPathComponent(name, isDirectory: true)
     }
 }
 
