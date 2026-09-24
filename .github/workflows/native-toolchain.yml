@@ -448,23 +448,47 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p dist/include dist/lib
-          cp -R llvm-project/llvm/include/llvm dist/include/
-          cp -R llvm-build/include/llvm dist/include/
-          cp -R llvm-project/clang/include/clang dist/include/
+          # Two header roots, searched in this order, and they must not be merged:
+          # the build tree generates a *file* at `swift/bridging` (the C++ interop
+          # header, included as <swift/bridging>) while the sources have a
+          # *directory* of the same name (`include/swift/Bridging/`, holding
+          # ASTGen.h and MacroEvaluation.h). On a case-insensitive filesystem that
+          # is a single path, so copying the build tree over the source tree fails
+          # with "cp: .../swift/bridging: Is a directory" and stages nothing.
+          #
+          # `-L` is load-bearing too: the build tree mirrors headers as symlinks
+          # into this checkout, and a bundle that ships those links is dead
+          # anywhere but this runner.
+          mkdir -p dist/include-generated dist/include dist/lib
+          stage_headers() { cp -R -L "$1" "$2"; }
+
+          stage_headers llvm-project/llvm/include/llvm dist/include/
+          stage_headers llvm-project/clang/include/clang dist/include/
+          stage_headers llvm-project/lld/include/lld dist/include/
+
+          stage_headers llvm-build/include/llvm dist/include-generated/
           if [ -d llvm-build/tools/clang/include/clang ]; then
-            cp -R llvm-build/tools/clang/include/clang dist/include/
+            stage_headers llvm-build/tools/clang/include/clang dist/include-generated/
           fi
-          cp -R llvm-project/lld/include/lld dist/include/
 
           if [ "${{ inputs.with_swift }}" = "true" ]; then
-            cp -R swift/include/swift dist/include/
-            if [ -d swift-build/include/swift ]; then
-              cp -R swift-build/include/swift dist/include/
-            fi
-            if [ -d swift-build/tools/swift/include/swift ]; then
-              cp -R swift-build/tools/swift/include/swift dist/include/
-            fi
+            stage_headers swift/include/swift dist/include/
+            for swift_headers in swift-build/include/swift swift-build/tools/swift/include/swift; do
+              if [ -d "$swift_headers" ]; then
+                stage_headers "$swift_headers" dist/include-generated/
+              fi
+            done
+          fi
+
+          for required in dist/include/llvm dist/include/clang dist/include/lld; do
+            [ -d "$required" ] || { echo "::error::missing staged header root $required"; exit 1; }
+          done
+
+          # A symlink here would point into the runner's checkout.
+          if [ -n "$(find dist/include dist/include-generated -type l -print -quit)" ]; then
+            echo "::error::staged headers still contain symlinks:"
+            find dist/include dist/include-generated -type l -print
+            exit 1
           fi
 
           # Flatten the static dependency graph — LLVM's, Clang's, LLD's and (when
@@ -527,6 +551,7 @@ jobs:
           swift_ref=${{ inputs.with_swift && env.SWIFT_REF || 'none' }}
           built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           archive=lib/libXForgeNativeToolchain.a
+          header_roots=include-generated include
           EOF
           tar -C dist -czf XForgeNativeToolchain-arm64-ios.tar.gz .
 

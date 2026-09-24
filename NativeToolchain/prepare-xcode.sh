@@ -17,7 +17,7 @@ MANIFEST="$BUNDLE/manifest.txt"
 
 mkdir -p "$(dirname "$OUT")"
 
-if [ ! -f "$MANIFEST" ] || [ ! -d "$BUNDLE/include" ] || [ ! -d "$BUNDLE/lib" ]; then
+if [ ! -f "$MANIFEST" ] || [ ! -d "$BUNDLE/include" ] || [ ! -d "$BUNDLE/include-generated" ] || [ ! -d "$BUNDLE/lib" ]; then
   cat >"$OUT" <<EOF
 XFORGE_NATIVE_TOOLCHAIN_AVAILABLE = 0
 XFORGE_NATIVE_HEADER_SEARCH_PATHS =
@@ -61,7 +61,10 @@ fi
 
 {
   echo "XFORGE_NATIVE_TOOLCHAIN_AVAILABLE = 1"
-  echo "XFORGE_NATIVE_HEADER_SEARCH_PATHS = \$(SRCROOT)/Vendor/NativeToolchain/include"
+  # Two roots, generated first: `swift/bridging` is a generated *file* while the
+  # sources have a *directory* of the same name, so they cannot share a root (see
+  # the staging step in .github/workflows/native-toolchain.yml).
+  echo "XFORGE_NATIVE_HEADER_SEARCH_PATHS = \$(SRCROOT)/Vendor/NativeToolchain/include-generated \$(SRCROOT)/Vendor/NativeToolchain/include"
   echo "XFORGE_NATIVE_LIBRARY_SEARCH_PATHS = \$(SRCROOT)/Vendor/NativeToolchain/lib"
   echo "XFORGE_NATIVE_CFLAGS = $CFLAGS"
   printf "XFORGE_NATIVE_LDFLAGS ="
