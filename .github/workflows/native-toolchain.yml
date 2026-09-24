@@ -158,14 +158,18 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.toolchain-versions.outputs.value }}-${{ env.SWIFT_LLVM_REF }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
 
       # Swift's own build is the longer half and is cached separately, because it
-      # is saved *after* the LLVM half has been built and Swift's has too.
+      # is saved *after* the LLVM half has been built and Swift's has too. Its key
+      # deliberately ignores `cache_salt`: that salt exists to discard an LLVM tree
+      # when the LLVM source changes, and the Swift tree is a function of the Swift
+      # refs and the SDK alone — discarding it too would throw away the 45-minute
+      # half for a change to the other one.
       - name: Restore the Swift build
         if: ${{ inputs.with_swift }}
         id: swift-cache
         uses: actions/cache/restore@v4
         with:
           path: swift-build
-          key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ env.SWIFT_REF }}-${{ env.SWIFT_LLVM_REF }}-${{ steps.toolchain-versions.outputs.value }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ env.SWIFT_REF }}-${{ env.SWIFT_LLVM_REF }}-${{ steps.toolchain-versions.outputs.value }}-${{ env.IOS_DEPLOYMENT_TARGET }}-1
 
       - name: Build host TableGen tools
         shell: bash
