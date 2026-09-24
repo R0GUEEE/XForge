@@ -18,14 +18,33 @@ static void xf_copy_diag(const std::string &value, char *buffer, size_t capacity
     __has_include(<clang/Frontend/TextDiagnosticPrinter.h>) && \
     __has_include(<lld/Common/Driver.h>)
 
+// Apple's SDK predefines IBAction and IBOutlet as macros (`#define IBOutlet
+// __attribute__((iboutlet))`). Clang's generated AttrList.inc expands
+// `INHERITABLE_ATTR(IBAction)` into `ATTR(IBAction)` → `class IBAction##Attr;`, so
+// the predefined macro is pasted into the token paste and the header does not
+// compile: "pasting formed ')Attr', an invalid preprocessing token". Clang's own
+// headers undefine them for this reason on some revisions and not others, so it is
+// done here, before any clang header is included.
+#ifdef IBAction
+#undef IBAction
+#endif
+#ifdef IBOutlet
+#undef IBOutlet
+#endif
+
 #include <clang/Basic/Diagnostic.h>
+#include <clang/Basic/DiagnosticOptions.h>
 #include <clang/CodeGen/CodeGenAction.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/CompilerInvocation.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <lld/Common/Driver.h>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/IntrusiveRefCntPtr.h>
 #include <llvm/Support/raw_ostream.h>
+
+#include <memory>
+#include <type_traits>
 
 #if defined(XFORGE_HAS_SWIFT_FRONTEND) && __has_include(<swift/FrontendTool/FrontendTool.h>)
 #include <swift/FrontendTool/FrontendTool.h>
@@ -96,6 +115,86 @@ extern "C" int xf_native_swift_frontend(int argc,
 #endif
 }
 
+namespace {
+
+/// Whether this clang's `DiagnosticOptions` is still reference-counted.
+///
+/// Swift's LLVM fork (`swift/release/6.2`) is the older generation: options are
+/// refcounted, `TextDiagnosticPrinter` takes a `DiagnosticOptions *`, and
+/// `CompilerInstance` has no constructor taking an invocation. Upstream LLVM is the
+/// newer one: a plain value taken by reference, and the invocation goes in through
+/// the constructor. The bundle can be built from either, so both have to compile.
+// The marker is the base class, not a member: `Retain()` lives in
+// `RefCountedBase` and is protected, so a trait that calls it would fail access
+// checking and report "false" for both generations. Deriving from
+// `RefCountedBase` is what actually distinguishes them.
+constexpr bool xf_clang_uses_refcounted_diagnostics() {
+    return std::is_base_of_v<llvm::RefCountedBase<clang::DiagnosticOptions>,
+                             clang::DiagnosticOptions>;
+}
+
+/// Run one cc1-style invocation through a `CompilerInstance`.
+template <bool RefCountedOptions>
+bool xf_clang_execute(std::shared_ptr<clang::CompilerInvocation> invocation,
+                      std::unique_ptr<clang::TextDiagnosticPrinter> printer) {
+    if constexpr (RefCountedOptions) {
+        // Older generation: the instance starts empty and is handed its
+        // invocation afterwards.
+        clang::CompilerInstance compiler;
+        compiler.setInvocation(std::move(invocation));
+        compiler.createDiagnostics(printer.release(), true);
+        if (!compiler.hasDiagnostics()) return false;
+        clang::EmitObjAction action;
+        return compiler.ExecuteAction(action);
+    } else {
+        clang::CompilerInstance compiler(std::move(invocation));
+        compiler.createDiagnostics(printer.release(), true);
+        if (!compiler.hasDiagnostics()) return false;
+        clang::EmitObjAction action;
+        return compiler.ExecuteAction(action);
+    }
+}
+
+template <bool RefCountedOptions>
+int xf_clang_compile_impl(const std::vector<const char *> &args,
+                          llvm::raw_string_ostream &diagOS,
+                          std::string &diagText,
+                          char *diagnostics,
+                          size_t diagnostics_capacity) {
+    auto diagIDs = llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs());
+    auto invocation = std::make_shared<clang::CompilerInvocation>();
+
+    if constexpr (RefCountedOptions) {
+        auto diagOpts = llvm::makeIntrusiveRefCnt<clang::DiagnosticOptions>();
+        auto printer = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts.get());
+        clang::DiagnosticsEngine diags(diagIDs, diagOpts, printer.get(), false);
+        if (!clang::CompilerInvocation::CreateFromArgs(*invocation, args, diags)) {
+            diagOS.flush();
+            xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+            return 65;
+        }
+        const bool ok = xf_clang_execute<true>(invocation, std::move(printer));
+        diagOS.flush();
+        xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+        return ok ? 0 : 1;
+    } else {
+        clang::DiagnosticOptions diagOpts;
+        auto printer = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts);
+        clang::DiagnosticsEngine diags(diagIDs, diagOpts, printer.get(), false);
+        if (!clang::CompilerInvocation::CreateFromArgs(*invocation, args, diags)) {
+            diagOS.flush();
+            xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+            return 65;
+        }
+        const bool ok = xf_clang_execute<false>(invocation, std::move(printer));
+        diagOS.flush();
+        xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+        return ok ? 0 : 1;
+    }
+}
+
+} // namespace
+
 extern "C" int xf_native_clang_compile(const char *source_path,
                                         const char *object_path,
                                         const char *sdk_path,
@@ -110,14 +209,6 @@ extern "C" int xf_native_clang_compile(const char *source_path,
 
     std::string diagText;
     llvm::raw_string_ostream diagOS(diagText);
-
-    // DiagnosticOptions is a plain value and is taken by reference by both the
-    // printer and the engine; it is no longer refcounted (LLVM 19+), so it must
-    // not be wrapped in an IntrusiveRefCntPtr.
-    clang::DiagnosticOptions diagOpts;
-    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts);
-    auto diagIDs = llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs());
-    clang::DiagnosticsEngine diags(diagIDs, diagOpts, diagPrinter.get(), false);
 
     std::vector<std::string> owned = {
         "-triple", target_triple,
@@ -144,27 +235,14 @@ extern "C" int xf_native_clang_compile(const char *source_path,
     args.reserve(owned.size());
     for (const auto &arg : owned) args.push_back(arg.c_str());
 
-    auto invocation = std::make_shared<clang::CompilerInvocation>();
-    if (!clang::CompilerInvocation::CreateFromArgs(*invocation, args, diags)) {
-        diagOS.flush();
-        xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
-        return 65;
+    // The two clang generations differ in exactly two places, and both are wired
+    // to one template parameter so that only the matching half is ever
+    // instantiated: `if constexpr` outside a template still type-checks the
+    // branch it discards, so the split has to be a template to be meaningful.
+    if (xf_clang_uses_refcounted_diagnostics()) {
+        return xf_clang_compile_impl<true>(args, diagOS, diagText, diagnostics, diagnostics_capacity);
     }
-
-    // CompilerInstance takes its invocation through the constructor now;
-    // setInvocation() no longer exists.
-    clang::CompilerInstance compiler(invocation);
-    compiler.createDiagnostics(diagPrinter.release(), true);
-    if (!compiler.hasDiagnostics()) {
-        xf_copy_diag("native clang: failed to create diagnostics engine", diagnostics, diagnostics_capacity);
-        return 66;
-    }
-
-    clang::EmitObjAction action;
-    const bool ok = compiler.ExecuteAction(action);
-    diagOS.flush();
-    xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
-    return ok ? 0 : 1;
+    return xf_clang_compile_impl<false>(args, diagOS, diagText, diagnostics, diagnostics_capacity);
 }
 
 extern "C" int xf_native_lld_link(int argc,
