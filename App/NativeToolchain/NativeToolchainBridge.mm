@@ -16,6 +16,7 @@ static void xf_copy_diag(const std::string &value, char *buffer, size_t capacity
     __has_include(<clang/Frontend/CompilerInstance.h>) && \
     __has_include(<clang/Frontend/CompilerInvocation.h>) && \
     __has_include(<clang/Frontend/TextDiagnosticPrinter.h>) && \
+    __has_include(<clang/Serialization/PCHContainerOperations.h>) && \
     __has_include(<lld/Common/Driver.h>)
 
 #include <clang/Basic/Diagnostic.h>
@@ -23,8 +24,10 @@ static void xf_copy_diag(const std::string &value, char *buffer, size_t capacity
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/CompilerInvocation.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
+#include <clang/Serialization/PCHContainerOperations.h>
 #include <lld/Common/Driver.h>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/IntrusiveRefCntPtr.h>
 #include <llvm/Support/raw_ostream.h>
 
 #if defined(XFORGE_HAS_SWIFT_FRONTEND) && __has_include(<swift/FrontendTool/FrontendTool.h>)
@@ -111,11 +114,22 @@ extern "C" int xf_native_clang_compile(const char *source_path,
     std::string diagText;
     llvm::raw_string_ostream diagOS(diagText);
 
-    // DiagnosticOptions is a plain value and is taken by reference by both the
-    // printer and the engine; it is no longer refcounted (LLVM 19+), so it must
-    // not be wrapped in an IntrusiveRefCntPtr.
-    clang::DiagnosticOptions diagOpts;
-    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts);
+    // Three signatures in this revision of Clang are easy to get wrong, and all
+    // three are checked against the headers the toolchain ships
+    // (swiftlang/llvm-project swift/release/6.2):
+    //
+    //   DiagnosticsEngine(IntrusiveRefCntPtr<DiagnosticIDs>,
+    //                     IntrusiveRefCntPtr<DiagnosticOptions>,
+    //                     DiagnosticConsumer *client = nullptr,
+    //                     bool ShouldOwnClient = true)
+    //   TextDiagnosticPrinter(raw_ostream &os, DiagnosticOptions *diags, ...)
+    //   CompilerInstance(shared_ptr<PCHContainerOperations>, ModuleCache * = nullptr)
+    //
+    // So the options *are* refcounted here (and the printer wants the raw
+    // pointer inside that reference), and the invocation is handed over through
+    // setInvocation() rather than the constructor.
+    auto diagOpts = llvm::makeIntrusiveRefCnt<clang::DiagnosticOptions>();
+    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts.get());
     auto diagIDs = llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs());
     clang::DiagnosticsEngine diags(diagIDs, diagOpts, diagPrinter.get(), false);
 
@@ -151,9 +165,8 @@ extern "C" int xf_native_clang_compile(const char *source_path,
         return 65;
     }
 
-    // CompilerInstance takes its invocation through the constructor now;
-    // setInvocation() no longer exists.
-    clang::CompilerInstance compiler(invocation);
+    clang::CompilerInstance compiler(std::make_shared<clang::PCHContainerOperations>());
+    compiler.setInvocation(invocation);
     compiler.createDiagnostics(diagPrinter.release(), true);
     if (!compiler.hasDiagnostics()) {
         xf_copy_diag("native clang: failed to create diagnostics engine", diagnostics, diagnostics_capacity);
