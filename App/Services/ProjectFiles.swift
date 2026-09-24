@@ -23,7 +23,7 @@ enum ProjectFiles {
         let root = sourcesOnly
             ? project.rootURL.appendingPathComponent("Sources", isDirectory: true)
             : project.rootURL
-        return try await loadFiles(under: root, project: project)
+        return loadFiles(under: root, project: project)
     }
 
     static func load(relativePath: String, project: Project) async throws -> File {
@@ -58,13 +58,19 @@ enum ProjectFiles {
 
     // MARK: - Internals
 
-    private static func loadFiles(under root: URL, project: Project) async throws -> [File] {
+    /// Synchronous on purpose.
+    ///
+    /// `FileManager.DirectoryEnumerator` cannot be iterated from an asynchronous
+    /// context — Swift 6 refuses the `for … in` outright ("makeIterator is
+    /// unavailable from asynchronous contexts") — so the walk lives here and the
+    /// async entry points simply call it.
+    private static func loadFiles(under root: URL, project: Project) -> [File] {
         let fileManager = FileManager.default
         guard fileManager.fileExists(atPath: root.path) else { return [] }
 
         guard let enumerator = fileManager.enumerator(
             at: root,
-            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey],
+            includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else { return [] }
 
@@ -78,7 +84,7 @@ enum ProjectFiles {
                 continue
             }
             guard values?.isRegularFile == true else { continue }
-            guard let relative = relativePath(of: url, in: project) else { continue }
+            guard let relative = projectRelativePath(of: url, in: project) else { continue }
             // Text only: the editor cannot show a binary, and a project full of
             // build products should not be read into memory to find that out.
             guard let contents = try? String(contentsOf: url, encoding: .utf8) else { continue }
@@ -103,7 +109,7 @@ enum ProjectFiles {
     }
 
     /// A project-relative path for `url`, or nil when it is outside the project.
-    private static func relativePath(of url: URL, in project: Project) -> String? {
+    private static func projectRelativePath(of url: URL, in project: Project) -> String? {
         let root = project.rootURL.standardizedFileURL.path
         let path = url.standardizedFileURL.path
         guard path.hasPrefix(root + "/") else { return nil }
@@ -114,15 +120,13 @@ enum ProjectFiles {
     ///
     /// `..` is rejected rather than merely normalized: an editor that can write
     /// outside its own project is a sandbox escape with a nice UI, and the
-    /// standardized path check catches the symlink-free cases the textual check
-    /// would miss.
+    /// standardized-path check catches what the textual one cannot.
     private static func resolve(relativePath: String, in project: Project) throws -> URL {
         guard isSafe(relativePath: relativePath) else {
             throw ProjectFileError.unsafeRelativePath
         }
-        let root = project.rootURL
-        let url = root.appendingPathComponent(relativePath)
-        guard relativePath(of: url, in: project) != nil else {
+        let url = project.rootURL.appendingPathComponent(relativePath)
+        guard projectRelativePath(of: url, in: project) != nil else {
             throw ProjectFileError.unsafeRelativePath
         }
         return url
@@ -138,14 +142,11 @@ enum ProjectFiles {
 
 enum ProjectFileError: LocalizedError {
     case unsafeRelativePath
-    case unreadable(String)
 
     var errorDescription: String? {
         switch self {
         case .unsafeRelativePath:
             return "That path is outside the project."
-        case .unreadable(let path):
-            return "Could not read \(path) as text."
         }
     }
 }
