@@ -74,7 +74,9 @@ and used on its own while the considerably larger Swift compiler port is brought
    -isysroot <iPhoneOS SDK> -DXFORGE_HAS_LLVM=1 -c App/NativeToolchain/NativeToolchainBridge.mm`.
    This is the check that keeps a header change in LLVM from silently breaking the
    bridge in a device build nobody can run yet.
-5. Stage `include/` from `llvm-project` and the build directory, then **flatten every
+5. Stage the headers into two roots — sources into `include/`, the build tree into
+   `include-generated/`, because they disagree about `swift/bridging` — then
+   **flatten every
    static archive in the build into one** `dist/lib/libXForgeNativeToolchain.a` with
    `libtool -static`. Flattening is deliberate: the app then links one archive
    instead of depending on LLVM's internal archive ordering, which would otherwise
@@ -99,17 +101,24 @@ make gen
 ```
 
 `install-bundle.sh` unpacks the archive into `Vendor/NativeToolchain` and refuses an
-archive that is missing `manifest.txt`, `include/` or `lib/` — a partial bundle would
-otherwise surface as an inscrutable compile error much later. It then runs
-`prepare-xcode.sh`, which writes `Support/NativeToolchain.generated.xcconfig`:
+archive that is missing `manifest.txt`, `include/`, `include-generated/` or `lib/` — a
+partial bundle would otherwise surface as an inscrutable compile error much later. It
+then runs `prepare-xcode.sh`, which writes `Support/NativeToolchain.generated.xcconfig`:
 
 ```
 XFORGE_NATIVE_TOOLCHAIN_AVAILABLE = 1
-XFORGE_NATIVE_HEADER_SEARCH_PATHS = $(SRCROOT)/Vendor/NativeToolchain/include
+XFORGE_NATIVE_HEADER_SEARCH_PATHS = $(SRCROOT)/Vendor/NativeToolchain/include-generated $(SRCROOT)/Vendor/NativeToolchain/include
 XFORGE_NATIVE_LIBRARY_SEARCH_PATHS = $(SRCROOT)/Vendor/NativeToolchain/lib
 XFORGE_NATIVE_CFLAGS = -DXFORGE_HAS_LLVM=1
 XFORGE_NATIVE_LDFLAGS = <the archive> -lc++ -lz -liconv -lsqlite3 -framework Foundation
 ```
+
+The two header roots are searched in that order and are deliberately not merged. The
+build tree *generates a file* at `swift/bridging` (the C++ interop header, included as
+`<swift/bridging>`) while Swift's sources have a *directory* of the same name
+(`include/swift/Bridging/`). On a case-insensitive filesystem that is one path, so
+staging both into a single root fails — `cp: .../swift/bridging: Is a directory` — and
+the ordered pair is what a normal Swift/LLVM cross-build uses as well.
 
 `project.yml` consumes those variables and nothing else, so the app target never
 names a path inside the bundle directly.

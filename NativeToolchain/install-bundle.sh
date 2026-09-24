@@ -16,7 +16,7 @@ rm -rf "$DEST"
 mkdir -p "$DEST"
 tar -xzf "$ARCHIVE" -C "$DEST"
 
-for required in manifest.txt include lib; do
+for required in manifest.txt include include-generated lib; do
   [ -e "$DEST/$required" ] || {
     echo "error: native toolchain bundle is missing $required" >&2
     rm -rf "$DEST"
