@@ -5,11 +5,16 @@ name: Native iOS Toolchain
 #
 # Two things about the Swift half are worth knowing before editing it:
 #
-#  * Swift's frontend is *not* built against upstream LLVM. Swift depends on the
-#    LLVM fork it is developed with (the `swiftasync` calling convention, the
-#    coroutine passes, and the C++ API surface it compiles against), so the Swift
-#    path checks out `swiftlang/llvm-project` at the matching `swift/release/X.Y`
-#    branch. The upstream checkout is kept for the LLVM-only path.
+#  * Every bundle is built from Swift's LLVM fork (`swiftlang/llvm-project` at the
+#    branch paired with the Swift version), never from upstream. Swift is developed
+#    against that fork (the `swiftasync` calling convention, the coroutine passes,
+#    the C++ API it compiles against), and — the part that decided it — upstream's
+#    clang is a different *API generation*: value-typed `DiagnosticOptions` and
+#    reference-taking constructors, against the fork's reference-counted options and
+#    pointer-taking ones. The app's C bridge is compiled against whichever bundle is
+#    installed, so it can only be written for one generation. Pinning the fork for
+#    both bundles is also what removes the old "unpinned checkout of llvm-project
+#    main" this workflow used to have.
 #  * `-DSWIFT_INSTALL_COMPONENTS=` is load-bearing. Swift's CMake writes that as a
 #    *cache* variable, so an empty value on the command line survives its default
 #    and no component is ever installed — which means `swift_install_in_component`
@@ -74,13 +79,18 @@ jobs:
       - name: Install build tools
         run: brew install cmake ninja
 
-      # The LLVM the compiler is built from: upstream for the LLVM-only bundle,
-      # Swift's own fork when the frontend is part of it.
+      # One LLVM for every bundle this workflow builds: Swift's fork, at the branch
+      # paired with the Swift version. Upstream's clang is a *different API
+      # generation* from the fork's (reference-counted options and pointer-taking
+      # printers versus value options and references), and the C bridge that the app
+      # compiles against the bundle can only be written for one of them — so the
+      # bundle must always be the same generation. Pinning it also removes the
+      # "unpinned checkout of llvm-project main" this workflow used to have.
       - name: Checkout LLVM
         uses: actions/checkout@v4
         with:
-          repository: ${{ inputs.with_swift && 'swiftlang/llvm-project' || 'llvm/llvm-project' }}
-          ref: ${{ inputs.with_swift && env.SWIFT_LLVM_REF || '' }}
+          repository: swiftlang/llvm-project
+          ref: ${{ env.SWIFT_LLVM_REF }}
           path: llvm-project
           fetch-depth: 1
 
@@ -145,7 +155,7 @@ jobs:
             llvm-host-build
             llvm-build
             cmark-host-build
-          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.toolchain-versions.outputs.value }}-${{ inputs.with_swift && env.SWIFT_LLVM_REF || 'upstream' }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
+          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.toolchain-versions.outputs.value }}-${{ env.SWIFT_LLVM_REF }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
 
       # Swift's own build is the longer half and is cached separately, because it
       # is saved *after* the LLVM half has been built and Swift's has too.
