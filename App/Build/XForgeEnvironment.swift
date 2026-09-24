@@ -96,7 +96,11 @@ enum XForgeEnvironment {
 
     /// Where `ProjectExporter` writes project archives (`<Documents>/exports`).
     /// Kept here rather than in the exporter so the storage rules live in one file.
-    static var exportsDirectory: URL {
+    ///
+    /// `nonisolated` like `documentDirectory`: `ProjectExporter` is a plain enum and
+    /// forwards this path, so isolating it here made that forwarding a concurrency
+    /// error (surfaced by the unit-test build).
+    nonisolated static var exportsDirectory: URL {
         documentDirectory.appendingPathComponent("exports", isDirectory: true)
     }
 
