@@ -21,6 +21,12 @@ enum ProjectExporter {
     /// Archive `project` inside the guest and copy the archive out.
     ///
     /// Returns the host URL of the archive, ready to share.
+    ///
+    /// `@MainActor` because the VM it is handed is (`LinuxVM` is main-actor isolated
+    /// and not `Sendable`, so a nonisolated function taking one is a Swift 6 error).
+    /// Only the unit-test build reports it: the Release build compiles the module
+    /// whole and does not type-check every body.
+    @MainActor
     static func export(_ project: Project, via vm: LinuxVM) async throws -> URL {
         guard project.hasSafeRootPath else { throw ProjectValidationError.unsafePath }
         let name = try Project.validatedName(project.name)
