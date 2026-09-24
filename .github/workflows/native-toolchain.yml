@@ -170,6 +170,15 @@ jobs:
             -DLLVM_ENABLE_CURL=OFF
           ninja -C llvm-host-build llvm-tblgen clang-tblgen
 
+          # Swift's CMake resolves its native tools through LLVM_TOOLS_BINARY_DIR,
+          # which for the iOS build is a directory with no tools in it
+          # (LLVM_BUILD_TOOLS=OFF). Mirroring the host tools there means every
+          # path it might take finds them.
+          mkdir -p llvm-build/bin
+          for tool in llvm-host-build/bin/*; do
+            ln -sf "$PWD/$tool" "llvm-build/bin/$(basename "$tool")"
+          done
+
       - name: Build native cmark
         if: ${{ inputs.with_swift }}
         shell: bash
@@ -262,9 +271,21 @@ jobs:
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           HOST_SWIFT_BIN="$(dirname "$(xcrun -f swiftc)")"
 
+          # CMAKE_SYSTEM_NAME=Darwin, not iOS, and that is deliberate. Swift's own
+          # iOS builds are configured exactly this way (build-script-impl passes
+          # the sysroot and SWIFT_HOST_VARIANT_SDK and never sets the system
+          # name), because its CMake branches on `CMAKE_SYSTEM_NAME STREQUAL
+          # "Darwin"` for Apple:
+          #   * lib/Basic/CMakeLists.txt does `find_package(UUID REQUIRED)` on
+          #     anything else — a Linux dependency for Swift-on-Linux builds;
+          #   * SwiftSharedCMakeConfig's Libdispatch.cmake errors out with
+          #     "libdispatch requires a newer clang compiler" unless it is Darwin
+          #     (on Darwin, dispatch comes from the SDK).
+          # The target is still iOS: the sysroot, the architectures, the
+          # deployment target and the compiler target triple below say so.
           cmake -S swift -B swift-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_SYSTEM_NAME=Darwin \
             -DCMAKE_MACOSX_BUNDLE=OFF \
             -DCMAKE_OSX_SYSROOT="$SDK" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
