@@ -65,7 +65,17 @@ extern "C" int xf_native_swift_frontend(int argc,
         xf_copy_diag("native swift: empty frontend argument list", diagnostics, diagnostics_capacity);
         return 64;
     }
-    llvm::ArrayRef<const char *> args(argv, static_cast<size_t>(argc));
+    // `swift-frontend -frontend …` is how the driver invokes the frontend, and it
+    // hands performFrontend everything *after* `-frontend`. Accept both shapes, so
+    // a caller that mirrors the command line does not hand parseArgs a flag it
+    // rejects ("error: unknown argument: '-frontend'").
+    const char *const *argsBegin = argv;
+    size_t argsCount = static_cast<size_t>(argc);
+    if (argsCount > 0 && std::strcmp(argsBegin[0], "-frontend") == 0) {
+        argsBegin += 1;
+        argsCount -= 1;
+    }
+    llvm::ArrayRef<const char *> args(argsBegin, argsCount);
     const int rc = swift::performFrontend(
         args,
         "swift-frontend",

@@ -15,6 +15,15 @@ struct Project: Identifiable, Hashable, Codable {
     var packageManifestPath: String { "\(rootPath)/Package.swift" }
     var ipaOutputPath: String { "\(rootPath)/.build/xforge-\(name).ipa" }
 
+    /// The project directory in XForge's own container.
+    ///
+    /// Derived from `name` rather than stored. `rootPath` is the guest path this
+    /// model was designed around, and two stored locations for one project is how
+    /// a build ends up reading a directory nobody created.
+    var rootURL: URL {
+        XForgeEnvironment.projectsDirectory.appendingPathComponent(name, isDirectory: true)
+    }
+
     static func validatedName(_ value: String) throws -> String {
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))

@@ -47,6 +47,16 @@ enum XForgeEnvironment {
         documentDirectory.appendingPathComponent("native-sdk", isDirectory: true)
     }
 
+    /// Projects live in the app's own container.
+    ///
+    /// They used to live inside the embedded Linux filesystem (`/root/projects`),
+    /// which is why `Project.rootPath` still carries a guest-shaped string. Now
+    /// that the toolchain runs in-process, a project is a directory of files this
+    /// process can open, and this is the one place that decides where.
+    nonisolated static var projectsDirectory: URL {
+        documentDirectory.appendingPathComponent("projects", isDirectory: true)
+    }
+
     /// Diagnostics (`XForgeLog` writes the engine log here).
     static var logsDirectory: URL { XForgeLog.directory }
 

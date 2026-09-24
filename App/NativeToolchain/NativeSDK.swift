@@ -9,6 +9,30 @@ struct NativeSDKLayout: Sendable {
     let platformLibrarySearchPaths: [URL]
 }
 
+extension NativeSDKLayout {
+    /// `-L` paths that make `-lswiftCore` and friends resolvable when linking
+    /// statically.
+    ///
+    /// A sideloaded app links the Swift runtime into the binary — there is no
+    /// system-wide `/usr/lib/swift` on iOS to load it from at runtime — so the
+    /// linker has to be pointed at the static runtime the Darwin SDK carries.
+    /// `swift-sdk.json` names it as `swiftStaticResourcesPath`, and the compiled
+    /// libraries for the device live one directory below it (`…/iphoneos`).
+    /// `librarySearchPaths` from the same file is the fallback for bundles that
+    /// lay it out differently, and both are merged rather than chosen between:
+    /// a duplicate `-L` costs nothing, a missing one fails the link.
+    var swiftRuntimeLibraryPaths: [URL] {
+        var paths: [URL] = []
+        if let swiftStaticResources {
+            paths.append(swiftStaticResources)
+            paths.append(swiftStaticResources.appendingPathComponent("iphoneos", isDirectory: true))
+        }
+        paths.append(contentsOf: platformLibrarySearchPaths)
+        var seen = Set<String>()
+        return paths.filter { seen.insert($0.path).inserted }
+    }
+}
+
 enum NativeSDKError: LocalizedError {
     case missingBundle
     case invalidMetadata
@@ -107,11 +131,23 @@ enum NativeSDK {
 
     static func installLatestPrebuilt() async throws {
         let remote = try await XForgeReleases.darwinSDKURL()
+        try await install(fromRemote: remote)
+    }
+
+    /// Download and install a Darwin SDK archive from an explicit URL.
+    ///
+    /// The URL-parameterised form is the one the build pipeline uses: the release
+    /// lookup happens in the caller, so a caller that already resolved an asset
+    /// (or pinned one) does not pay for a second lookup.
+    static func install(fromRemote remote: URL) async throws {
         let (downloaded, response) = try await URLSession.shared.download(from: remote)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw DownloadError.http(status: http.statusCode, url: remote)
         }
+        try installDownloadedArchive(at: downloaded)
+    }
 
+    private static func installDownloadedArchive(at downloaded: URL) throws {
         let fm = FileManager.default
         let extractionRoot = XForgeEnvironment.nativeSDKDirectory
             .appendingPathComponent("download-\(UUID().uuidString)", isDirectory: true)
