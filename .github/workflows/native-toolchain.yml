@@ -376,7 +376,11 @@ jobs:
           test -n "$found" || { echo "::error::no Swift library exports performFrontend"; exit 1; }
           echo "performFrontend is in $found"
 
+      # Skipped in configure_only mode for a real reason: the headers this
+      # compiles against are *generated* by the Clang build (DiagnosticGroups.inc
+      # and friends), which configure_only deliberately does not run.
       - name: Compile-check XForge bridge against LLVM headers
+        if: ${{ !inputs.configure_only }}
         shell: bash
         run: |
           set -euxo pipefail
