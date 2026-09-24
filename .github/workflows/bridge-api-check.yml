@@ -71,6 +71,33 @@ jobs:
           path: swift
           fetch-depth: 1
 
+      - name: Checkout cmark
+        if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift-cmark
+          ref: release/6.2
+          path: swift-cmark
+          fetch-depth: 1
+
+      - name: Checkout swift-syntax
+        if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift-syntax
+          ref: release/6.2
+          path: swift-syntax
+          fetch-depth: 1
+
+      - name: Checkout swift-experimental-string-processing
+        if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift-experimental-string-processing
+          ref: release/6.2
+          path: swift-experimental-string-processing
+          fetch-depth: 1
+
       - name: Identify the iOS compiler toolchain
         id: toolchain-versions
         run: |
@@ -142,6 +169,20 @@ jobs:
             -DCLANG_INCLUDE_TESTS=OFF \
             -DCLANG_BUILD_TOOLS=ON
 
+      - name: Build native cmark
+        if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -x cmark-host-build/src/cmark-gfm ]; then
+            echo "native cmark already cached"
+            exit 0
+          fi
+          cmake -S swift-cmark -B cmark-host-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMARK_TESTS=OFF
+          cmake --build cmark-host-build --target cmark-gfm
+          ln -sf "$PWD/cmark-host-build/src/cmark-gfm" cmark-host-build/src/cmark
+
       - name: Configure the Swift frontend for iPhoneOS
         if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
         shell: bash
@@ -167,6 +208,8 @@ jobs:
             -DSWIFT_NATIVE_SWIFT_TOOLS_PATH="$(dirname "$(xcrun -f swiftc)")" \
             -DSWIFT_PATH_TO_CMARK_BUILD="$PWD/cmark-host-build" \
             -DSWIFT_PATH_TO_CMARK_SOURCE="$PWD/swift-cmark" \
+            -DSWIFT_PATH_TO_STRING_PROCESSING_SOURCE="$PWD/swift-experimental-string-processing" \
+            -DSWIFT_PATH_TO_SWIFT_SYNTAX_SOURCE="$PWD/swift-syntax" \
             -DSWIFT_HOST_VARIANT=iphoneos \
             -DSWIFT_HOST_VARIANT_SDK=IOS \
             -DSWIFT_HOST_VARIANT_ARCH=arm64 \
