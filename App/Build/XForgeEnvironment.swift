@@ -142,9 +142,19 @@ enum XForgeEnvironment {
         return vm
     }
 
-    /// Construct the build executor. `Local` uses the embedded Linux VM.
+    /// Construct the build executor. Native XtoolMobileKit is preferred when the
+    /// compiler archive and SDK are available; Alpine remains a compatibility
+    /// fallback for existing installations and dependency resolution.
     static func makeExecutor(for project: Project? = nil) -> BuildExecutor {
-        EmbeddedLinuxExecutor(vm: makeVM(), stagingDir: stagingDirectory)
+        let linux = EmbeddedLinuxExecutor(
+            vm: makeVM(),
+            stagingDir: stagingDirectory
+        )
+        return NativeFirstBuildExecutor(
+            project: project,
+            stagingDirectory: stagingDirectory,
+            fallback: linux
+        )
     }
 
     /// The in-process Linux emulator that runs the embedded Alpine guest.
