@@ -124,13 +124,16 @@ namespace {
 /// `CompilerInstance` has no constructor taking an invocation. Upstream LLVM is the
 /// newer one: a plain value taken by reference, and the invocation goes in through
 /// the constructor. The bundle can be built from either, so both have to compile.
-// The marker is the base class, not a member: `Retain()` lives in
-// `RefCountedBase` and is protected, so a trait that calls it would fail access
-// checking and report "false" for both generations. Deriving from
-// `RefCountedBase` is what actually distinguishes them.
+// The marker is the constructor the *printer* takes, because that is the thing
+// being branched on: the older generation takes `DiagnosticOptions *`, the newer
+// one takes a reference, and a pointer never converts to a reference, so this is
+// exactly the generation test. (A trait on a member would not work: `Retain()`
+// lives in `RefCountedBase` and is protected, so probing it fails access checking
+// and answers "new" for both generations.)
 constexpr bool xf_clang_uses_refcounted_diagnostics() {
-    return std::is_base_of_v<llvm::RefCountedBase<clang::DiagnosticOptions>,
-                             clang::DiagnosticOptions>;
+    return std::is_constructible_v<clang::TextDiagnosticPrinter,
+                                   llvm::raw_ostream &,
+                                   clang::DiagnosticOptions *>;
 }
 
 /// Run one cc1-style invocation through a `CompilerInstance`.
@@ -155,53 +158,21 @@ bool xf_clang_execute(std::shared_ptr<clang::CompilerInvocation> invocation,
     }
 }
 
+/// The whole C entry point, as a template.
+///
+/// It has to be a template, and it has to be instantiated exactly once, for the
+/// `if constexpr` below to mean anything: a discarded branch is only exempt from
+/// instantiation inside a templated entity, and a *runtime* condition —
+/// `if (xf_clang_uses_refcounted_diagnostics())` — instantiates both halves and
+/// then fails on whichever one does not belong to this clang.
 template <bool RefCountedOptions>
-int xf_clang_compile_impl(const std::vector<const char *> &args,
-                          llvm::raw_string_ostream &diagOS,
-                          std::string &diagText,
-                          char *diagnostics,
-                          size_t diagnostics_capacity) {
-    auto diagIDs = llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs());
-    auto invocation = std::make_shared<clang::CompilerInvocation>();
-
-    if constexpr (RefCountedOptions) {
-        auto diagOpts = llvm::makeIntrusiveRefCnt<clang::DiagnosticOptions>();
-        auto printer = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts.get());
-        clang::DiagnosticsEngine diags(diagIDs, diagOpts, printer.get(), false);
-        if (!clang::CompilerInvocation::CreateFromArgs(*invocation, args, diags)) {
-            diagOS.flush();
-            xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
-            return 65;
-        }
-        const bool ok = xf_clang_execute<true>(invocation, std::move(printer));
-        diagOS.flush();
-        xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
-        return ok ? 0 : 1;
-    } else {
-        clang::DiagnosticOptions diagOpts;
-        auto printer = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts);
-        clang::DiagnosticsEngine diags(diagIDs, diagOpts, printer.get(), false);
-        if (!clang::CompilerInvocation::CreateFromArgs(*invocation, args, diags)) {
-            diagOS.flush();
-            xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
-            return 65;
-        }
-        const bool ok = xf_clang_execute<false>(invocation, std::move(printer));
-        diagOS.flush();
-        xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
-        return ok ? 0 : 1;
-    }
-}
-
-} // namespace
-
-extern "C" int xf_native_clang_compile(const char *source_path,
-                                        const char *object_path,
-                                        const char *sdk_path,
-                                        const char *target_triple,
-                                        const char *language,
-                                        char *diagnostics,
-                                        size_t diagnostics_capacity) {
+int xf_clang_compile_entry(const char *source_path,
+                           const char *object_path,
+                           const char *sdk_path,
+                           const char *target_triple,
+                           const char *language,
+                           char *diagnostics,
+                           size_t diagnostics_capacity) {
     if (!source_path || !object_path || !sdk_path || !target_triple) {
         xf_copy_diag("native clang: missing required argument", diagnostics, diagnostics_capacity);
         return 64;
@@ -235,14 +206,55 @@ extern "C" int xf_native_clang_compile(const char *source_path,
     args.reserve(owned.size());
     for (const auto &arg : owned) args.push_back(arg.c_str());
 
-    // The two clang generations differ in exactly two places, and both are wired
-    // to one template parameter so that only the matching half is ever
-    // instantiated: `if constexpr` outside a template still type-checks the
-    // branch it discards, so the split has to be a template to be meaningful.
-    if (xf_clang_uses_refcounted_diagnostics()) {
-        return xf_clang_compile_impl<true>(args, diagOS, diagText, diagnostics, diagnostics_capacity);
+    auto diagIDs = llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs());
+    auto invocation = std::make_shared<clang::CompilerInvocation>();
+
+    if constexpr (RefCountedOptions) {
+        // Older generation: reference-counted options, a pointer-taking printer.
+        auto diagOpts = llvm::makeIntrusiveRefCnt<clang::DiagnosticOptions>();
+        auto printer = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts.get());
+        clang::DiagnosticsEngine diags(diagIDs, diagOpts, printer.get(), false);
+        if (!clang::CompilerInvocation::CreateFromArgs(*invocation, args, diags)) {
+            diagOS.flush();
+            xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+            return 65;
+        }
+        const bool ok = xf_clang_execute<true>(invocation, std::move(printer));
+        diagOS.flush();
+        xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+        return ok ? 0 : 1;
+    } else {
+        // Newer generation: a plain value taken by reference.
+        clang::DiagnosticOptions diagOpts;
+        auto printer = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts);
+        clang::DiagnosticsEngine diags(diagIDs, diagOpts, printer.get(), false);
+        if (!clang::CompilerInvocation::CreateFromArgs(*invocation, args, diags)) {
+            diagOS.flush();
+            xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+            return 65;
+        }
+        const bool ok = xf_clang_execute<false>(invocation, std::move(printer));
+        diagOS.flush();
+        xf_copy_diag(diagText, diagnostics, diagnostics_capacity);
+        return ok ? 0 : 1;
     }
-    return xf_clang_compile_impl<false>(args, diagOS, diagText, diagnostics, diagnostics_capacity);
+}
+
+} // namespace
+
+extern "C" int xf_native_clang_compile(const char *source_path,
+                                        const char *object_path,
+                                        const char *sdk_path,
+                                        const char *target_triple,
+                                        const char *language,
+                                        char *diagnostics,
+                                        size_t diagnostics_capacity) {
+    // A constant expression as the template argument: exactly one instantiation
+    // exists in a build, so the branch for the other generation is never
+    // type-checked.
+    return xf_clang_compile_entry<xf_clang_uses_refcounted_diagnostics()>(
+        source_path, object_path, sdk_path, target_triple, language,
+        diagnostics, diagnostics_capacity);
 }
 
 extern "C" int xf_native_lld_link(int argc,
