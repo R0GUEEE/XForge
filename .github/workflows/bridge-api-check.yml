@@ -1,0 +1,222 @@
+name: Bridge API Check
+
+# The fast loop for the one step that keeps failing.
+#
+# `Native iOS Toolchain` spends 40-90 minutes building LLVM and Swift before it
+# reaches the bridge compile-check, and that check needs none of those libraries: it
+# needs the headers of the LLVM and Swift the bundle will be built from, the headers
+# those builds *generate*, and a compiler. All of that is already in the two caches
+# the toolchain workflow restores, so this workflow restores them, reconfigures (which
+# keeps the generated headers in step with the sources), and compiles the bridge —
+# about ten minutes instead of an afternoon.
+#
+# It is not a substitute for the toolchain build: nothing here links anything, so it
+# says nothing about the archive, the staging step or the app. It answers one
+# question — "does the bridge compile against this LLVM generation?" — which is the
+# question that has been costing hours.
+
+on:
+  workflow_dispatch:
+    inputs:
+      swift_ref:
+        type: string
+        default: swift-6.2.4-RELEASE
+      swift_llvm_ref:
+        type: string
+        default: swift/release/6.2
+      with_swift:
+        description: Compile the bridge with the Swift frontend code path enabled
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - "App/NativeToolchain/**"
+      - ".github/workflows/bridge-api-check.yml"
+  push:
+    branches:
+      - drop-alpine
+      - native-toolchain-poc
+    paths:
+      - "App/NativeToolchain/**"
+      - ".github/workflows/bridge-api-check.yml"
+
+jobs:
+  api-check:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      IOS_DEPLOYMENT_TARGET: "17.0"
+      SWIFT_REF: ${{ inputs.swift_ref || 'swift-6.2.4-RELEASE' }}
+      SWIFT_LLVM_REF: ${{ inputs.swift_llvm_ref || 'swift/release/6.2' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: brew install cmake ninja
+
+      - name: Checkout LLVM
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/llvm-project
+          ref: ${{ env.SWIFT_LLVM_REF }}
+          path: llvm-project
+          fetch-depth: 1
+
+      - name: Checkout Swift
+        if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift
+          ref: ${{ env.SWIFT_REF }}
+          path: swift
+          fetch-depth: 1
+
+      - name: Identify the iOS compiler toolchain
+        id: toolchain-versions
+        run: |
+          {
+            echo "value=$(xcodebuild -version | tr '\n' ' ')-$(xcrun --sdk iphoneos --show-sdk-version)"
+          } >> "$GITHUB_OUTPUT"
+
+      # The same keys the toolchain workflow writes, so this reuses what it built.
+      - name: Restore the LLVM builds
+        id: llvm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            llvm-host-build
+            llvm-build
+            cmark-host-build
+          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.toolchain-versions.outputs.value }}-${{ env.SWIFT_LLVM_REF }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '2' }}
+
+      - name: Restore the Swift build
+        id: swift-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: swift-build
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ env.SWIFT_REF }}-${{ env.SWIFT_LLVM_REF }}-${{ steps.toolchain-versions.outputs.value }}-${{ env.IOS_DEPLOYMENT_TARGET }}-1
+
+      - name: Report what was available
+        run: |
+          set -euxo pipefail
+          echo "llvm cache hit: ${{ steps.llvm-cache.outputs.cache-hit }}"
+          echo "swift cache hit: ${{ steps.swift-cache.outputs.cache-hit }}"
+          ls llvm-build/include 2>/dev/null | head -5 || echo "no llvm-build/include"
+          ls llvm-build/tools/clang/include/clang/Basic/DiagnosticGroups.inc 2>/dev/null \
+            || echo "no generated clang headers (expected on a cold cache)"
+          ls swift-build/include 2>/dev/null | head -5 || echo "no swift-build/include"
+
+      # Configure both trees so the generated headers match the sources, then make
+      # everything newer than the checkouts — the same reason the toolchain workflow
+      # does it: restored outputs look older than a fresh checkout.
+      - name: Configure LLVM for iPhoneOS arm64
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          cmake -S llvm-project/llvm -B llvm-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_MACOSX_BUNDLE=OFF \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_HOST_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_HOST_BUILD_DIR="$PWD/llvm-host-build" \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_TARGETS_TO_BUILD=AArch64 \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_TOOLS=ON \
+            -DLLVM_BUILD_TOOLS=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_CURL=OFF \
+            -DLLVM_ENABLE_RTTI=ON \
+            -DCLANG_INCLUDE_TESTS=OFF \
+            -DCLANG_BUILD_TOOLS=ON
+
+      - name: Configure the Swift frontend for iPhoneOS
+        if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          cmake -S swift -B swift-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Darwin \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_Swift_COMPILER="$(xcrun -f swiftc)" \
+            -DCMAKE_Swift_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_DIR="$PWD/llvm-build/lib/cmake/llvm" \
+            -DClang_DIR="$PWD/llvm-build/lib/cmake/clang" \
+            -DLLVM_TABLEGEN="$PWD/llvm-host-build/bin/llvm-tblgen" \
+            -DCLANG_TABLEGEN="$PWD/llvm-host-build/bin/clang-tblgen" \
+            -DSWIFT_NATIVE_LLVM_TOOLS_PATH="$PWD/llvm-host-build/bin" \
+            -DSWIFT_NATIVE_CLANG_TOOLS_PATH="$PWD/llvm-host-build/bin" \
+            -DSWIFT_NATIVE_SWIFT_TOOLS_PATH="$(dirname "$(xcrun -f swiftc)")" \
+            -DSWIFT_PATH_TO_CMARK_BUILD="$PWD/cmark-host-build" \
+            -DSWIFT_PATH_TO_CMARK_SOURCE="$PWD/swift-cmark" \
+            -DSWIFT_HOST_VARIANT=iphoneos \
+            -DSWIFT_HOST_VARIANT_SDK=IOS \
+            -DSWIFT_HOST_VARIANT_ARCH=arm64 \
+            -DSWIFT_DARWIN_DEPLOYMENT_VERSION_IOS="$IOS_DEPLOYMENT_TARGET" \
+            -DSWIFT_INCLUDE_TOOLS=ON \
+            -DSWIFT_BUILD_DYNAMIC_STDLIB=OFF \
+            -DSWIFT_BUILD_STATIC_STDLIB=OFF \
+            -DSWIFT_BUILD_SOURCEKIT=OFF \
+            -DSWIFT_BUILD_SWIFT_SYNTAX=OFF \
+            -DSWIFT_INCLUDE_TESTS=OFF \
+            -DSWIFT_INSTALL_COMPONENTS=
+
+      - name: Make the trees newer than the sources
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for tree in llvm-host-build llvm-build cmark-host-build swift-build; do
+            [ -d "$tree" ] && find "$tree" -exec touch -c {} + 2>/dev/null || true
+          done
+
+      # The check itself, identical to the toolchain workflow's, so the two cannot
+      # drift: the bridge compiled for iOS with the headers of the exact LLVM and
+      # Swift the bundle will carry.
+      - name: Compile-check XForge bridge against LLVM headers
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          EXTRA_DEFINES=()
+          EXTRA_INCLUDES=()
+          if [ "${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}" = "true" ]; then
+            EXTRA_DEFINES+=(-DXFORGE_HAS_SWIFT_FRONTEND=1)
+            EXTRA_INCLUDES+=(-I swift/include)
+            [ -d swift-build/include ] && EXTRA_INCLUDES+=(-I swift-build/include)
+            [ -d swift-build/tools/swift/include ] && EXTRA_INCLUDES+=(-I swift-build/tools/swift/include)
+          fi
+          xcrun --sdk iphoneos clang++ \
+            -std=c++20 \
+            -arch arm64 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
+            -isysroot "$SDK" \
+            -DXFORGE_HAS_LLVM=1 \
+            "${EXTRA_DEFINES[@]}" \
+            -I llvm-project/llvm/include \
+            -I llvm-build/include \
+            -I llvm-project/clang/include \
+            -I llvm-build/tools/clang/include \
+            -I llvm-project/lld/include \
+            "${EXTRA_INCLUDES[@]}" \
+            -I App/NativeToolchain \
+            -c App/NativeToolchain/NativeToolchainBridge.mm \
+            -o /tmp/NativeToolchainBridge.o
+          file /tmp/NativeToolchainBridge.o
