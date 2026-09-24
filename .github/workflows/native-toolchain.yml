@@ -219,8 +219,11 @@ jobs:
           mkdir -p cmark-host-build/src
           ln -sf cmark-host-build/src/cmark-gfm cmark-host-build/src/cmark
 
+      # Gated exactly like the Swift checkouts and the Swift stages: it is only
+      # needed when the frontend is, and on a PR/push run the cmark sources are not
+      # checked out at all — which is how this step failed its first two runs.
       - name: Build cmark for iPhoneOS
-        if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
+        if: ${{ inputs.with_swift }}
         shell: bash
         run: |
           set -euxo pipefail
