@@ -114,6 +114,7 @@ jobs:
             llvm-host-build
             llvm-build
             cmark-host-build
+            cmark-ios-build
           key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.toolchain-versions.outputs.value }}-${{ env.SWIFT_LLVM_REF }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '2' }}
 
       - name: Restore the Swift build
@@ -183,6 +184,31 @@ jobs:
           cmake --build cmark-host-build --target cmark-gfm
           ln -sf "$PWD/cmark-host-build/src/cmark-gfm" cmark-host-build/src/cmark
 
+      - name: Build cmark for iPhoneOS
+        if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -f cmark-ios-build/src/libcmark-gfm.a ]; then
+            echo "iOS cmark already cached"
+            exit 0
+          fi
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          cmake -S swift-cmark -B cmark-ios-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMARK_TESTS=OFF \
+            -DCMARK_SHARED=OFF \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET
+          # cmark-gfm-extensions is a separate archive and swift's Markup references
+          # symbols from both.
+          ninja -C cmark-ios-build cmark-gfm cmark-gfm-extensions
+          find cmark-ios-build -name 'libcmark-gfm*.a'
+
       - name: Configure the Swift frontend for iPhoneOS
         if: ${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}
         shell: bash
@@ -226,7 +252,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          for tree in llvm-host-build llvm-build cmark-host-build swift-build; do
+          for tree in llvm-host-build llvm-build cmark-host-build cmark-ios-build swift-build; do
             [ -d "$tree" ] && find "$tree" -exec touch -c {} + 2>/dev/null || true
           done
 
@@ -263,3 +289,75 @@ jobs:
             -c App/NativeToolchain/NativeToolchainBridge.mm \
             -o /tmp/NativeToolchainBridge.o
           file /tmp/NativeToolchainBridge.o
+
+      # The staging and link half, deliberately the same commands as the toolchain
+      # workflow's: header roots (sources and generated kept apart — `swift/bridging`
+      # is a generated file and `swift/Bridging/` a source directory), one merged
+      # archive, and a link into an app-shaped target. Without this the fast loop
+      # would answer the compile question and leave the link question to a 90-minute
+      # run, which is how the cmark symbols went unnoticed.
+      - name: Stage the toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist/include dist/include-generated dist/lib
+          stage_headers() { cp -R -L "$1" "$2"; }
+
+          stage_headers llvm-project/llvm/include/llvm dist/include/
+          stage_headers llvm-project/clang/include/clang dist/include/
+          stage_headers llvm-project/lld/include/lld dist/include/
+
+          [ -d llvm-build/include/llvm ] && stage_headers llvm-build/include/llvm dist/include-generated/
+          [ -d llvm-build/tools/clang/include/clang ] && stage_headers llvm-build/tools/clang/include/clang dist/include-generated/
+
+          if [ "${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}" = "true" ]; then
+            stage_headers swift/include/swift dist/include/
+            for swift_headers in swift-build/include/swift swift-build/tools/swift/include/swift; do
+              [ -d "$swift_headers" ] && stage_headers "$swift_headers" dist/include-generated/
+            done
+          fi
+
+          find llvm-build/lib -maxdepth 1 -type f -name '*.a' -print | sort > /tmp/archives.txt
+          if [ -d cmark-ios-build ]; then
+            find cmark-ios-build -type f -name 'libcmark-gfm*.a' -print | sort >> /tmp/archives.txt
+          fi
+          if [ "${{ inputs.with_swift || github.event_name != 'workflow_dispatch' }}" = "true" ]; then
+            find swift-build/lib -maxdepth 3 -type f -name '*.a' -print | sort >> /tmp/archives.txt
+          fi
+          test -s /tmp/archives.txt
+          ARCHIVES=()
+          while IFS= read -r archive; do ARCHIVES+=("$archive"); done < /tmp/archives.txt
+          echo "merging ${#ARCHIVES[@]} archives"
+          /usr/bin/libtool -static -o dist/lib/libXForgeNativeToolchain.a "${ARCHIVES[@]}"
+          ls -la dist/lib/libXForgeNativeToolchain.a
+
+      - name: Link an app-shaped target
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          cat > /tmp/native_link_smoke.mm <<'EOF'
+          #include "NativeToolchainBridge.h"
+          int main(void) {
+              return xf_native_toolchain_available() ? 0 : 1;
+          }
+          EOF
+          xcrun --sdk iphoneos clang++ -std=c++20 -arch arm64 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET -isysroot "$SDK" \
+            -I App/NativeToolchain -c /tmp/native_link_smoke.mm -o /tmp/native_link_smoke.o
+          set +e
+          xcrun --sdk iphoneos clang++ -arch arm64 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET -isysroot "$SDK" \
+            /tmp/native_link_smoke.o /tmp/NativeToolchainBridge.o \
+            dist/lib/libXForgeNativeToolchain.a \
+            -lc++ -lz -liconv -lsqlite3 -framework Foundation \
+            -o /tmp/XForgeNativeToolchainSmoke 2> /tmp/native-link-errors.txt
+          STATUS=$?
+          set -e
+          if [ "$STATUS" != "0" ]; then
+            echo "::error::linking the toolchain into an app-shaped target failed"
+            grep -E '^(  "_|ld: )' /tmp/native-link-errors.txt | sort -u | head -40
+            tail -40 /tmp/native-link-errors.txt
+            exit 1
+          fi
+          file /tmp/XForgeNativeToolchainSmoke
