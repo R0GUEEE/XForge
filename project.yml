@@ -1,8 +1,10 @@
 name: XForge
 options:
   bundleIdPrefix: com.r0gueee
+  # iOS 17 is the floor: XKit (xtool's on-device signing/install library) declares
+  # .iOS(.v17), and the native Xcode-project model (XcodeProj) the same.
   deploymentTarget:
-    iOS: "16.0"
+    iOS: "17.0"
   createIntermediateGroups: true
   generateEmptyDirectories: true
 
@@ -13,6 +15,11 @@ packages:
   zipfoundation:
     url: https://github.com/weichsel/ZIPFoundation
     from: 0.9.19
+  # No XcodeProj package here on purpose. Reading an existing .xcodeproj is done by
+  # App/Models/XcodeProject.swift with its own OpenStep parser: the `xtool` package
+  # resolves XcodeGen, which pins XcodeProj with `exact:` (9.14.0 today), so asking
+  # for an iOS-capable XcodeProj is unsatisfiable — it made SwiftPM's resolver hang
+  # for 40+ minutes in CI — and the pinned one declares macOS only.
 
 # ---------------------------------------------------------------------------
 # App identity + shared build settings.
@@ -40,6 +47,9 @@ targets:
   XForge:
     type: application
     platform: iOS
+    configFiles:
+      Debug: Support/NativeToolchain.generated.xcconfig
+      Release: Support/NativeToolchain.generated.xcconfig
     sources:
       - path: App
       - path: Support
@@ -108,6 +118,7 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_PREVIEWS: YES
         OTHER_SWIFT_FLAGS: "-Xcc -fmacro-backtrace-limit=0"
+        CLANG_CXX_LANGUAGE_STANDARD: c++20
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
         # --- signing ------------------------------------------------------
         # Automatic signing with the team above. CI builds pass
@@ -137,19 +148,31 @@ targets:
         # compile the bridge's stub instead and link nothing extra.
         SWIFT_OBJC_BRIDGING_HEADER: Support/XForge-Bridging-Header.h
         HEADER_SEARCH_PATHS:
+          - $(inherited)
           - $(SRCROOT)/App/EmbeddedVM
           - $(SRCROOT)/App/Services
+          - $(SRCROOT)/App/NativeToolchain
+          - $(XFORGE_NATIVE_HEADER_SEARCH_PATHS)
         "HEADER_SEARCH_PATHS[sdk=iphoneos*]":
+          - $(inherited)
           - $(SRCROOT)/App/EmbeddedVM
           - $(SRCROOT)/App/Services
+          - $(SRCROOT)/App/NativeToolchain
           - $(ISH_ROOT)
+          - $(XFORGE_NATIVE_HEADER_SEARCH_PATHS)
         "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]":
+          - $(inherited)
           - $(ISH_LIB_DIR)
+          - $(XFORGE_NATIVE_LIBRARY_SEARCH_PATHS)
         # Must match the guest-arch configuration the core was built with
         # (-Dguest_arch=arm64); struct layouts differ per enabled arch.
         "OTHER_CFLAGS[sdk=iphoneos*]":
+          - $(inherited)
           - -DGUEST_ARM64=1
+          - $(XFORGE_NATIVE_CFLAGS)
         "OTHER_LDFLAGS[sdk=iphoneos*]":
+          - $(inherited)
+          - $(XFORGE_NATIVE_LDFLAGS)
           - -lish
           - -lish_emu
           - -lfakefs

@@ -15,6 +15,9 @@ struct SettingsView: View {
                 NavigationLink { ToolchainView() } label: {
                     Label("Toolchain & Alpine", systemImage: "wrench.and.screwdriver")
                 }
+                NavigationLink { NativeToolchainView() } label: {
+                    Label("Native Toolchain", systemImage: "cpu")
+                }
                 NavigationLink { DownloadsView() } label: {
                     Label("Downloads", systemImage: "arrow.down.circle")
                 }

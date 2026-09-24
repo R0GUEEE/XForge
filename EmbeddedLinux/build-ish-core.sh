@@ -41,7 +41,7 @@ OUT="${ISH_LIB_DIR:-$BUILD/lib}"
 # built. Must match the -DGUEST_ARM64=1 in project.yml: the guest-arch defines
 # select struct layouts, so engine and app have to agree.
 GUEST_ARCH="${ISH_GUEST_ARCH:-arm64}"
-MIN_SDK="${IPHONEOS_DEPLOYMENT_TARGET:-16.0}"
+MIN_SDK="${IPHONEOS_DEPLOYMENT_TARGET:-17.0}"
 
 log() { printf '\033[1m==> %s\033[0m\n' "$*"; }
 note() { printf '    %s\n' "$*"; }
