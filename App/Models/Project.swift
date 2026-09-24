@@ -2,11 +2,14 @@ import Foundation
 
 /// A SwiftPM package that can be built into an iOS app.
 struct Project: Identifiable, Hashable, Codable {
-    static let projectsRoot = "/root/projects"
+    /// Project directories live under `<Documents>/projects`; this is the stored
+    /// prefix a project's `rootPath` is built from, kept so a project record and
+    /// its directory can be checked against each other.
+    static let projectsRoot = "projects"
     var id: UUID = UUID()
     var name: String
     var organizationIdentifier: String = "com.example"
-    /// Path of the package root inside the embedded Linux filesystem.
+    /// The project's stored path, relative to the app container (`projects/<name>`).
     var rootPath: String
     var createdAt: Date = Date()
     /// Configured Info.plist settings for the produced app (editable in the GUI).
@@ -89,7 +92,8 @@ protocol BuildExecutor {
 
 enum SDKSource {
     /// A prebuilt `darwin.artifactbundle` we host (built in CI from Xcode).
+    ///
+    /// It used to have a `.bundled` case for an SDK already inside the guest
+    /// filesystem. There is no guest, so there is one way to get an SDK: fetch it.
     case hostedRemote(URL)
-    /// Already inside the embedded Linux filesystem.
-    case bundled(String)
 }

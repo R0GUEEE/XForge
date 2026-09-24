@@ -20,7 +20,7 @@ import Foundation
 /// a parser instead of fighting the graph. See Docs/XCODE-ALTERNATIVE.md.
 ///
 /// Deliberately *not* here yet:
-///  - anything that compiles (see `NativeToolchain`/`EmbeddedLinuxExecutor`);
+///  - anything that compiles (see `NativeToolchain`/`NativeBuildExecutor`);
 ///  - `$(...)` evaluation, `[config=…]` conditions and Xcode's huge default
 ///    settings table: values are reported as written;
 ///  - schemes, asset catalogs and storyboards. `actool`/`ibtool` are Xcode's own

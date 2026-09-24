@@ -77,10 +77,6 @@ final class NativeBuildExecutor: BuildExecutor {
         switch source {
         case .hostedRemote(let url):
             try await NativeSDK.install(fromRemote: url)
-        case .bundled:
-            // A guest path is meaningless without the guest; say so instead of
-            // looking for a file that can never exist here.
-            throw NativeBuildError.unusableSDKSource
         }
     }
 
@@ -265,7 +261,7 @@ final class NativeBuildExecutor: BuildExecutor {
             )
             emit(.output("swift-frontend \(source.lastPathComponent)"))
             let result = try await runDetached {
-                NativeToolchain.runSwiftFrontend(arguments: arguments)
+                try NativeToolchain.runSwiftFrontend(arguments: arguments)
             }
             try check(result, tool: "swift-frontend", source: source)
             objects.append(object)
@@ -424,8 +420,8 @@ final class NativeBuildExecutor: BuildExecutor {
 enum NativeBuildError: LocalizedError {
     case toolchainUnavailable(String?)
     case swiftFrontendMissing(Int)
-    case unusableSDKSource
     case projectAlreadyExists(URL)
+    case missingProjectDirectory(URL)
     case compileFailed(tool: String, source: URL, diagnostics: String)
     case linkFailed(String)
 
@@ -439,10 +435,10 @@ enum NativeBuildError: LocalizedError {
             is not linked into this build of XForge. Only the C/C++/Objective-C \
             half of the toolchain is present.
             """
-        case .unusableSDKSource:
-            return "That SDK source belongs to the embedded Linux guest, which no longer exists. Install the Darwin SDK bundle instead."
         case .projectAlreadyExists(let url):
             return "A project already exists at \(url.path)."
+        case .missingProjectDirectory(let url):
+            return "The project directory is missing: \(url.path)."
         case .compileFailed(let tool, let source, let diagnostics):
             let text = diagnostics.trimmingCharacters(in: .whitespacesAndNewlines)
             let detail = text.isEmpty ? "\(tool) reported a failure without diagnostics." : text

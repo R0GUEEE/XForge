@@ -1,291 +1,216 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Manage the on-device build infrastructure.
+/// Manage the build toolchain.
 ///
-/// Every component lives in the embedded Alpine system, and every one of them is
-/// installed *by running a command inside it*. That is what this screen sets up:
-/// it puts the user's files where the guest can reach them and hands the right
-/// command to the Terminal, where the install runs and reports what it is doing.
+/// Two halves, and the screen is honest about which one is missing:
 ///
-///  - **Alpine rootfs** — bundled in the app; "installing" it is a local import.
-///  - **Swift / xtool** — the commands swift.org and xtool document, run in the
-///    guest (see `SystemComponents`).
-///  - **Darwin SDK** — either your own `Xcode.xip`, copied into the guest's
-///    storage and installed there with `xtool sdk install`, or XForge's prebuilt
-///    bundle, downloaded and installed inside the guest.
+///  - **the compiler**, linked into this build of the app
+///    (`Support/NativeToolchain.generated.xcconfig`, written by
+///    `NativeToolchain/prepare-xcode.sh`). It cannot be installed at runtime —
+///    either the libraries are in the binary or they are not — so this reports
+///    what is there;
+///  - **the Darwin SDK**, a bundle in the app's container, downloaded or imported
+///    here.
+///
+/// The smoke test compiles a real file through the linked compiler and links it,
+/// which is the only way to know the toolchain works before a build depends on it.
 struct ToolchainView: View {
-    @EnvironmentObject private var terminal: TerminalSession
-    @StateObject private var toolchain = ToolchainManager()
-    @State private var importingXIP = false
-    @State private var importingRootfs = false
+    @State private var sdkPath: String?
+    @State private var sdkError: String?
+    @State private var importing = false
+    @State private var working = false
+    @State private var message: String?
+    @State private var smokeResult: String?
     @State private var confirmingDownload = false
-    @State private var preparing: String?
+
+    private var capabilities: NativeToolchainCapabilities { .current }
 
     var body: some View {
         Form {
             Section {
-                ForEach(ToolchainManager.Component.allCases) { component in
-                    row(component)
-                }
+                row("clang", present: capabilities.hasClang)
+                row("ld64.lld (Mach-O linker)", present: capabilities.hasLLDMachO)
+                row("swift-frontend", present: capabilities.hasSwiftFrontend)
             } header: {
-                Text("Components")
+                Text("Compiler")
             } footer: {
-                Text("Installs run in the Terminal tab, so you can watch them — and "
-                     + "answer anything they ask — while they work.")
+                Text(capabilities.hasClang
+                     ? "Linked into this build: \(capabilities.backendDescription)"
+                     : "Not linked into this build. The native compiler has to be in the binary, "
+                       + "so install the toolchain bundle and rebuild (NativeToolchain/install-bundle.sh).")
             }
 
             Section {
-                Button {
-                    Task { await toolchain.refresh(probeGuest: true) }
-                } label: {
-                    Label("Check the embedded Linux", systemImage: "arrow.clockwise")
+                if sdkPath != nil {
+                    LabeledContent("SDK", value: "installed")
+                    LabeledContent("Path", value: sdkPath ?? "")
+                } else {
+                    Text("Not installed. A build cannot compile anything without it.")
+                        .foregroundStyle(.secondary)
                 }
-                .disabled(toolchain.activity != nil || preparing != nil)
-            } footer: {
-                Text("Green = present. Guest components are verified inside the "
-                     + "embedded Linux, which this boots if it is not running.")
-            }
-
-            Section {
-                Button {
-                    importingXIP = true
-                } label: {
-                    Label("Install the Darwin SDK from an Xcode.xip…",
-                          systemImage: "doc.badge.plus")
-                }
-                Button {
-                    confirmingDownload = true
-                } label: {
-                    Label("Install the prebuilt Darwin SDK…", systemImage: "arrow.down.circle")
+                if let sdkError {
+                    Text(sdkError).font(.footnote).foregroundStyle(.red)
                 }
             } header: {
                 Text("Darwin SDK")
             } footer: {
-                Text("With an Xcode.xip: the file is copied into the Alpine system's own "
-                     + "storage and then installed there with "
-                     + "`xtool sdk install \"path/to/xip\"`. Without one, XForge's "
-                     + "prebuilt darwin.artifactbundle is fetched and installed inside "
-                     + "the guest instead. Either way the SDK already in the guest is "
-                     + "removed first — SwiftPM will not install a second bundle "
-                     + "carrying the same artifact ID, and the bundled rootfs ships one.")
+                Text("The SDK is xtool's darwin.artifactbundle: the iPhoneOS headers, the "
+                     + "tbd stubs and the static Swift runtime, read straight out of the "
+                     + "app's container. About 460 MB.")
             }
 
             Section {
                 Button {
-                    importingRootfs = true
+                    confirmingDownload = true
                 } label: {
-                    Label("Import an Alpine rootfs archive…",
-                          systemImage: "shippingbox.and.arrow.backward")
+                    Label(working ? "Working…" : "Download the Darwin SDK", systemImage: "arrow.down.circle")
                 }
-                .disabled(toolchain.isInstalling != nil || toolchain.isGuestBooted)
-            } header: {
-                Text("Offline Imports")
-            } footer: {
-                Text("Choose a rootfs archive to replace the bundled one. A plain Alpine "
-                     + ".tar.gz is imported on the host, so it will not have XForge's "
-                     + "root configuration. Quit and reopen XForge first if Linux is running.")
-            }
+                .disabled(working)
 
-            if let activity = toolchain.activity ?? preparing {
-                Section {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text(activity).font(.footnote).foregroundStyle(.secondary)
+                Button {
+                    importing = true
+                } label: {
+                    Label("Install from a bundle in Files…", systemImage: "doc.badge.plus")
+                }
+                .disabled(working)
+
+                if sdkPath != nil {
+                    Button(role: .destructive) {
+                        removeSDK()
+                    } label: {
+                        Label("Remove the SDK", systemImage: "trash")
                     }
+                    .disabled(working)
                 }
+            } header: {
+                Text("Actions")
             }
 
-            if let message = toolchain.message {
+            Section {
+                Button {
+                    Task { await runSmokeTest() }
+                } label: {
+                    Label("Compile and link a test file", systemImage: "checkmark.seal")
+                }
+                .disabled(working || !capabilities.canCompile || sdkPath == nil)
+
+                if let smokeResult {
+                    Text(smokeResult)
+                        .font(.footnote)
+                        .foregroundStyle(smokeResult.hasPrefix("✓") ? .green : .red)
+                }
+            } header: {
+                Text("Verify")
+            } footer: {
+                Text("Compiles a C file with clang and links it with ld64.lld, in this process, "
+                     + "against the installed SDK. This is what a real build does.")
+            }
+
+            if let message {
                 Section {
                     Label(message, systemImage: "info.circle")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-
-            Section(footer: Text("Reset removes the imported rootfs, the staged darwin SDK "
-                                 + "and any downloads. The app re-imports the bundled rootfs "
-                                 + "on the next boot.")) {
-                Button(role: .destructive) {
-                    Task { await toolchain.reset() }
-                } label: {
-                    Label("Reset Toolchain", systemImage: "trash")
-                }
-                .disabled(toolchain.isInstalling != nil)
-            }
-
-            Section(footer: Text("If something dies without an explanation, share the log: "
-                                 + "the engine's own messages and XForge's install "
-                                 + "breadcrumbs are both in it.")) {
-                NavigationLink {
-                    EngineLogView()
-                } label: {
-                    Label("Engine log", systemImage: "doc.text.magnifyingglass")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
         }
         .navigationTitle("Toolchain")
-        .task { await toolchain.refresh() }
+        .task { refresh() }
         .fileImporter(
-            isPresented: $importingXIP,
-            allowedContentTypes: [UTType(filenameExtension: "xip") ?? .data],
+            isPresented: $importing,
+            allowedContentTypes: [.folder],
             allowsMultipleSelection: false
         ) { result in
             guard case .success(let urls) = result, let url = urls.first else { return }
-            Task { await installFromXIP(url) }
+            install(from: url)
         }
-        .fileImporter(
-            isPresented: $importingRootfs,
-            allowedContentTypes: [.archive, .gzip, .data],
-            allowsMultipleSelection: false
-        ) { result in
-            guard case .success(let urls) = result, let url = urls.first else { return }
-            Task { await toolchain.importRootfs(from: url) }
-        }
-        .confirmationDialog("Install the prebuilt Darwin SDK?",
-                            isPresented: $confirmingDownload) {
-            Button("Download and install in the Terminal") {
-                Task { await installPrebuiltSDK() }
-            }
+        .confirmationDialog(
+            "Download the Darwin SDK?",
+            isPresented: $confirmingDownload
+        ) {
+            Button("Download") { Task { await downloadSDK() } }
         } message: {
-            Text("About 457 MB is downloaded inside the guest and installed there. "
-                 + "It runs in the Terminal tab.")
+            Text("About 460 MB, downloaded into the app's container.")
         }
     }
 
     // MARK: - Rows
 
-    @ViewBuilder
-    private func row(_ component: ToolchainManager.Component) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
-                Image(systemName: component.icon)
-                    .foregroundStyle(.tint)
-                    .frame(width: 22)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(component.rawValue).font(.subheadline.weight(.semibold))
-                    Text(component.blurb).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                statusBadge(component)
-            }
-
-            HStack(spacing: 12) {
-                ForEach(actions(for: component), id: \.title) { action in
-                    Button(action.title) { action.run() }
-                        .font(.footnote)
-                        .disabled(toolchain.isInstalling != nil || preparing != nil)
-                }
-            }
-            .padding(.leading, 32)
-        }
-        .padding(.vertical, 2)
-    }
-
-    private struct RowAction {
-        let title: String
-        let run: () -> Void
-    }
-
-    private func actions(for component: ToolchainManager.Component) -> [RowAction] {
-        switch component {
-        case .rootfs:
-            // The bundled rootfs installs itself; a custom archive is the
-            // "Offline Imports" section below.
-            return []
-        case .swift:
-            return [RowAction(title: "Install in Terminal") {
-                installInTerminal(.swift)
-            }]
-        case .xtool:
-            return [RowAction(title: "Install in Terminal") {
-                installInTerminal(.xtool)
-            }]
-        case .sdk:
-            return [
-                RowAction(title: "From an Xcode.xip…") { importingXIP = true },
-                RowAction(title: "Prebuilt download…") { confirmingDownload = true },
-            ]
-        }
-    }
-
-    @ViewBuilder
-    private func statusBadge(_ component: ToolchainManager.Component) -> some View {
-        if toolchain.isInstalled(component) {
-            Label("Installed", systemImage: "checkmark")
-                .labelStyle(.iconOnly)
-                .font(.footnote.bold())
-                .foregroundStyle(.green)
-        } else if component.livesInGuest && !toolchain.guestChecked {
-            Text("?").font(.footnote.bold()).foregroundStyle(.secondary)
-        } else {
-            Image(systemName: "circle.dashed")
-                .font(.footnote.bold())
-                .foregroundStyle(.orange)
+    private func row(_ title: String, present: Bool) -> some View {
+        HStack {
+            Image(systemName: present ? "checkmark.circle.fill" : "circle.dashed")
+                .foregroundStyle(present ? .green : .secondary)
+            Text(title)
+            Spacer()
+            Text(present ? "linked" : "missing")
+                .font(.caption)
+                .foregroundStyle(present ? .green : .secondary)
         }
     }
 
     // MARK: - Actions
 
-    /// Prepare the guest and hand the component's install command to the Terminal.
-    private func installInTerminal(_ component: SystemComponents.Component) {
-        Task {
-            preparing = "Preparing the guest for \(component.title)…"
-            defer { preparing = nil }
-            do {
-                let vm = XForgeEnvironment.makeVM()
-                await vm.prepareRootfs()
-                try await vm.boot()
-                try await SystemComponents.ensureInstallerScript(in: vm)
-                terminal.enqueue(command(for: component), label: "Toolchain")
-                toolchain.message = "\(component.title): running in the Terminal tab."
-            } catch {
-                toolchain.message = error.localizedDescription
-            }
-        }
-    }
-
-    private func command(for component: SystemComponents.Component) -> String {
-        switch component {
-        case .glibc:
-            return SystemComponents.scriptCommand(.glibc)
-        case .xtool:
-            return SystemComponents.xtoolInstallCommand
-        case .swift:
-            return SystemComponents.swiftInstallCommand
-        case .darwinSDK:
-            // Always driven by a file or a download, never by a bare tap.
-            return SystemComponents.scriptCommand(.xtool)
-        }
-    }
-
-    /// Copy the user's Xcode.xip into the guest's storage, then install it there.
-    private func installFromXIP(_ url: URL) async {
-        preparing = "Copying \(url.lastPathComponent) into the guest…"
-        defer { preparing = nil }
+    private func refresh() {
         do {
-            let command = try await toolchain.installSDKFromXcode(xip: url)
-            terminal.enqueue(command, label: "Toolchain")
+            let layout = try NativeSDK.layout()
+            sdkPath = layout.sdkRoot.path
+            sdkError = nil
         } catch {
-            toolchain.message = error.localizedDescription
+            sdkPath = nil
+            sdkError = NativeSDK.isInstalled ? error.localizedDescription : nil
         }
     }
 
-    /// Download XForge's prebuilt Darwin SDK bundle inside the guest and install it.
-    private func installPrebuiltSDK() async {
-        preparing = "Resolving the latest Darwin SDK release…"
-        defer { preparing = nil }
+    private func downloadSDK() async {
+        working = true
+        message = nil
+        defer { working = false }
         do {
-            let url = try await XForgeReleases.darwinSDKURL()
-            let vm = XForgeEnvironment.makeVM()
-            await vm.prepareRootfs()
-            try await vm.boot()
-            try await SystemComponents.ensureInstallerScript(in: vm)
-            terminal.enqueue(SystemComponents.darwinSDKDownloadCommand(from: url),
-                             label: "Toolchain")
-            toolchain.message = "Downloading and installing the Darwin SDK in the Terminal tab."
+            try await NativeSDK.installLatestPrebuilt()
+            refresh()
+            message = "Darwin SDK installed."
         } catch {
-            toolchain.message = error.localizedDescription
+            sdkError = error.localizedDescription
+        }
+    }
+
+    private func install(from url: URL) {
+        working = true
+        message = nil
+        defer { working = false }
+        do {
+            try NativeSDK.install(from: url)
+            refresh()
+            message = "Darwin SDK installed from \(url.lastPathComponent)."
+        } catch {
+            sdkError = error.localizedDescription
+        }
+    }
+
+    private func removeSDK() {
+        do {
+            try NativeSDK.remove()
+            refresh()
+            message = "Darwin SDK removed."
+        } catch {
+            sdkError = error.localizedDescription
+        }
+    }
+
+    private func runSmokeTest() async {
+        working = true
+        smokeResult = nil
+        defer { working = false }
+        do {
+            let layout = try NativeSDK.layout()
+            let object = try await Task.detached(priority: .userInitiated) {
+                try NativeToolchain.smokeCompile(sdk: layout.sdkRoot)
+            }.value
+            let size = (try? object.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            smokeResult = "✓ \(object.lastPathComponent) (\(size) bytes)"
+        } catch {
+            smokeResult = error.localizedDescription
         }
     }
 }

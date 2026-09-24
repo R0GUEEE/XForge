@@ -1,7 +1,7 @@
 import Foundation
 
-/// Application-level wiring: where the embedded Linux lives, how a build executor is
-/// constructed for a project, and where staged artifacts land.
+/// Application-level wiring: where the app's directories are, how a build executor
+/// is constructed for a project, and where staged artifacts land.
 @MainActor
 enum XForgeEnvironment {
     /// App sandbox root.
@@ -11,30 +11,6 @@ enum XForgeEnvironment {
     /// sandbox directories while compiling. Same for `nativeSDKDirectory`.
     nonisolated static var documentDirectory: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    }
-
-    /// App sandbox subdirectory holding the embedded Linux userspace.
-    static var embeddedRoot: URL {
-        documentDirectory.appendingPathComponent("embedded-linux", isDirectory: true)
-    }
-
-    /// Installed ish-arm64 `fakefs` root filesystems. The bundled Alpine rootfs is
-    /// imported here at launch and reused afterwards (the first boot imports it
-    /// as a fallback).
-    static var rootsDirectory: URL {
-        embeddedRoot.appendingPathComponent("roots", isDirectory: true)
-    }
-
-    /// Whether the bundled Alpine rootfs has already been imported.
-    static var isRootfsInstalled: Bool {
-        RootfsInstaller.isInstalled(in: rootsDirectory)
-    }
-
-    /// Directory shared into the guest at `/host` (read-write, realfs). Large
-    /// artifacts are staged here by the host instead of being pushed through the
-    /// guest command pipe.
-    static var hostShareDirectory: URL {
-        embeddedRoot.appendingPathComponent("host", isDirectory: true)
     }
 
     /// Host-side downloads (SDK archives, toolchain bundles).
@@ -80,26 +56,21 @@ enum XForgeEnvironment {
     /// iOS data storage guidelines forbid — it bloats every backup and can get an
     /// app rejected — so:
     ///
-    ///  - the downloads, staged artifacts and engine log are excluded: each is
-    ///    produced again by downloading, rebuilding or running;
-    ///  - **the guest filesystem is excluded too.** It is the bundled rootfs
-    ///    imported into fakefs, and with `XFORGE_PROVISION=all` that is several
-    ///    gigabytes of Alpine, Swift, xtool and the SDK. The user's projects live
-    ///    *inside* it — nothing here can separate one from the other — so this is
-    ///    a real trade-off: projects are no longer in device backups. The way out
-    ///    is `ProjectExporter` ("Export project" on a project's screen, and the
-    ///    archive appears in `Documents/exports`, which *is* backed up), plus the
-    ///    `/host` share and the Terminal for anything else.
+    ///  - the downloads, the staged artifacts and the log are excluded: each is
+    ///    produced again by downloading, rebuilding or running.
     ///
-    /// See Docs/DESIGN.md, "What is backed up", for why the two cannot be split.
+    /// Projects are *not* excluded. They used to be inside the guest filesystem,
+    /// which had to be kept out of backup as a whole and took the user's work with
+    /// it; now that they are plain directories in the container, they are backed up
+    /// like any other document.
     static func prepareStorage() {
         let fm = FileManager.default
-        let excluded = [embeddedRoot, downloadsDirectory, nativeSDKDirectory, stagingDirectory, logsDirectory]
+        let excluded = [downloadsDirectory, nativeSDKDirectory, stagingDirectory, logsDirectory]
         for directory in excluded {
             try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
             excludeFromBackup(directory)
         }
-        // Exports are the user's work leaving the guest, so they are left alone:
+        // Exports are the user's work leaving the app, so they are left alone:
         // backed up, and visible in the Files app.
         try? fm.createDirectory(at: exportsDirectory, withIntermediateDirectories: true)
     }
@@ -147,34 +118,12 @@ enum XForgeEnvironment {
             .sorted { $0.date > $1.date }
     }
 
-    /// The single embedded Linux VM for the whole app.
+    /// Construct the build executor: the toolchain linked into this process.
     ///
-    /// ish-arm64 can only boot one guest per process, so every screen (Terminal,
-    /// Toolchain, Build) must share this instance rather than creating its own.
-    private static var sharedVM: LinuxVM?
-
-    static func makeVM() -> LinuxVM {
-        if let sharedVM { return sharedVM }
-        for dir in [embeddedRoot, rootsDirectory, hostShareDirectory, downloadsDirectory] {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        }
-        let vm = EmbeddedLinuxVM(root: embeddedRoot,
-                                 hostShare: hostShareDirectory,
-                                 emulator: makeEmulator())
-        sharedVM = vm
-        return vm
-    }
-
-    /// Construct the build executor. `Local` uses the embedded Linux VM.
+    /// There is exactly one implementation now. It used to choose between the
+    /// embedded Linux and a "remote" backend that never existed; both the choice
+    /// and the guest it offered are gone.
     static func makeExecutor(for project: Project? = nil) -> BuildExecutor {
-        EmbeddedLinuxExecutor(vm: makeVM(), stagingDir: stagingDirectory)
-    }
-
-    /// The in-process Linux emulator that runs the embedded Alpine guest.
-    /// ish-arm64 runs a real aarch64 Linux guest in-process; its threaded-code
-    /// interpreter dispatches guest instructions to pre-compiled "gadgets", so it
-    /// needs no JIT entitlement and works in a sideloaded app.
-    static func makeEmulator() -> LinuxEmulator {
-        ISHEmulator(rootsDirectory: rootsDirectory, hostDirectory: hostShareDirectory)
+        NativeBuildExecutor(stagingDirectory: stagingDirectory)
     }
 }

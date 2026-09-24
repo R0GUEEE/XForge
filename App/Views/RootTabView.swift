@@ -5,16 +5,17 @@ struct RootTabView: View {
     @StateObject private var signing = XKitSigningService()
     @StateObject private var device = XKitDeviceService()
     @StateObject private var preferences = AppPreferences()
-    /// One terminal for the whole app: the Toolchain screen and the terminal
-    /// itself hand commands to the same session, so what a component install is
-    /// doing is visible where it runs.
-    @StateObject private var terminal = TerminalSession()
     @State private var selection: AppTab = .projects
 
+    /// Three tabs, not four.
+    ///
+    /// The Terminal tab existed to type into the embedded Linux. With the guest
+    /// gone there is nothing behind it — the toolchain runs in this process and
+    /// reports into the Build screen's console — so the tab is gone rather than
+    /// left opening an empty screen.
     enum AppTab: Hashable {
         case projects
         case build
-        case terminal
         case settings
     }
 
@@ -31,26 +32,16 @@ struct RootTabView: View {
                 .tabItem { Label("Build", systemImage: "hammer") }
                 .tag(AppTab.build)
 
-            TerminalTab()
-                .environmentObject(terminal)
-                .tabItem { Label("Terminal", systemImage: "terminal.fill") }
-                .tag(AppTab.terminal)
-
             SettingsTab(preferences: preferences)
-                .environmentObject(terminal)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(AppTab.settings)
         }
         .task {
             // Create the app's own directories and keep the regenerable ones out
-            // of iCloud backup — before anything writes into them.
+            // of iCloud backup — before anything writes into them. Projects are
+            // user data and are backed up.
             XForgeEnvironment.prepareStorage()
-            // Install the bundled rootfs early, but do not make app presentation
-            // depend on booting the guest. The guest command bridge can take time
-            // to initialize on a physical device; Terminal and Toolchain perform
-            // the same idempotent boot and surface its result when actually used.
-            let vm = XForgeEnvironment.makeVM()
-            await vm.prepareRootfs()
+            XForgeLog.prepare()
         }
     }
 }
