@@ -18,7 +18,7 @@ toolchain:
 		echo "usage: make toolchain ARCHIVE=XForgeNativeToolchain-arm64-ios.tar.gz"; \
 		echo ""; \
 		echo "Download the artifact from a successful 'Native iOS Toolchain' run:"; \
-		echo "    gh run download --repo R0GUEEE/XForge --name XForgeNativeToolchain-ios-arm64"; \
+		echo "    gh run download --repo R0GUEEE/XForge --name XForgeNativeToolchain-arm64-ios"; \
 		exit 64; \
 	fi
 	@bash NativeToolchain/install-bundle.sh "$(ARCHIVE)"

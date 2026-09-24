@@ -103,8 +103,9 @@ struct ToolchainView: View {
             } header: {
                 Text("Verify")
             } footer: {
-                Text("Compiles a C file with clang and links it with ld64.lld, in this process, "
-                     + "against the installed SDK. This is what a real build does.")
+                Text("Compiles a C file with clang, links it into an arm64 executable with "
+                     + "ld64.lld, and — when the Swift frontend is linked — compiles a Swift "
+                     + "file too. All in this process, against the installed SDK.")
             }
 
             if let message {
@@ -198,17 +199,53 @@ struct ToolchainView: View {
         }
     }
 
+    /// Compile *and* link, in this process, against the installed SDK.
+    ///
+    /// A smoke test that only compiles cannot tell a working toolchain from one
+    /// whose objects the linker rejects, and the linker is the half that carries
+    /// the platform version and the entry point. The Swift frontend is exercised
+    /// too when it is linked, so the moment the frontend libraries arrive this
+    /// screen proves the whole chain rather than half of it.
     private func runSmokeTest() async {
         working = true
         smokeResult = nil
         defer { working = false }
         do {
             let layout = try NativeSDK.layout()
-            let object = try await Task.detached(priority: .userInitiated) {
-                try NativeToolchain.smokeCompile(sdk: layout.sdkRoot)
+            smokeResult = try await Task.detached(priority: .userInitiated) { () -> String in
+                // Matches the default target of `NativeToolchain.compileC`
+                // (`arm64-apple-ios17.0.0`), which is also XForge's own floor.
+                let minimumIOSVersion = "17.0"
+                var lines: [String] = []
+
+                let object = try NativeToolchain.smokeCompile(sdk: layout.sdkRoot)
+                lines.append("✓ clang: \(object.lastPathComponent)")
+
+                let executable = object
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("xforge-smoke")
+                let linked = try NativeToolchain.linkMachO(arguments: [
+                    "-arch", "arm64",
+                    "-platform_version", "ios", minimumIOSVersion, minimumIOSVersion,
+                    "-syslibroot", layout.sdkRoot.path,
+                    "-o", executable.path,
+                    "-lSystem",
+                    object.path
+                ])
+                guard linked.succeeded else {
+                    throw NativeToolchainError.link(linked.diagnostics)
+                }
+                let size = (try? executable.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+                lines.append("✓ ld64.lld: \(executable.lastPathComponent) (\(size) bytes)")
+
+                if NativeToolchain.isSwiftAvailable {
+                    let swiftObject = try NativeToolchain.smokeCompileSwift(sdk: layout)
+                    lines.append("✓ swift-frontend: \(swiftObject.lastPathComponent)")
+                } else {
+                    lines.append("· swift-frontend: not linked, so not tested")
+                }
+                return lines.joined(separator: "\n")
             }.value
-            let size = (try? object.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
-            smokeResult = "✓ \(object.lastPathComponent) (\(size) bytes)"
         } catch {
             smokeResult = error.localizedDescription
         }

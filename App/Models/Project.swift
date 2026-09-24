@@ -75,7 +75,9 @@ enum BuildEvent: Sendable {
     case failed(String)
 }
 
-/// Pluggable build backend. `Local` = embedded Linux VM, `Remote` = future build server.
+/// Pluggable build backend. There is one implementation — the in-process
+/// toolchain (`NativeBuildExecutor`) — and the seam is kept so a future backend
+/// (a remote build server, say) does not have to rewrite the pipeline.
 @MainActor
 protocol BuildExecutor {
     /// Verify the user-installed base toolchain + xtool without installing it.

@@ -208,7 +208,10 @@ enum NativeToolchain {
 
         let source = dir.appendingPathComponent("main.c")
         let object = dir.appendingPathComponent("main.o")
-        try "int xforge_native_smoke(void) { return 42; }\n"
+        // A real entry point, so the object can also be *linked*: a smoke test
+        // that only compiles cannot tell a working toolchain from one that can
+        // produce an object the linker rejects.
+        try "int main(void) { return 0; }\nint xforge_native_smoke(void) { return 42; }\n"
             .write(to: source, atomically: true, encoding: .utf8)
 
         let result = try compileC(source: source, object: object, sdk: sdk)

@@ -51,9 +51,6 @@ targets:
     sources:
       - path: App
       - path: Support
-      - path: Support/Resources
-        buildPhase: resources
-        optional: true
     dependencies:
       - package: xtool
         product: XKit
@@ -75,7 +72,7 @@ targets:
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
         # --- signing ------------------------------------------------------
         # Automatic signing with the team above. CI builds pass
-        # CODE_SIGNING_ALLOWED=NO (see .github/workflows/unsigned-ipa.yml), so
+        # CODE_SIGNING_ALLOWED=NO (see .github/workflows/build-ipa.yml), so
         # an unsigned IPA can be produced without any certificate.
         DEVELOPMENT_TEAM: $(XFORGE_DEVELOPMENT_TEAM)
         CODE_SIGN_STYLE: Automatic

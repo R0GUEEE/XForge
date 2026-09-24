@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Tab 5 — settings, storage, diagnostics, about.
+/// Tab 3 — toolchain, app files, build defaults, diagnostics, about.
 struct SettingsTab: View {
     @ObservedObject var preferences: AppPreferences
 

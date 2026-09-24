@@ -1,6 +1,10 @@
 import Foundation
 
 /// The stages of the on-device IPA build pipeline.
+///
+/// The last stage packages; it does not sign. Signing needs an Apple Developer
+/// identity, which arrives separately (the Signing screen), so a stage that claimed
+/// to sign would be reporting work nobody did.
 enum BuildStage: String, CaseIterable, Identifiable {
     case provision
     case sdk
@@ -19,7 +23,7 @@ enum BuildStage: String, CaseIterable, Identifiable {
         case .configure: return "Configure app"
         case .resolve: return "Resolve dependencies"
         case .compile: return "Compile (arm64-apple-ios)"
-        case .package: return "Package & sign .ipa"
+        case .package: return "Package .ipa"
         case .artifact: return "Stage artifact"
         }
     }
