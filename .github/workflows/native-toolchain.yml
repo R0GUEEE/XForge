@@ -51,9 +51,9 @@ on:
         type: string
         default: "17.0"
       cache_salt:
-        description: Bump to discard the cached iOS builds
+        description: Bump to discard the cached iOS builds (do this when the configure recipe below changes)
         type: string
-        default: "1"
+        default: "3"
   pull_request:
     paths:
       - "App/NativeToolchain/**"
@@ -143,10 +143,41 @@ jobs:
             echo "value=$(xcodebuild -version | tr '\n' ' ')-$(xcrun --sdk iphoneos --show-sdk-version)"
           } >> "$GITHUB_OUTPUT"
 
+      # A restored build tree carries the timestamps of the run that saved it, and
+      # those are *older* than the sources this run has just checked out. Ninja
+      # compares timestamps, so the tree it just restored would be rebuilt in full
+      # — the one thing the cache exists to prevent. The fix is to age the sources
+      # instead of refreshing the tree: "every file in the tree is newer than every
+      # source" then holds for whatever the cache restores, and it holds for ninja's
+      # generator check as well, because build.ninja is an *output* of that edge and
+      # any source newer than it sends ninja into a re-configure.
+      #
+      # Stamping the tree with `find … -exec touch` (what this workflow used to do,
+      # after configure) is unsound: the files are stamped in batches milliseconds
+      # apart, so whether a generator *input* ends up after build.ninja is decided
+      # by directory order. When it does, ninja re-runs CMake, CMake rewrites
+      # llvm/Config/*.h, and every object that includes them is dirty again — a
+      # full 2601-edge rebuild that the restore paid seconds to avoid.
+      - name: Age the source checkouts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for dir in llvm-project swift swift-cmark swift-syntax \
+                     swift-experimental-string-processing; do
+            [ -d "$dir" ] && find "$dir" -exec touch -h -t 202001010000 {} + 2>/dev/null || true
+          done
+
       # The expensive half is LLVM's cross-build and (when enabled) Swift's. The
       # key deliberately does not include the workflow file: editing this file —
       # which is what iterating on it looks like — must not force a rebuild of a
       # compiler that did not change. `cache_salt` is the way to ask for one.
+      #
+      # Bump it whenever the *recipe* changes too. A cache entry is immutable: once
+      # a partial tree has been stored under a key, every later run gets a "hit"
+      # for it, the save below is skipped (the key already exists, so the upload
+      # would be refused anyway) and the key can never be repaired. That is the
+      # trap the old `always()`-gated save walked into — it stored whatever existed
+      # even when the build it was saving had just failed.
       - name: Restore the LLVM builds
         id: llvm-cache
         uses: actions/cache/restore@v4
@@ -156,21 +187,23 @@ jobs:
             llvm-build
             cmark-host-build
             cmark-ios-build
-          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.toolchain-versions.outputs.value }}-${{ env.SWIFT_LLVM_REF }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '1' }}
+          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.toolchain-versions.outputs.value }}-${{ env.SWIFT_LLVM_REF }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '3' }}
 
       # Swift's own build is the longer half and is cached separately, because it
       # is saved *after* the LLVM half has been built and Swift's has too. Its key
       # deliberately ignores `cache_salt`: that salt exists to discard an LLVM tree
       # when the LLVM source changes, and the Swift tree is a function of the Swift
       # refs and the SDK alone — discarding it too would throw away the 45-minute
-      # half for a change to the other one.
+      # half for a change to the other one. The `-vN` suffix is this half's own
+      # salt: bump it when the Swift configure or build recipe changes, because a
+      # stored tree can never be replaced under the key it was stored with.
       - name: Restore the Swift build
         if: ${{ inputs.with_swift }}
         id: swift-cache
         uses: actions/cache/restore@v4
         with:
           path: swift-build
-          key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ env.SWIFT_REF }}-${{ env.SWIFT_LLVM_REF }}-${{ steps.toolchain-versions.outputs.value }}-${{ env.IOS_DEPLOYMENT_TARGET }}-1
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ env.SWIFT_REF }}-${{ env.SWIFT_LLVM_REF }}-${{ steps.toolchain-versions.outputs.value }}-${{ env.IOS_DEPLOYMENT_TARGET }}-v2
 
       - name: Build host TableGen tools
         shell: bash
@@ -254,7 +287,34 @@ jobs:
           ninja -C cmark-ios-build libcmark-gfm libcmark-gfm-extensions
           find cmark-ios-build -name 'libcmark-gfm*.a'
 
+      # Skipping the configure below is only sound if the restored tree really is
+      # the configured-and-built one it was saved from. Checking is cheap, it has to
+      # happen *before* the step it gates (a step's output does not exist yet when
+      # the condition above it is evaluated), and the alternative is a confusing
+      # failure — no build.ninja — where the old workflow had a slow-but-working path.
+      - name: Verify the restored LLVM build tree
+        if: ${{ steps.llvm-cache.outputs.cache-hit == 'true' }}
+        id: llvm-tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MISSING=""
+          for file in llvm-build/build.ninja llvm-build/CMakeCache.txt \
+                      llvm-build/include/llvm/Config/llvm-config.h \
+                      llvm-host-build/bin/llvm-tblgen llvm-host-build/bin/clang-tblgen; do
+            [ -e "$file" ] || MISSING="$MISSING $file"
+          done
+          OBJECTS="$(find llvm-build -name '*.o' -print -quit)"
+          if [ -n "$MISSING" ] || [ -z "$OBJECTS" ]; then
+            echo "::warning::restored LLVM tree is not usable (missing:$MISSING, objects:$([ -n "$OBJECTS" ] && echo present || echo none)); configuring from scratch"
+            echo "reusable=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "restored LLVM tree is configured and built; the configure below is skipped"
+            echo "reusable=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure LLVM for iPhoneOS arm64
+        if: ${{ steps.llvm-cache.outputs.cache-hit != 'true' || steps.llvm-tree.outputs.reusable != 'true' }}
         shell: bash
         run: |
           set -euxo pipefail
@@ -298,23 +358,25 @@ jobs:
             -DLLD_INCLUDE_TESTS=OFF \
             -DLLD_BUILD_TOOLS=OFF
 
-      # A restored build tree looks *older* than the sources that were just checked
-      # out, and ninja compares timestamps — so it would rebuild everything the
-      # cache exists to save. Touching the outputs puts them ahead again. It has to
-      # happen *after* CMake's configure, not before: configure rewrites generated
-      # headers (llvm/Config/…), and a header newer than the outputs invalidates
-      # every edge that includes it, which is nearly all of them. Sound either way,
-      # because a change to any source ref changes the cache key.
-      - name: Make the restored LLVM build newer than its inputs
-        if: ${{ steps.llvm-cache.outputs.cache-hit == 'true' }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-          for tree in llvm-host-build llvm-build cmark-host-build cmark-ios-build; do
-            [ -d "$tree" ] && find "$tree" -exec touch -c {} + 2>/dev/null || true
-          done
-
+      # Cheap by construction when the tree above was restored: the sources are all
+      # older than the objects, so ninja has nothing to do. It is also where the
+      # cache is proven — a restore that does not come back built shows up here as
+      # a 2601-edge rebuild in the log, not as a mystery.
+      #
+      # The target list is not "everything the app might use" but the closure the
+      # bundle has to satisfy, because the smoke link force-loads every archive:
+      # each member's undefined symbols must resolve inside the bundle. Two of these
+      # are invisible to clang's own libraries and only Swift references them, which
+      # is why they were missing:
+      #   * LLVMOrcJIT — swift's JIT (SwiftMaterializationUnit.cpp) and LLJIT;
+      #   * clangDependencyScanning — ClangImporter's explicit-module dependency
+      #     scanning (ModuleDepCollector/ScanAndUpdateArgs).
+      # Their transitive dependencies (JITLink, ExecutionEngine, RuntimeDyld,
+      # OrcShared/OrcTargetProcess, clangTooling, clangCAS, …) come with them.
+      # Adding a target here changes the delivered bundle, so bump `cache_salt`
+      # when you do: the cache key cannot see this list.
       - name: Build Clang and Mach-O LLD libraries
+        id: llvm-build
         if: ${{ !inputs.configure_only }}
         run: |
           set -euxo pipefail
@@ -329,15 +391,21 @@ jobs:
             clangAST \
             clangLex \
             clangBasic \
+            clangDependencyScanning \
             lldMachO \
-            lldCommon
+            lldCommon \
+            LLVMOrcJIT
 
       # The step this workflow exists for. Everything above is shared with the
       # LLVM-only bundle; everything below only happens when Swift is asked for.
-      # Saved here, before the step most likely to fail, and with `if: always()`:
-      # a failed Swift configure must not cost another LLVM cross-build.
+      # Saved here, before the step most likely to fail, so that a failed Swift
+      # configure does not cost another LLVM cross-build.
+      #
+      # Gated on the build having *succeeded*, not on `always()`: saving a tree
+      # ninja never finished stores a partial one under a key that can never be
+      # rewritten, and every later run then "hits" it and rebuilds anyway.
       - name: Save the LLVM builds
-        if: ${{ always() && steps.llvm-cache.outputs.cache-hit != 'true' }}
+        if: ${{ steps.llvm-build.outcome == 'success' && steps.llvm-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
@@ -347,8 +415,31 @@ jobs:
             cmark-host-build
             cmark-ios-build
 
+      # Same contract as the LLVM tree check above, and the same reason: the
+      # configure is skipped when the tree came back built, so a tree that came back
+      # *unbuilt* would fail on the missing archive instead of just rebuilding.
+      - name: Verify the restored Swift build tree
+        if: ${{ inputs.with_swift && steps.swift-cache.outputs.cache-hit == 'true' }}
+        id: swift-tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MISSING=""
+          for file in swift-build/build.ninja swift-build/CMakeCache.txt \
+                      swift-build/lib/libswiftFrontendTool.a; do
+            [ -e "$file" ] || MISSING="$MISSING $file"
+          done
+          OBJECTS="$(find swift-build -name '*.o' -print -quit)"
+          if [ -n "$MISSING" ] || [ -z "$OBJECTS" ]; then
+            echo "::warning::restored Swift tree is not usable (missing:$MISSING, objects:$([ -n "$OBJECTS" ] && echo present || echo none)); configuring from scratch"
+            echo "reusable=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "restored Swift tree is configured and built; the configure below is skipped"
+            echo "reusable=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Configure the Swift frontend for iPhoneOS
-        if: ${{ inputs.with_swift }}
+        if: ${{ inputs.with_swift && (steps.swift-cache.outputs.cache-hit != 'true' || steps.swift-tree.outputs.reusable != 'true') }}
         shell: bash
         run: |
           set -euxo pipefail
@@ -415,14 +506,8 @@ jobs:
             || echo "::warning::swiftFrontendTool archive not found where expected; listing swift-build/lib"
           ls -la swift-build/lib | head -40 || true
 
-      - name: Make the restored Swift build newer than its inputs
-        if: ${{ steps.swift-cache.outputs.cache-hit == 'true' }}
-        shell: bash
-        run: |
-          set -euxo pipefail
-          [ -d swift-build ] && find swift-build -exec touch -c {} + 2>/dev/null || true
-
       - name: Build the Swift frontend libraries
+        id: swift-build
         if: ${{ inputs.with_swift && !inputs.configure_only }}
         shell: bash
         run: |
@@ -435,7 +520,7 @@ jobs:
           ninja -C swift-build swiftFrontendTool
 
       - name: Save the Swift build
-        if: ${{ always() && inputs.with_swift && !inputs.configure_only && steps.swift-cache.outputs.cache-hit != 'true' }}
+        if: ${{ inputs.with_swift && !inputs.configure_only && steps.swift-build.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           key: ${{ steps.swift-cache.outputs.cache-primary-key }}
@@ -684,7 +769,13 @@ jobs:
             -o /tmp/XForgeNativeToolchainSmoke \
             2> /tmp/native-link-errors.txt || {
               echo "::error::linking the toolchain into an app-shaped target failed"
-              tail -60 /tmp/native-link-errors.txt
+              # ld prints one `  "<symbol>", referenced from:` line per undefined
+              # symbol. `tail -60` showed the last of them and hid the rest, which
+              # is how a whole missing library stayed a mystery for a run: print
+              # every one, deduplicated, so the next iteration is not another guess.
+              grep 'referenced from:' /tmp/native-link-errors.txt \
+                | sed 's/, referenced from:$//' | sort -u || true
+              tail -20 /tmp/native-link-errors.txt
               exit 1
             }
 
