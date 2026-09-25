@@ -12,6 +12,17 @@ XForge.xcodeproj/
 # Where build-ipa.yml clones package checkouts (`clonedSourcePackagesDirPath`).
 .spm/
 
+# The native toolchain bundle. Installing it (`make toolchain-release`) unpacks
+# hundreds of megabytes of LLVM/Swift archives into the checkout; they are
+# reproducible from the release the manifest names, and committing them is never
+# what anyone means to do. The directory and the gcc-style placeholder stay, so a
+# clone has somewhere to install into.
+Vendor/NativeToolchain/*
+!Vendor/NativeToolchain/.gitkeep
+
+# Where build-ipa.yml unpacks a fetched toolchain bundle.
+.toolchain-artifact/
+
 # macOS
 .DS_Store
 
