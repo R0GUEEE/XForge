@@ -192,7 +192,7 @@ jobs:
             -DLLVM_ENABLE_ZSTD=OFF \
             -DLLVM_ENABLE_LIBXML2=OFF \
             -DLLVM_ENABLE_CURL=OFF
-          ninja -C llvm-host-build llvm-tblgen clang-tblgen
+          ninja -C llvm-host-build llvm-tblgen clang-tblgen llvm-ar llvm-nm
 
           # Swift's CMake resolves its native tools through LLVM_TOOLS_BINARY_DIR,
           # which for the iOS build is a directory with no tools in it
@@ -608,10 +608,17 @@ jobs:
             exit 1
           fi
 
-          # Flatten the static dependency graph — LLVM's, Clang's, LLD's and (when
-          # built) Swift's — into one archive. XForge then links a single library
-          # instead of depending on archive ordering, and a Swift frontend that
-          # links an LLVM built in the same configuration cannot drift from it.
+          # Archives are staged *unmerged*, deliberately.
+          #
+          # This used to flatten every library into one archive with
+          # `libtool -static`, which was wrong: libtool de-duplicates members by name
+          # ("duplicate member name 'X86.cpp.o' from libclangCodeGen.a and …"), and a
+          # dropped member is a silently missing object. That is what produced
+          # undefined JIT symbols referenced from an object that was demonstrably in
+          # the archive. Swift's libraries collide the same way.
+          #
+          # The app already links a list — `prepare-xcode.sh` globs `lib/*.a` into
+          # XFORGE_NATIVE_LDFLAGS — so the merge only ever saved a line of shell.
           find llvm-build/lib -maxdepth 1 -type f -name '*.a' -print | sort > /tmp/archives.txt
           if [ -d cmark-ios-build ]; then
             find cmark-ios-build -type f -name 'libcmark-gfm*.a' -print | sort >> /tmp/archives.txt
@@ -621,10 +628,32 @@ jobs:
           fi
           test -s /tmp/archives.txt
           ARCHIVES=()
-          while IFS= read -r archive; do
-            ARCHIVES+=("$archive")
-          done < /tmp/archives.txt
-          /usr/bin/libtool -static -o dist/lib/libXForgeNativeToolchain.a "${ARCHIVES[@]}"
+          while IFS= read -r archive; do ARCHIVES+=("$archive"); done < /tmp/archives.txt
+          cp /tmp/archives.txt dist/lib/XForgeToolchain.libraries.txt
+
+          # One archive, merged with GNU MRI rather than `libtool -static`.
+          # libtool de-duplicates members by name — the log warns "duplicate member
+          # name 'X86.cpp.o' from libclangCodeGen.a and …" for clang's libraries and
+          # the same happens across Swift's — and a dropped member is a silently
+          # missing object, which is how the JIT symbols came out undefined while
+          # their object was demonstrably in the archive. `addlib` copies every
+          # member, duplicates included.
+          AR="$PWD/llvm-host-build/bin/llvm-ar"
+          MRI="$(mktemp)"
+          echo "create dist/lib/libXForgeNativeToolchain.a" > "$MRI"
+          for archive in "${ARCHIVES[@]}"; do echo "addlib $archive" >> "$MRI"; done
+          echo "save" >> "$MRI"
+          echo "end" >> "$MRI"
+          "$AR" -M < "$MRI"
+
+          # The guard: a merge that loses members is an error here, not a link
+          # failure two steps later that looks like a missing library.
+          MERGED=$("$AR" t dist/lib/libXForgeNativeToolchain.a | wc -l | tr -d ' ')
+          EXPECTED=$(for archive in "${ARCHIVES[@]}"; do "$AR" t "$archive"; done | wc -l | tr -d ' ')
+          echo "merged members: $MERGED, sources: $EXPECTED in ${#ARCHIVES[@]} archives"
+          [ "$MERGED" -ge "$EXPECTED" ] \
+            || { echo "::error::the merge dropped members ($MERGED < $EXPECTED)"; exit 1; }
+          ls -la dist/lib/libXForgeNativeToolchain.a
 
           cat > /tmp/native_link_smoke.mm <<'EOF'
           #include "NativeToolchainBridge.h"
@@ -649,7 +678,7 @@ jobs:
             -isysroot "$SDK" \
             /tmp/native_link_smoke.o \
             /tmp/NativeToolchainBridge.o \
-            dist/lib/libXForgeNativeToolchain.a \
+            $(for library in dist/lib/*.a; do printf ' -Wl,-force_load,%s' "$library"; done) \
             -lc++ -lz -liconv -lsqlite3 \
             -framework Foundation \
             -o /tmp/XForgeNativeToolchainSmoke \
@@ -670,7 +699,7 @@ jobs:
           swift_frontend=${{ inputs.with_swift && '1' || '0' }}
           swift_ref=${{ inputs.with_swift && env.SWIFT_REF || 'none' }}
           built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          archive=lib/libXForgeNativeToolchain.a
+          archives=lib/XForgeToolchain.libraries.txt
           header_roots=include-generated include
           EOF
           tar -C dist -czf XForgeNativeToolchain-arm64-ios.tar.gz .

@@ -350,11 +350,14 @@ jobs:
             find swift-build/lib -maxdepth 3 -type f -name '*.a' -print | sort >> /tmp/archives.txt
           fi
           test -s /tmp/archives.txt
-          ARCHIVES=()
-          while IFS= read -r archive; do ARCHIVES+=("$archive"); done < /tmp/archives.txt
-          echo "merging ${#ARCHIVES[@]} archives"
-          /usr/bin/libtool -static -o dist/lib/libXForgeNativeToolchain.a "${ARCHIVES[@]}"
-          ls -la dist/lib/libXForgeNativeToolchain.a
+          # Staged unmerged: `libtool -static` de-duplicates members by name
+          # ("duplicate member name 'X86.cpp.o' from …"), and a dropped member is a
+          # silently missing object — which is precisely how the JIT symbols went
+          # undefined while their object was in the archive.
+          while IFS= read -r archive; do cp "$archive" dist/lib/; done < /tmp/archives.txt
+          cp /tmp/archives.txt dist/lib/XForgeToolchain.libraries.txt
+          echo "staged $(wc -l < /tmp/archives.txt) archives, unmerged:"
+          ls dist/lib | head -10
 
       - name: Link an app-shaped target
         shell: bash
@@ -374,7 +377,7 @@ jobs:
           xcrun --sdk iphoneos clang++ -arch arm64 \
             -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET -isysroot "$SDK" \
             /tmp/native_link_smoke.o /tmp/NativeToolchainBridge.o \
-            dist/lib/libXForgeNativeToolchain.a \
+            $(for library in dist/lib/*.a; do printf ' -Wl,-force_load,%s' "$library"; done) \
             -lc++ -lz -liconv -lsqlite3 -framework Foundation \
             -o /tmp/XForgeNativeToolchainSmoke 2> /tmp/native-link-errors.txt
           STATUS=$?
