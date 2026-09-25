@@ -352,6 +352,7 @@ final class XipArchiveTests: XCTestCase {
 
         let dropped = [
             "\(Self.toolchain)/swift/prebuilt-modules/Foundation.swiftmodule",
+            "\(Self.developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/prebuilt-modules/Foundation.swiftmodule",
             "\(Self.developer)/Platforms/MacOSX.platform/Info.plist",
             "\(Self.developer)/Applications/Whatever.app/Whatever",
             "Contents/Resources/English.lproj/InfoPlist.strings",

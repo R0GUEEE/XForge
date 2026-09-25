@@ -151,7 +151,13 @@ enum DarwinSDKBuilder {
             let tail = Array(rest.dropFirst(4))
             guard let name = tail.first,
                   ["swift", "swift_static", "clang"].contains(name) else { return false }
-            if name == "swift", tail.dropFirst().first == "prebuilt-modules" { return false }
+            // Prebuilt modules are generated per platform/configuration and are
+            // enormous. The published darwin bundle proves the intended layout:
+            // it has no prebuilt-modules entries for iphoneos (or any other Swift
+            // platform). Check the path by component, not only for
+            // `swift/prebuilt-modules`: real Xcodes use
+            // `swift/iphoneos/prebuilt-modules/...`.
+            if name == "swift", tail.dropFirst().contains("prebuilt-modules") { return false }
             return true
         }
 
