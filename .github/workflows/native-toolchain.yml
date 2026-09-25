@@ -619,19 +619,24 @@ jobs:
         run: |
           set -euxo pipefail
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
-          EXTRA_DEFINES=()
-          EXTRA_INCLUDES=()
+          # Accumulated in a *string*, not an array. `shell: bash` on a macOS runner
+          # is macOS's bash 3.2, where `set -u` plus an empty `"${ARRAY[@]}"` is an
+          # unbound-variable error — and the arrays here are empty on every run that
+          # does not build the Swift half, which is every pull request and push run.
+          # The step died on `EXTRA_DEFINES[@]: unbound variable` before compiling
+          # anything, so the half of CI that runs unattended was red for a reason
+          # that had nothing to do with the bridge.
+          EXTRA_FLAGS=""
           if [ "${{ inputs.with_swift }}" = "true" ]; then
             # Exercises the Swift half of the bridge: with the define and the
             # headers present, NativeToolchainBridge.mm compiles the code path
             # that calls swift::performFrontend instead of the stub.
-            EXTRA_DEFINES+=(-DXFORGE_HAS_SWIFT_FRONTEND=1)
-            EXTRA_INCLUDES+=(-I swift/include)
+            EXTRA_FLAGS="$EXTRA_FLAGS -DXFORGE_HAS_SWIFT_FRONTEND=1 -I swift/include"
             if [ -d swift-build/include ]; then
-              EXTRA_INCLUDES+=(-I swift-build/include)
+              EXTRA_FLAGS="$EXTRA_FLAGS -I swift-build/include"
             fi
             if [ -d swift-build/tools/swift/include ]; then
-              EXTRA_INCLUDES+=(-I swift-build/tools/swift/include)
+              EXTRA_FLAGS="$EXTRA_FLAGS -I swift-build/tools/swift/include"
             fi
           fi
           xcrun --sdk iphoneos clang++ \
@@ -640,13 +645,12 @@ jobs:
             -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
             -isysroot "$SDK" \
             -DXFORGE_HAS_LLVM=1 \
-            "${EXTRA_DEFINES[@]}" \
+            $EXTRA_FLAGS \
             -I llvm-project/llvm/include \
             -I llvm-build/include \
             -I llvm-project/clang/include \
             -I llvm-build/tools/clang/include \
             -I llvm-project/lld/include \
-            "${EXTRA_INCLUDES[@]}" \
             -I App/NativeToolchain \
             -c App/NativeToolchain/NativeToolchainBridge.mm \
             -o /tmp/NativeToolchainBridge.o
@@ -912,8 +916,14 @@ jobs:
       # consumer asking for "the newest one" a bundle with no Swift frontend in it.
       # The tag already tells the two apart; this keeps them from racing for the
       # same "newest" slot in the first place.
+      #
+      # And only when the Swift half was built, for the same reason one level down:
+      # a `noswift` bundle is a complete deliverable for C and Objective-C targets,
+      # but a consumer that asks for "the newest toolchain release" means the full
+      # one. Clang-only bundles stay reachable as workflow artifacts
+      # (`toolchain_tag: artifact` in build-ipa.yml, `--release artifact` locally).
       - name: Publish the toolchain bundle
-        if: ${{ !inputs.configure_only && github.event_name == 'workflow_dispatch' && inputs.publish && steps.stage.outcome == 'success' }}
+        if: ${{ !inputs.configure_only && inputs.with_swift && github.event_name == 'workflow_dispatch' && inputs.publish && steps.stage.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

@@ -126,9 +126,13 @@ apart.
    available: it fails unless every member resolves inside the bundle. On failure it
    prints every undefined symbol, not a tail of them.
 9. Write `manifest.txt` and tar the result as `XForgeNativeToolchain-arm64-ios.tar.gz`
-   — uploaded as the workflow artifact of the same name, and, on a hand-dispatched
-   run that succeeded, **published as a release asset** tagged
-   `toolchain-<llvm>-<swift|noswift>-ios<target>-sdk<sdk>`.
+   — uploaded as the workflow artifact of the same name, and, when a hand-dispatched
+   run that built the Swift half succeeded, **published as a release asset** tagged
+   `toolchain-<llvm>-swift-<ref>-ios<target>-sdk<sdk>`. A `noswift` bundle is a
+   complete deliverable for C and Objective-C targets but is not published: a
+   consumer asking for "the newest toolchain release" means the full one, and the
+   tag would otherwise be the only thing standing between them and a bundle with no
+   frontend in it.
 
 The cache is why none of this needs doing twice. A run whose inputs are unchanged
 restores both trees and goes straight to the staging and link checks. Everything
