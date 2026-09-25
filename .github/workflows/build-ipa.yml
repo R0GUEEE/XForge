@@ -122,12 +122,11 @@ jobs:
           cat Vendor/NativeToolchain/manifest.txt
           cat Support/NativeToolchain.generated.xcconfig
 
-      # The frontend can only read the deployment SDK's standard-library modules when
-      # it is the same Swift version as the app it is linked into. The bundle records
-      # what it was built from; this says so loudly instead of shipping an app whose
-      # Swift support fails on a device nobody can debug here. A mismatch is a
-      # warning, not a failure: the exact version string of an Apple toolchain is not
-      # something to bet the build on.
+      # The manifest is what the app bundle's compiler is made of, so say what it is
+      # before building with it: the SDK the archives and the bridge were compiled
+      # against, and the Swift revision the frontend speaks. Both have to line up
+      # with what the app will actually compile against on a device — the Darwin SDK
+      # it installs at runtime — and neither is visible anywhere else in this log.
       - name: Check the toolchain bundle against this Xcode
         if: ${{ inputs.with_toolchain }}
         run: |
@@ -149,14 +148,15 @@ jobs:
             exit 0
           fi
 
-          built_version="$(get swift_ref | sed -n 's/^swift-\([0-9][0-9.]*\).*/\1/p')"
-          app_version="$(xcrun swift --version 2>/dev/null | head -n 1)"
+          # The frontend's own version matters, and the runner's is not it: this
+          # Swift is what *bootstrapped* the frontend's build, while the frontend
+          # itself comes from the ref below and has to match the Swift version
+          # inside the Darwin SDK the app installs on device. Printing both is the
+          # point — a mismatch between them is expected and is not a problem; a
+          # mismatch between the bundle and the Darwin SDK is, and this step cannot
+          # see that one.
           echo "  Swift frontend built from $(get swift_ref)"
-          echo "  this runner's Swift: $app_version"
-          case "$app_version" in
-            *"$built_version"*) echo "Swift versions agree" ;;
-            *) echo "::warning::the bundle's Swift frontend is $built_version, this Xcode's Swift is '$app_version' — the frontend may not read this SDK's standard library modules" ;;
-          esac
+          echo "  this runner's Swift (used to bootstrap it): $(xcrun swift --version 2>/dev/null | head -n 1)"
 
       - name: Prepare the native toolchain configuration
         run: |

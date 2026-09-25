@@ -709,14 +709,30 @@ jobs:
           mkdir -p dist/include-generated dist/include dist/lib
           stage_headers() { cp -R -L "$1" "$2"; }
 
-          stage_headers llvm-project/llvm/include/llvm dist/include/
-          stage_headers llvm-project/clang/include/clang dist/include/
-          stage_headers llvm-project/lld/include/lld dist/include/
+          # Every top-level header root the sources ship, not just the one named
+          # after the project. `llvm/include/llvm-c/DataTypes.h` is included from
+          # `llvm/include/llvm/Support/DataTypes.h`, and staging only `llvm/` left it
+          # out of the bundle: the app build failed on it while the bridge
+          # compile-check passed, because that check compiles against the source
+          # tree rather than against what is shipped. Same for `clang-c`, and for
+          # anything a future revision grows.
+          for source_root in llvm-project/llvm/include \
+                             llvm-project/clang/include \
+                             llvm-project/lld/include; do
+            for dir in "$source_root"/*/; do
+              stage_headers "${dir%/}" dist/include/
+            done
+          done
 
-          stage_headers llvm-build/include/llvm dist/include-generated/
-          if [ -d llvm-build/tools/clang/include/clang ]; then
-            stage_headers llvm-build/tools/clang/include/clang dist/include-generated/
-          fi
+          # The generated headers, likewise per top-level directory: the build tree
+          # writes `llvm/Config/…` and `clang/…`, and `llvm-c` if a revision ever
+          # generates one.
+          for generated_root in llvm-build/include llvm-build/tools/clang/include; do
+            [ -d "$generated_root" ] || continue
+            for dir in "$generated_root"/*/; do
+              stage_headers "${dir%/}" dist/include-generated/
+            done
+          done
 
           if [ "${{ inputs.with_swift }}" = "true" ]; then
             stage_headers swift/include/swift dist/include/
@@ -727,7 +743,7 @@ jobs:
             done
           fi
 
-          for required in dist/include/llvm dist/include/clang dist/include/lld; do
+          for required in dist/include/llvm dist/include/llvm-c dist/include/clang dist/include/lld; do
             [ -d "$required" ] || { echo "::error::missing staged header root $required"; exit 1; }
           done
 
@@ -793,6 +809,29 @@ jobs:
           EOF
 
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+
+          # Compile the bridge against the *staged* roots and link the result. This
+          # is the check that the shipped bundle is self-contained — the earlier
+          # compile-check compiles against the source tree, which says nothing about
+          # what was staged. A header missing here is a header missing from every
+          # app that links this bundle, and finding that in a 20-minute app build
+          # instead of here is how `llvm-c/` stayed missing.
+          BRIDGE_DEFINES=(-DXFORGE_HAS_LLVM=1)
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            BRIDGE_DEFINES+=(-DXFORGE_HAS_SWIFT_FRONTEND=1)
+          fi
+          xcrun --sdk iphoneos clang++ \
+            -std=c++20 \
+            -arch arm64 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
+            -isysroot "$SDK" \
+            "${BRIDGE_DEFINES[@]}" \
+            -I dist/include \
+            -I dist/include-generated \
+            -I App/NativeToolchain \
+            -c App/NativeToolchain/NativeToolchainBridge.mm \
+            -o /tmp/StageBundleBridge.o
+
           xcrun --sdk iphoneos clang++ \
             -std=c++20 \
             -arch arm64 \
@@ -807,7 +846,7 @@ jobs:
             -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
             -isysroot "$SDK" \
             /tmp/native_link_smoke.o \
-            /tmp/NativeToolchainBridge.o \
+            /tmp/StageBundleBridge.o \
             $(for library in dist/lib/*.a; do printf ' -Wl,-force_load,%s' "$library"; done) \
             -lc++ -lz -liconv -lsqlite3 \
             -framework Foundation \
@@ -825,8 +864,8 @@ jobs:
             }
 
           file /tmp/XForgeNativeToolchainSmoke
-          file /tmp/NativeToolchainBridge.o
-          cp /tmp/NativeToolchainBridge.o dist/
+          file /tmp/StageBundleBridge.o
+          cp /tmp/StageBundleBridge.o dist/
 
           # The manifest is what the consumers read, so everything they have to
           # agree with is in it: `bundle_tag` is the release this can be fetched
