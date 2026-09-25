@@ -191,7 +191,8 @@ enum DarwinSDKBuilder {
         }
 
         func accept(_ entry: XipArchive.Entry, _ payload: XipArchive.Payload) throws {
-            guard Self.isWanted(entry.name) else {
+            // `Self` here is `Writer`, so the outer type is named in full.
+            guard DarwinSDKBuilder.isWanted(entry.name) else {
                 skipped += 1
                 return
             }

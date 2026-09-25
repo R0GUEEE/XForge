@@ -241,8 +241,7 @@ struct ToolchainView: View {
         }
 
         continuation.finish()
-        await consumer.value
-        state.finish()
+        await consumer.value  // the consumer clears `isRunning` when the stream ends
         working = false
 
         // The picker's copy of the archive is the app's to delete, and for an
