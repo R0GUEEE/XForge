@@ -30,9 +30,13 @@ final class XipArchiveTests: XCTestCase {
     private static let symlink: UInt32 = 0o120777
 
     /// The paths of the fake Xcode tree, rooted at `Xcode.app` as the archive's are.
+    ///
+    /// Bare `developer` rather than `Self.developer` in the two below: a stored
+    /// property's initializer cannot reference `Self` at all — the type is still
+    /// being built — and inside a *static* property there is no ambiguity to resolve.
     private static let developer = "Xcode.app/Contents/Developer"
-    private static let platform = "\(Self.developer)/Platforms/iPhoneOS.platform"
-    private static let toolchain = "\(Self.developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+    private static let platform = "\(developer)/Platforms/iPhoneOS.platform"
+    private static let toolchain = "\(developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
 
     private static func fakeXcode() -> [Spec] {
         var inode: UInt32 = 0
