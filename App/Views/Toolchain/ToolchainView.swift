@@ -25,13 +25,18 @@ struct ToolchainView: View {
     @State private var confirmingDownload = false
     @StateObject private var importState = SDKImportState()
 
-    /// What the picker offers: a built bundle (a folder, or a zip of one) or Apple's
-    /// `Xcode.xip`, which the app turns into one. `.xip` has no system type, so it is
-    /// declared here by extension — without it the file is greyed out in Files and
-    /// the one import this screen exists for cannot be started.
+    /// What the picker offers. Deliberately permissive.
+    ///
+    /// A `.xip` has no UTI the app can rely on: if the system declares one, the type
+    /// its extension resolves to is right; if it does not, the file carries a
+    /// *dynamic* type, and a differently-derived dynamic type need not match it. A
+    /// file that matches none of the allowed types is greyed out in Files — which
+    /// looks like "the import does nothing" with no error to read. So `.data` is
+    /// allowed too, and `XipArchive` says exactly what is wrong with an unrelated
+    /// file (`xar!` missing, no `Content` member, no `pbzx` payload, unreadable cpio).
     private static var importableTypes: [UTType] {
-        var types: [UTType] = [.folder, .zip]
-        if let xip = UTType(filenameExtension: "xip", conformingTo: .data) {
+        var types: [UTType] = [.folder, .zip, .data]
+        if let xip = UTType("com.apple.xip-archive") {
             types.append(xip)
         }
         return types
@@ -236,15 +241,20 @@ struct ToolchainView: View {
         }
 
         do {
-            try await Task.detached(priority: .userInitiated) {
+            let report = try await Task.detached(priority: .userInitiated) {
                 defer { continuation.finish() }
-                try NativeSDK.installImported(from: url) { continuation.yield($0) }
+                return try NativeSDK.installImported(from: url) { continuation.yield($0) }
             }.value
             refresh()
-            message = "Darwin SDK installed from \(url.lastPathComponent)."
+            message = Self.summary(for: report, named: url.lastPathComponent)
+            XForgeLog.note("sdk import: installed from \(url.lastPathComponent), "
+                           + "files=\(report.files), warnings=\(report.warnings.count)")
         } catch is CancellationError {
             message = "Import cancelled."
         } catch {
+            // The log is the only place a device failure can be read back from: the
+            // screen shows one line, the log gets the error with its case and values.
+            XForgeLog.note("sdk import failed: \(error)")
             sdkError = error.localizedDescription
         }
 
@@ -257,6 +267,21 @@ struct ToolchainView: View {
         await Task.detached(priority: .utility) {
             NativeSDK.discardImportCopy(at: url)
         }.value
+    }
+
+    /// What to say after an import: what landed, and anything that will bite later.
+    ///
+    /// An `.xip` import is minutes long, so "installed" on its own is not an answer
+    /// the user can check — the file count and size are, and they are also what makes
+    /// a report of a failure specific.
+    private static func summary(for report: NativeSDK.ImportReport, named name: String) -> String {
+        var lines = ["Darwin SDK installed from \(name)."]
+        if report.files > 0 {
+            let size = ByteCountFormatter.string(fromByteCount: report.bytes, countStyle: .file)
+            lines = ["Darwin SDK installed from \(name): \(report.files) files, \(size)."]
+        }
+        lines.append(contentsOf: report.warnings)
+        return lines.joined(separator: " ")
     }
 
     private func removeSDK() {

@@ -35,6 +35,7 @@ extension NativeSDKLayout {
 
 enum NativeSDKError: LocalizedError {
     case missingBundle
+    case notABundle(String)
     case invalidMetadata
     case missingTarget
     case missingSDK(String)
@@ -43,6 +44,10 @@ enum NativeSDKError: LocalizedError {
         switch self {
         case .missingBundle:
             return "No native Darwin SDK is installed."
+        case .notABundle(let name):
+            return "\(name) is not a Darwin SDK bundle and not an Xcode.xip. A bundle is a "
+                + "folder (or a zip of one) containing darwin.artifactbundle or swift-sdk.json; "
+                + "an Xcode archive starts with 'xar!'."
         case .invalidMetadata:
             return "The native Darwin SDK has an invalid swift-sdk.json."
         case .missingTarget:
@@ -179,7 +184,7 @@ enum NativeSDK {
             return
         }
 
-        throw NativeSDKError.missingBundle
+        throw NativeSDKError.notABundle(downloaded.lastPathComponent)
     }
 
     static func remove() throws {
@@ -211,33 +216,75 @@ enum NativeSDK {
     /// Three shapes arrive this way, and they are told apart by what they are rather
     /// than by what they are called:
     ///
+    /// What an import did, so the screen can say more than "done".
+    struct ImportReport: Sendable {
+        var files: Int = 0
+        var bytes: Int64 = 0
+        /// Things that did not stop the install but will bite later.
+        var warnings: [String] = []
+    }
+
     ///  - a `darwin.artifactbundle` **folder** — already built, perhaps by
     ///    `xtool sdk build` on a Mac;
     ///  - a **zip** of one, which is how the hosted bundle is published;
     ///  - an Apple **`Xcode.xip`**, which `DarwinSDKBuilder` turns into one here.
     ///    That is the case that needs a Mac otherwise, and the reason the picker no
     ///    longer filters for folders only.
+    ///
+    /// Which one it is decided by what the file *is*, not what it is called: the
+    /// picker hands over whatever the user chose, and "that is a zip, not a xip" is a
+    /// better answer than a bundle search that fails for the wrong reason.
+    @discardableResult
     static func installImported(from source: URL,
-                                progress: (@Sendable (DarwinSDKBuilder.Progress) -> Void)? = nil) throws {
+                                progress: (@Sendable (DarwinSDKBuilder.Progress) -> Void)? = nil) throws -> ImportReport {
         let accessed = source.startAccessingSecurityScopedResource()
         defer { if accessed { source.stopAccessingSecurityScopedResource() } }
 
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory)
         let kind = source.pathExtension.lowercased()
+        let header = firstBytes(of: source)
+        let size = (try? source.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+
+        // The log is the only way to see this on a device: what was picked, whether
+        // the sandbox let us read it, how big it is and what it actually is.
+        XForgeLog.note("sdk import: \(source.lastPathComponent) "
+                       + "(\(ByteCountFormatter.string(fromByteCount: Int64(size), countStyle: .file))), "
+                       + "kind=\(kind.isEmpty ? "none" : kind), "
+                       + "readable=\(accessed), header=\(hex(header))")
 
         if exists, isDirectory.boolValue {
             try install(from: source)
-        } else if kind == "xip" {
+            return ImportReport()
+        }
+        if header == Data("xar!".utf8) || kind == "xip" {
             let built = try DarwinSDKBuilder.build(fromXip: source,
                                                    into: XForgeEnvironment.nativeSDKDirectory,
                                                    progress: progress)
             try install(preparedBundle: built.bundle)
-        } else if kind == "zip" {
-            try installDownloadedArchive(at: source)
-        } else {
-            throw NativeSDKError.missingBundle
+            return ImportReport(files: built.files, bytes: built.bytes,
+                                warnings: built.hasSwiftStaticRuntime ? [] : [
+                                    "the archive has no Swift static runtime "
+                                    + "(Toolchains/XcodeDefault.xctoolchain/usr/lib/swift_static/iphoneos), "
+                                    + "so linking Swift needs one from elsewhere",
+                                ])
         }
+        if header.starts(with: Data("PK".utf8)) || kind == "zip" {
+            try installDownloadedArchive(at: source)
+            return ImportReport()
+        }
+        throw NativeSDKError.notABundle(source.lastPathComponent)
+    }
+
+    /// The first four bytes, read without mapping a multi-gigabyte file into memory.
+    private static func firstBytes(of url: URL) -> Data {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return Data() }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: 4)) ?? Data()
+    }
+
+    private static func hex(_ data: Data) -> String {
+        data.isEmpty ? "none" : data.map { String(format: "%02x", $0) }.joined()
     }
 
     /// Delete the copy the document picker made of an imported archive.

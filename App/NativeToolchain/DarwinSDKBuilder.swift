@@ -40,6 +40,11 @@ enum DarwinSDKBuilder {
         var files: Int
         var bytes: Int64
         var skipped: Int
+        /// False when the archive carries no `swift_static/iphoneos`. That is a
+        /// warning rather than a failure: the SDK's headers and tbd stubs are what C,
+        /// Objective-C and Objective-C++ targets need, and refusing the whole import
+        /// over a missing Swift runtime would take those away too.
+        var hasSwiftStaticRuntime: Bool
     }
 
     struct Progress: Sendable {
@@ -52,8 +57,6 @@ enum DarwinSDKBuilder {
         case noXcodeInside
         case noiPhoneOSSDK
         case notEnoughSpace(needed: Int64, available: Int64)
-        case noSwiftStaticRuntime(String)
-
         var errorDescription: String? {
             switch self {
             case .noXcodeInside:
@@ -65,9 +68,6 @@ enum DarwinSDKBuilder {
                 return "Not enough space: building the SDK needs about \(Self.size(needed)) "
                     + "free, and there is \(Self.size(available)). Delete some projects or "
                     + "downloads and try again."
-            case .noSwiftStaticRuntime(let path):
-                return "The xip has no Swift static runtime at \(path), so a sideloaded app "
-                    + "could not link the Swift runtime into itself."
             }
         }
 
@@ -102,6 +102,7 @@ enum DarwinSDKBuilder {
         do {
             let content = try XipArchive.content(of: xip)
             let writer = Writer(staging: staging)
+            XForgeLog.note("xip: Content at byte \(content.offset), \(content.length) bytes")
 
             // Extraction is essentially all of the wall clock, so the fraction of the
             // compressed member that has been consumed is the honest fraction of the
@@ -185,12 +186,18 @@ enum DarwinSDKBuilder {
         private var sdkRoot: String?
         private var sdkVersion: String?
         private var sawSwiftStaticRuntime = false
+        private var sawDeveloperTree = false
 
         init(staging: URL) {
             self.staging = staging
         }
 
         func accept(_ entry: XipArchive.Entry, _ payload: XipArchive.Payload) throws {
+            // Noted before the filter: an archive with no `Contents/Developer` at all is
+            // not an Xcode, and saying that is better than "it has no iPhoneOS SDK".
+            if entry.name.contains("Contents/Developer") {
+                sawDeveloperTree = true
+            }
             // `Self` here is `Writer`, so the outer type is named in full.
             guard DarwinSDKBuilder.isWanted(entry.name) else {
                 skipped += 1
@@ -254,10 +261,8 @@ enum DarwinSDKBuilder {
 
         /// Write the metadata, having seen the whole tree.
         func finish(progress: (@Sendable (Progress) -> Void)?) throws -> Result {
+            guard sawDeveloperTree else { throw Error.noXcodeInside }
             guard let sdkRoot else { throw Error.noiPhoneOSSDK }
-            guard sawSwiftStaticRuntime else {
-                throw Error.noSwiftStaticRuntime("Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift_static/iphoneos")
-            }
             progress?(Progress(fraction: 0.97, message: "Writing swift-sdk.json…"))
 
             let json = SDKDefinition(
@@ -284,8 +289,13 @@ enum DarwinSDKBuilder {
                 .write(to: staging.appendingPathComponent("darwin-sdk-version.txt"))
 
             progress?(Progress(fraction: 1, message: "Done"))
-            return Result(bundle: staging, sdkRoot: sdkRoot, files: files,
-                          bytes: bytes, skipped: skipped)
+            let result = Result(bundle: staging, sdkRoot: sdkRoot, files: files,
+                                bytes: bytes, skipped: skipped,
+                                hasSwiftStaticRuntime: sawSwiftStaticRuntime)
+            XForgeLog.note("xip: \(result.files) files (\(result.bytes) bytes), "
+                           + "skipped \(result.skipped), sdkRoot \(result.sdkRoot), "
+                           + "swift_static=\(result.hasSwiftStaticRuntime)")
+            return result
         }
 
         /// `Xcode.app/Contents/Developer/…` → `Developer/…`.

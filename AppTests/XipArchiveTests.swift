@@ -429,6 +429,7 @@ final class XipArchiveTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: bundle.appendingPathComponent("darwin-sdk-version.txt"),
                                   encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines), "27.0")
+        XCTAssertTrue(result.hasSwiftStaticRuntime, "the fake Xcode carries the static runtime")
 
         // And the app's own reader resolves it — the assertion that matters, because a
         // bundle nothing can read is not an SDK.
@@ -459,5 +460,43 @@ final class XipArchiveTests: XCTestCase {
         }
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: destination.appendingPathComponent("darwin.artifactbundle").path))
+    }
+
+    /// Something that is a valid cpio archive but not an Xcode says so, instead of
+    /// reporting the absence of an iOS SDK in a tree that has no Xcode at all.
+    func testRejectsAnArchiveThatIsNotAnXcode() throws {
+        let specs = [
+            Spec(path: "Downloads", mode: Self.directory, inode: 1),
+            Spec(path: "Downloads/notes.txt", mode: Self.regular,
+                 data: Data("hello\n".utf8), inode: 2),
+        ]
+        let url = try makeXip(payload: Self.cpio(specs))
+        let destination = url.deletingLastPathComponent()
+            .appendingPathComponent("out", isDirectory: true)
+
+        XCTAssertThrowsError(try DarwinSDKBuilder.build(fromXip: url, into: destination)) { error in
+            guard let builderError = error as? DarwinSDKBuilder.Error,
+                  case .noXcodeInside = builderError else {
+                return XCTFail("expected noXcodeInside, got \(error)")
+            }
+        }
+    }
+
+    /// A newer Xcode that keeps no static Swift runtime still produces an SDK: the
+    /// headers and tbd stubs are what C targets need, and refusing the import over a
+    /// Swift runtime would take those away too. The result says so instead.
+    func testImportsWithoutTheSwiftStaticRuntime() throws {
+        let specs = Self.fakeXcode().filter { !$0.path.contains("swift_static") }
+        let url = try makeXip(payload: Self.cpio(specs))
+        let destination = url.deletingLastPathComponent()
+            .appendingPathComponent("out", isDirectory: true)
+
+        let result = try DarwinSDKBuilder.build(fromXip: url, into: destination)
+        XCTAssertFalse(result.hasSwiftStaticRuntime)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: result.bundle.appendingPathComponent("swift-sdk.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: result.bundle.appendingPathComponent(
+                "Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk/usr/include/stdio.h").path))
     }
 }
