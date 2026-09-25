@@ -153,8 +153,18 @@ struct ToolchainView: View {
             allowedContentTypes: Self.importableTypes,
             allowsMultipleSelection: false
         ) { result in
-            guard case .success(let urls) = result, let url = urls.first else { return }
-            Task { await install(from: url) }
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task { await install(from: url) }
+            case .failure(let error):
+                // This used to `return` on anything that was not a success: an iCloud
+                // file the picker cannot download, a provider that refuses to copy it —
+                // nothing on screen, nothing in the log, and the user left believing
+                // the import did nothing.
+                XForgeLog.note("sdk import: the picker failed: \(error)")
+                Task { @MainActor in sdkError = error.localizedDescription }
+            }
         }
         .confirmationDialog(
             "Download the Darwin SDK?",
@@ -234,8 +244,17 @@ struct ToolchainView: View {
 
         let (updates, continuation) = AsyncStream<DarwinSDKBuilder.Progress>.makeStream()
         let consumer = Task { @MainActor in
+            // A progress trail, not just a bar: "started and then nothing" is what a
+            // stall looks like in a shared log, and the last milestone says how far it
+            // got. Four lines per import, at most.
+            var milestone = -1
             for await update in updates {
                 state.update(fraction: update.fraction, status: update.message)
+                let reached = Int(update.fraction * 4)
+                if reached > milestone {
+                    milestone = reached
+                    XForgeLog.note("sdk import: \(Int(update.fraction * 100))%")
+                }
             }
             state.finish()
         }
