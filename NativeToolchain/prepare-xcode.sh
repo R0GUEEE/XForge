@@ -36,9 +36,16 @@ ARCHIVES=()
 ARCHIVE_LIST="$(mktemp)"
 trap 'rm -f "$ARCHIVE_LIST"' EXIT
 find "$BUNDLE/lib" -maxdepth 1 -type f -name '*.a' >"$ARCHIVE_LIST"
+# Only `$(SRCROOT)` is escaped: that one is meant for Xcode to expand. The
+# parameter expansion is not — it has to happen here, in this shell. Escaping it
+# too (`\${lib#…}`) put the literal text into the xcconfig, where Xcode read it as
+# a variable named `lib#/Users/… `, resolved it to nothing, and handed the linker
+# `$(SRCROOT)/` as a file name: `ld: file cannot be mmap()ed, errno=22
+# path=/Users/runner/work/XForge/XForge/`. Every build with the compiler linked in
+# failed like that, and the guard at the end of this script now catches it here.
 while IFS= read -r lib; do
   [ -n "$lib" ] || continue
-  ARCHIVES+=("\$(SRCROOT)/\${lib#"$ROOT/"}")
+  ARCHIVES+=("\$(SRCROOT)/${lib#"$ROOT/"}")
 done <"$ARCHIVE_LIST"
 
 if [ "${#ARCHIVES[@]}" -eq 0 ]; then
@@ -73,5 +80,28 @@ fi
   done
   echo " -lc++ -lz -liconv -lsqlite3 -framework Foundation"
 } >"$OUT"
+
+# A `$(…)` is for Xcode; a `${…}` is this script failing to expand something, and
+# Xcode will resolve it to the empty string. That is worth failing for: it took a
+# full archive of a 20-minute app build to find the last one. Written as `case`
+# rather than `grep -q`: no pipeline, no dependence on which grep is installed.
+while IFS= read -r line; do
+  case "$line" in
+    *'${'*)
+      echo "error: $OUT contains an unexpanded shell expansion:" >&2
+      echo "  $line" >&2
+      exit 65
+      ;;
+  esac
+done <"$OUT"
+
+for archive in "${ARCHIVES[@]}"; do
+  case "$archive" in
+    *'$(SRCROOT)/'|*'$(SRCROOT)/ ')
+      echo "error: an archive path came out empty: $archive" >&2
+      exit 65
+      ;;
+  esac
+done
 
 echo "Native toolchain: enabled (${#ARCHIVES[@]} archives)"

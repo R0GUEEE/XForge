@@ -450,6 +450,10 @@ jobs:
       # rewritten, and every later run then "hits" it and rebuilds anyway.
       - name: Save the LLVM builds
         if: ${{ steps.llvm-build.outcome == 'success' && steps.llvm-cache.outputs.cache-hit != 'true' }}
+        # A refused save must not fail a build that succeeded: an entry whose key
+        # already exists cannot be reserved, and the other workflow that stored it
+        # stored the same tree. The cache is an optimisation; the build is the work.
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
@@ -565,6 +569,7 @@ jobs:
 
       - name: Save the Swift build
         if: ${{ inputs.with_swift && !inputs.configure_only && steps.swift-build.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           key: ${{ steps.swift-cache.outputs.cache-primary-key }}
