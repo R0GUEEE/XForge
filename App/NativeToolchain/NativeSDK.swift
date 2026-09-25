@@ -302,14 +302,17 @@ enum NativeSDK {
         defer { try? FileManager.default.removeItem(at: contentURL) }
 
         var completed = Int64(0)
-        try archive.extract(contentEntry, to: contentURL) { bytes in
-            completed += Int64(bytes)
+        FileManager.default.createFile(atPath: contentURL.path, contents: nil)
+        let output = try FileHandle(forWritingTo: contentURL)
+        defer { try? output.close() }
+        _ = try archive.extract(contentEntry) { data in
+            try output.write(contentsOf: data)
+            completed += Int64(data.count)
             if let progress, contentEntry.uncompressedSize > 0 {
                 let fraction = min(0.95, Double(completed) / Double(contentEntry.uncompressedSize))
                 progress(DarwinSDKBuilder.Progress(fraction: fraction,
                                                     message: "Copying Xcode Content — \(Int(fraction * 100))%"))
             }
-            return true
         }
 
         let staging = XForgeEnvironment.nativeSDKDirectory
