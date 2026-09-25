@@ -1,4 +1,5 @@
 import Compression
+import Foundation
 import XCTest
 @testable import XForge
 

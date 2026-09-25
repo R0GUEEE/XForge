@@ -236,7 +236,7 @@ enum XipArchive {
     /// A cursor over a sequence of decompressed blocks rather than one buffer: the
     /// payload is ~15 GB decompressed, and a cpio entry — let alone a whole block —
     /// does not respect block boundaries, so reads have to be able to span them.
-    private final class BlockStream {
+    fileprivate final class BlockStream {
         private let handle: FileHandle
         private let end: Int64
         private let contentLength: Int64
@@ -266,7 +266,8 @@ enum XipArchive {
         /// The next decompressed block, or `nil` at the end of the payload.
         private func nextBlock() throws -> [UInt8]? {
             if finished { return nil }
-            if handle.offsetInFile >= end { return nil }
+            let offset = Int64(handle.offsetInFile)
+            if offset >= end { return nil }
             let header = try readUpTo(16)
             guard header.count == 16 else { return nil }
             let decompressedSize = Int64(header[0..<8].bigEndian(as: UInt64.self))
@@ -276,7 +277,7 @@ enum XipArchive {
             // Never read past the member: the archive's own signature and metadata
             // follow it, and swallowing those as payload would be reported as a
             // corrupt xip rather than as the end of the stream.
-            let available = end - handle.offsetInFile
+            let available = end - offset
             let block = try readExact(Int(min(compressedSize, available)))
             // The block is stored when it did not shrink; otherwise it is LZMA.
             if decompressedSize < chunkSize {
@@ -342,13 +343,13 @@ enum XipArchive {
                 }
                 data += piece
             }
-            consumed = handle.offsetInFile
+            consumed = Int64(handle.offsetInFile)
             return data
         }
 
         private func readUpTo(_ count: Int) throws -> Data {
             let data = try handle.read(upToCount: count) ?? Data()
-            consumed = handle.offsetInFile
+            consumed = Int64(handle.offsetInFile)
             return data
         }
     }
@@ -358,8 +359,10 @@ enum XipArchive {
         private let stream: BlockStream
         private var remaining: Int64
 
-        /// `private` because `BlockStream` is: only the walk constructs payloads.
-        private init(stream: BlockStream, size: Int64) {
+        /// `fileprivate` because it takes a `BlockStream`, which is: only the walk
+        /// in this file constructs payloads. `private` would be too narrow — Swift's
+        /// `private` does not reach the *enclosing* type, so the walk could not call it.
+        fileprivate init(stream: BlockStream, size: Int64) {
             self.stream = stream
             self.remaining = size
         }
@@ -563,13 +566,17 @@ enum XipArchive {
 
 private extension Data {
     /// Big-endian integer from the leading bytes of this data.
+    ///
+    /// Assembled by shifting rather than by reinterpreting a byte buffer: the
+    /// pointer form reads as `withUnsafeMutableBytes` gymnastics whose element type
+    /// inference depends on the enclosing generic, and gets none of that right by
+    /// being clever.
     func bigEndian<T: FixedWidthInteger>(as type: T.Type) -> T {
+        let width = MemoryLayout<T>.size
         var value: T = 0
-        withUnsafeMutableBytes(of: &value) { destination in
-            for (index, byte) in prefix(MemoryLayout<T>.size).enumerated() {
-                destination[index] = byte
-            }
+        for (index, byte) in prefix(width).enumerated() {
+            value |= T(byte) << (8 * (width - 1 - index))
         }
-        return value.bigEndian
+        return value
     }
 }
