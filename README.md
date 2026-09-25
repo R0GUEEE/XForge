@@ -11,10 +11,10 @@ binary and called in-process through a small C++ bridge.
 > **Status: active, and narrower than it looks.** A project authored in the SwiftUI
 > shell is read into a build plan, compiled and linked in-process, packaged into an
 > unsigned `.ipa`, and — with a certificate the user already has — signed with XKit.
-> **C, Objective-C and Objective-C++ targets build today. Swift sources do not**,
-> because the Swift frontend libraries are not part of the toolchain artifact yet;
-> such a project stops at the compile stage with a message naming how many files it
-> could not compile. See *What works today* and *What does not*.
+> **C, Objective-C and Objective-C++ targets build today.** Swift needs a toolchain
+> bundle built with `with_swift=true`, which carries the frontend libraries; the app
+> links them, and running an actual Swift build on a device is the one step nobody
+> has taken yet. See *What works today* and *What does not*.
 
 ## How it is put together
 
@@ -76,12 +76,13 @@ in-process toolchain and the SDK in the container.
 
 ## What does not work (yet)
 
-- **Swift.** The Swift frontend libraries are not in the toolchain artifact: the
-  CI workflow that builds it builds Clang and LLD only. A plan with Swift sources
-  fails at the compile stage with `swiftFrontendMissing`, naming the number of
-  files, rather than pretending otherwise. This is the single largest gap; it is
-  the difference between "an Xcode alternative for C projects" and the thing the
-  app is for.
+- **Swift, end to end on a device.** The frontend libraries (`swiftFrontendTool` and
+  the swiftAST / swiftSema / IRGen / ClangImporter set it pulls in) are built for
+  iPhoneOS by a `with_swift=true` toolchain run, published in that bundle, and linked
+  into the app — the Toolchain screen reports `swift-frontend` as linked. What has
+  not happened is a Swift *build* on a device: every part of the path is exercised
+  except that one, and a bundle without the frontend still refuses a Swift plan at
+  the compile stage with `swiftFrontendMissing` and the file count.
 - **SwiftPM dependencies.** Refused by name at plan time. Fetching and resolving
   packages means running a package manager, which cannot happen here — and a
   dependency editor that could only produce unbuildable projects was removed
@@ -169,8 +170,7 @@ Tools/                  gen-appicon.py (writes the app icon into the asset catal
 project.yml             XcodeGen definition
 Makefile                gen, build, test, ipa, toolchain
 .github/workflows/      build-ipa.yml (the unsigned IPA),
-                        native-toolchain.yml (the iOS LLVM cross-build),
-                        ios-share.yml (a simulator build for MobAI)
+                        native-toolchain.yml (the iOS LLVM cross-build)
 Docs/DESIGN.md                  full architecture write-up
 Docs/IPA-BUILD.md               the build pipeline and its stages
 Docs/NATIVE-TOOLCHAIN.md        the toolchain bundle, how it is built and linked
@@ -232,8 +232,6 @@ make icon        # rewrites Support/Assets.xcassets
   are cached, so a run whose inputs are unchanged finishes in minutes rather than
   the ~80 minutes a cold build takes.
   See [Docs/NATIVE-TOOLCHAIN.md](Docs/NATIVE-TOOLCHAIN.md).
-- **`ios-share.yml`** — builds the app for the simulator and keeps that simulator
-  usable from a machine that is not a Mac, so a build can be tried by hand.
 
 ## Roadmap
 
@@ -241,9 +239,12 @@ make icon        # rewrites Support/Assets.xcassets
       through a C++ bridge
 - [x] Projects as ordinary directories in the app container
 - [x] XKit signing wired into the export flow, for an identity the user has
-- [x] Native toolchain bundle, built in CI and installed by `make toolchain`
-- [ ] **The Swift frontend (`swift-frontend`) ported to iOS** — the gate on every
-      Swift project, and the reason the artifact carries Clang and LLD only
+- [x] Native toolchain bundle, built in CI, published as a release, installed by
+      `make toolchain-release`
+- [x] **The Swift frontend libraries for iPhoneOS** — built by a `with_swift=true`
+      toolchain run, linked into the app, reported by the Toolchain screen. The
+      remaining unknown is a Swift *build* on a device, which is what the screen's
+      smoke test is for
 - [ ] Build-setting evaluation and a build driver for a dependency graph
 - [ ] `actool`/`ibtool` replacements (asset catalogs, storyboards)
 - [ ] Apple ID provisioning (certificate issuance, 2FA) in-app

@@ -5,21 +5,22 @@
 
   These are the only ones the app asks for, and they are here on purpose:
 
-  * com.apple.developer.kernel.extended-virtual-addressing — the embedded
-    ish-arm64 guest is a whole 64-bit Linux userland living in this process. It
-    maps a large sparse guest address space, and without this entitlement the
-    mapping fails and the guest cannot boot. ish-arm64's own iOS build declares
-    the same key.
+  * com.apple.developer.kernel.extended-virtual-addressing — the compiler runs in
+    this process, and LLVM maps large regions: the SDK's symbol tables, the object
+    files the linker reads back, and the JIT's reserved code space. The entitlement
+    was originally needed by the embedded Linux guest that used to live in this
+    process; the guest is gone, and no measurement has been taken since, so it is
+    kept for the compiler's maps rather than removed on a guess.
 
-  * com.apple.developer.kernel.increased-memory-limit — the guest holds a Linux
-    root filesystem, a Swift toolchain and the compiler's working set. The
-    default jetsam budget is far below what a compile needs, so this asks for the
-    larger limit.
+  * com.apple.developer.kernel.increased-memory-limit — a compiler's working set is
+    large (LLVM and Swift's frontend are linked into the app, and a build holds a
+    module graph in memory). The default jetsam budget is below what a real compile
+    needs, so this asks for the larger limit.
 
   Both are also the keys a signer may refuse: a wildcard or free-account profile
-  cannot always grant them. If a sideloader strips them, XForge still installs
-  and runs — the guest just gets the default address space and memory budget,
-  which is enough to boot and use the shell but not to compile large packages.
+  cannot always grant them. If a sideloader strips them, XForge still installs and
+  runs — it gets the default address space and memory budget, which is enough for
+  small projects and not for large ones.
 
   * get-task-allow — true, which is what a development-signed app has; a
     sideloader re-signs with its own certificate and sets this itself.

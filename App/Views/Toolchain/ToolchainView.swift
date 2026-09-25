@@ -209,6 +209,7 @@ struct ToolchainView: View {
     /// capturing the view in one is the sort of thing that compiles until it does not
     /// — the receiver is a `@MainActor` type, which is `Sendable`, so it can be
     /// captured freely. Same shape as the build pipeline's stage streams.
+    @MainActor
     private func install(from url: URL) async {
         working = true
         message = nil
@@ -218,6 +219,13 @@ struct ToolchainView: View {
         // captures, so that no closure here has to capture the view.
         let state = importState
         state.begin("Reading \(url.lastPathComponent)…")
+
+        // Minutes of CPU, and iOS suspends an app whose screen locks — taking the
+        // extraction with it until the user comes back. Same guard the guest-era
+        // provisioning used for the same reason (`InstallAssertion`: idle timer plus
+        // a background task assertion).
+        let assertion = InstallAssertion.begin(reason: "sdk-import")
+        defer { assertion.end() }
 
         let (updates, continuation) = AsyncStream<DarwinSDKBuilder.Progress>.makeStream()
         let consumer = Task { @MainActor in

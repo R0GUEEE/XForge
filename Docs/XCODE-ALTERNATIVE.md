@@ -12,7 +12,7 @@ piece needs, and which parts cannot be done at all with the tools that exist.
 |---|---|
 | Authoring a SwiftPM-shaped project (project editor, manifest, files) | works |
 | Compiling and linking **C / Objective-C** sources in-process | works (`NativeBuildExecutor`) |
-| Compiling **Swift** sources in-process | **does not work** — the frontend is not in the toolchain bundle |
+| Compiling **Swift** sources in-process | needs a `with_swift` bundle: the frontend ships in it and links into the app, but no Swift build has been run on a device |
 | Resolving SwiftPM dependencies | **refused by name** — no package manager can run here |
 | Packaging an `.ipa` from a built `.app` | works (`IPABuilder`, host-side) |
 | Signing with an existing `.p12` + profile | works (`AppBundleSigner`, XKit, in-process) |

@@ -239,7 +239,7 @@ sane answer for large projects, and the protocol above is where it would attach.
 
 ```
 .github/workflows/    build-ipa.yml (the unsigned IPA), native-toolchain.yml (the
-                      iOS LLVM cross-build), ios-share.yml (a simulator build)
+                      iOS LLVM cross-build, and the toolchain release)
 project.yml           XcodeGen definition
 App/                  SwiftUI app sources
 App/Build/            the pipeline: plan, invocation, executor, IPABuilder, manager

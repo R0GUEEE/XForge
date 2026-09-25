@@ -29,6 +29,18 @@ they are ordinary directories in the app's container.
   rootfs, no `install-toolchain.sh` to run in a guest, and no pinned root asset to
   download. `EmbeddedLinux/` is gone, and `project.yml` no longer links `-lish`,
   `-lz` or `-liconv`, sets `GUEST_ARM64`, or requires `Vendor/ish-arm64*` to exist.
+- **`.github/workflows/ios-share.yml` (30 KB) and `builder.json`.** A build-for-the-
+  simulator workflow whose own comments tell you to keep its `js toolchain` blocks
+  identical to `ios-build.yml` and `runner.sh` — neither of which is in the
+  repository — and which drives the Flutter / React Native / Expo / KMP branches of
+  a multi-framework builder. It has never run here (no `ios-share/*` tag has ever
+  been pushed) and this is a Swift app with an in-process toolchain. Both are in git
+  history if the MobAI simulator flow is ever wanted back.
+- **`.github/workflows/bridge-api-check.yml`.** A "fast loop" for the bridge
+  compile-check, written when reaching that check cost 40–90 minutes. It now costs
+  eleven seconds inside a two-minute warm toolchain run, and the workflow carried
+  its own copy of the LLVM configure recipe — a second place to update, and a
+  silent divergence waiting to happen.
 
 ### Added
 - **`App/Build/NativeBuildPlan.swift`** — reads a project directory into a fully
@@ -51,9 +63,9 @@ they are ordinary directories in the app's container.
 - **Importing an `Xcode.xip` on the device.** The Toolchain screen accepts Apple's
   xip and builds the Darwin SDK out of it here — the job `xtool sdk build` does on a
   Mac, and the reason a phone with no Mac could not use a newer SDK than the one we
-  publish. A xip is a xar archive holding a pbzx stream of LZMA2 blocks that
+  publish. A xip is a xar archive holding a pbzx stream of xz blocks that
   decompresses to a cpio archive of `Xcode.app`; `XipArchive` reads it in one
-  streaming pass (Apple's `Compression` decodes the LZMA2, so nothing is vendored)
+  streaming pass (Apple's `Compression` decodes the xz, so nothing is vendored)
   and `DarwinSDKBuilder` keeps xtool's own list of paths, restricted to
   `iPhoneOS.platform` because XForge only compiles for the device. The picker also
   takes a zip or a folder, for a bundle built elsewhere. Free space is checked
