@@ -31,44 +31,44 @@ final class XipArchiveTests: XCTestCase {
 
     /// The paths of the fake Xcode tree, rooted at `Xcode.app` as the archive's are.
     private static let developer = "Xcode.app/Contents/Developer"
-    private static let platform = "\(developer)/Platforms/iPhoneOS.platform"
-    private static let toolchain = "\(developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+    private static let platform = "\(Self.developer)/Platforms/iPhoneOS.platform"
+    private static let toolchain = "\(Self.developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib"
 
     private static func fakeXcode() -> [Spec] {
         var inode: UInt32 = 0
         func next() -> UInt32 { inode += 1; return inode }
 
         let directories = [
-            "Xcode.app", "Xcode.app/Contents", developer, "\(developer)/Platforms",
-            platform, "\(platform)/Developer",
-            "\(platform)/Developer/SDKs",
-            "\(platform)/Developer/SDKs/iPhoneOS27.0.sdk",
-            "\(platform)/Developer/SDKs/iPhoneOS27.0.sdk/usr",
-            "\(platform)/Developer/SDKs/iPhoneOS27.0.sdk/usr/include",
-            "\(developer)/Toolchains", "\(developer)/Toolchains/XcodeDefault.xctoolchain",
-            "\(developer)/Toolchains/XcodeDefault.xctoolchain/usr",
-            "\(toolchain)", "\(toolchain)/swift_static", "\(toolchain)/swift_static/iphoneos",
-            "\(toolchain)/swift", "\(toolchain)/swift/prebuilt-modules",
+            "Xcode.app", "Xcode.app/Contents", developer, "\(Self.developer)/Platforms",
+            platform, "\(Self.platform)/Developer",
+            "\(Self.platform)/Developer/SDKs",
+            "\(Self.platform)/Developer/SDKs/iPhoneOS27.0.sdk",
+            "\(Self.platform)/Developer/SDKs/iPhoneOS27.0.sdk/usr",
+            "\(Self.platform)/Developer/SDKs/iPhoneOS27.0.sdk/usr/include",
+            "\(Self.developer)/Toolchains", "\(Self.developer)/Toolchains/XcodeDefault.xctoolchain",
+            "\(Self.developer)/Toolchains/XcodeDefault.xctoolchain/usr",
+            "\(Self.toolchain)", "\(Self.toolchain)/swift_static", "\(Self.toolchain)/swift_static/iphoneos",
+            "\(Self.toolchain)/swift", "\(Self.toolchain)/swift/prebuilt-modules",
             "Xcode.app/Contents/Resources",
-            "\(developer)/Platforms/MacOSX.platform",
+            "\(Self.developer)/Platforms/MacOSX.platform",
         ]
         var specs = directories.map { Spec(path: $0, mode: directory, inode: next()) }
 
         // Kept: the platform manifest, a header from the SDK, the Swift static runtime.
-        specs.append(Spec(path: "\(platform)/Info.plist", mode: regular,
+        specs.append(Spec(path: "\(Self.platform)/Info.plist", mode: regular,
                           data: Data("<plist/>".utf8), inode: next()))
-        specs.append(Spec(path: "\(platform)/Developer/SDKs/iPhoneOS27.0.sdk/usr/include/stdio.h",
+        specs.append(Spec(path: "\(Self.platform)/Developer/SDKs/iPhoneOS27.0.sdk/usr/include/stdio.h",
                           mode: regular, data: Data("#pragma once\n".utf8), inode: next()))
         let runtimeInode = next()
-        specs.append(Spec(path: "\(toolchain)/swift_static/iphoneos/libswiftCore.a",
+        specs.append(Spec(path: "\(Self.toolchain)/swift_static/iphoneos/libswiftCore.a",
                           mode: regular, data: Data(repeating: 0xAB, count: 5_000),
                           inode: runtimeInode, links: 2))
 
         // Dropped: Xcode's own build output, another platform, anything under
         // Contents that is not the Developer directory.
-        specs.append(Spec(path: "\(toolchain)/swift/prebuilt-modules/Foundation.swiftmodule",
+        specs.append(Spec(path: "\(Self.toolchain)/swift/prebuilt-modules/Foundation.swiftmodule",
                           mode: regular, data: Data(repeating: 0xFF, count: 64), inode: next()))
-        specs.append(Spec(path: "\(developer)/Platforms/MacOSX.platform/Info.plist",
+        specs.append(Spec(path: "\(Self.developer)/Platforms/MacOSX.platform/Info.plist",
                           mode: regular, data: Data("<plist/>".utf8), inode: next()))
         specs.append(Spec(path: "Xcode.app/Contents/Resources/Dropped.bin",
                           mode: regular, data: Data(repeating: 0x11, count: 32), inode: next()))
@@ -77,11 +77,11 @@ final class XipArchiveTests: XCTestCase {
 
         // The second link to the runtime: same inode, and both are inside the filter,
         // so the bundle should carry one file and one hard link, not two copies.
-        specs.append(Spec(path: "\(toolchain)/swift/libswiftCore.a", mode: regular,
+        specs.append(Spec(path: "\(Self.toolchain)/swift/libswiftCore.a", mode: regular,
                           data: Data(), inode: runtimeInode, links: 2))
 
         // `iPhoneOS.sdk` is a symlink to the versioned directory in recent Xcodes.
-        specs.append(Spec(path: "\(platform)/Developer/SDKs/iPhoneOS.sdk", mode: symlink,
+        specs.append(Spec(path: "\(Self.platform)/Developer/SDKs/iPhoneOS.sdk", mode: symlink,
                           data: Data("iPhoneOS27.0.sdk".utf8), inode: next()))
         return specs
     }
@@ -290,26 +290,26 @@ final class XipArchiveTests: XCTestCase {
     /// XForge's one deliberate narrowing: the device platform only.
     func testWantedPaths() {
         let kept = [
-            "\(developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/Swift.swiftmodule",
-            "\(toolchain)/swift_static/iphoneos/libswiftCore.a",
-            "\(toolchain)/clang/include/stdarg.h",
-            "\(platform)/Info.plist",
-            "\(platform)/Developer/SDKs/iPhoneOS27.0.sdk/usr/include/stdio.h",
-            "\(platform)/Developer/usr/lib/libSystem.tbd",
-            "\(platform)/Developer/Library/Frameworks/XCTest.framework/XCTest",
+            "\(Self.developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/Swift.swiftmodule",
+            "\(Self.toolchain)/swift_static/iphoneos/libswiftCore.a",
+            "\(Self.toolchain)/clang/include/stdarg.h",
+            "\(Self.platform)/Info.plist",
+            "\(Self.platform)/Developer/SDKs/iPhoneOS27.0.sdk/usr/include/stdio.h",
+            "\(Self.platform)/Developer/usr/lib/libSystem.tbd",
+            "\(Self.platform)/Developer/Library/Frameworks/XCTest.framework/XCTest",
         ]
         for path in kept {
             XCTAssertTrue(DarwinSDKBuilder.isWanted(path), "should be kept: \(path)")
         }
 
         let dropped = [
-            "\(toolchain)/swift/prebuilt-modules/Foundation.swiftmodule",
-            "\(developer)/Platforms/MacOSX.platform/Info.plist",
-            "\(developer)/Applications/Whatever.app/Whatever",
+            "\(Self.toolchain)/swift/prebuilt-modules/Foundation.swiftmodule",
+            "\(Self.developer)/Platforms/MacOSX.platform/Info.plist",
+            "\(Self.developer)/Applications/Whatever.app/Whatever",
             "Contents/Resources/English.lproj/InfoPlist.strings",
             "Xcode.app/Contents/version.plist",
-            "\(toolchain)/swift_static/iphoneos",
-            "\(developer)",
+            "\(Self.toolchain)/swift_static/iphoneos",
+            "\(Self.developer)",
         ]
         for path in dropped {
             XCTAssertFalse(DarwinSDKBuilder.isWanted(path), "should be dropped: \(path)")
