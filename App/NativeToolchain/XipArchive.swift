@@ -293,7 +293,7 @@ enum XipArchive {
             guard let block = try nextBlock(), !block.isEmpty else { return false }
             buffer = block
             position = 0
-            consumed = handle.offsetInFile
+            consumed = Int64(handle.offsetInFile)
             if let progress, contentLength > 0 {
                 progress(min(1, Double(consumed) / Double(contentLength)))
             }
