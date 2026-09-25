@@ -344,6 +344,18 @@ enum DarwinSDKBuilder {
         var targetTriples: [String: Triple]
     }
 
+    /// Build from the pbzx `Content` member extracted from Apple's ZIP wrapper.
+    static func buildPBZX(from content: URL, into destination: URL,
+                          progress: (@Sendable (Progress) -> Void)? = nil) throws -> Result {
+        let staging = destination
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let writer = Writer(staging: staging)
+        try XipArchive.forEachPBZX(at: content, progress: progress) { entry, payload in
+            try writer.accept(entry, payload)
+        }
+        return try writer.finish(progress: progress)
+    }
+
     /// Free space on the volume the bundle will be written to.
     static func availableBytes(at url: URL) -> Int64 {
         let probe = url.deletingLastPathComponent().path

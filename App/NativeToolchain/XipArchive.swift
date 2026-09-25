@@ -205,17 +205,7 @@ enum XipArchive {
 
     // MARK: - The pbzx stream
 
-    /// Walk every cpio entry in `Content`.
-    ///
-    /// `body` is called once per entry with the entry's header and a payload reader
-    /// for its data — and it must either read that data or leave it: the walker
-    /// consumes whatever is left when `body` returns, because cpio is sequential and
-    /// a skipped entry cannot be seeked past. `progress` is handed the fraction of
-    /// the *compressed* member consumed, which is monotonic and good enough for a
-    /// progress bar.
-    ///
-    /// Entries are visited in archive order, which is also the order they have to be
-    /// written in: a directory always precedes the files inside it.
+    /// Walk a xar `Content` member.
     static func forEachEntry(
         in url: URL,
         content: Member,
@@ -226,8 +216,22 @@ enum XipArchive {
         defer { try? handle.close() }
         try handle.seek(toOffset: UInt64(content.offset))
         let end = content.offset + content.length
-
         let stream = try BlockStream(handle: handle, end: end, contentLength: content.length,
+                                     progress: progress)
+        try readCPIO(from: stream, body)
+    }
+
+    /// Walk the pbzx `Content` member directly, without a xar wrapper.
+    static func forEachPBZX(
+        at url: URL,
+        progress: (@Sendable (Double) -> Void)? = nil,
+        _ body: (Entry, Payload) throws -> Void
+    ) throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let end = Int64(try handle.seekToEnd())
+        try handle.seek(toOffset: 0)
+        let stream = try BlockStream(handle: handle, end: end, contentLength: end,
                                      progress: progress)
         try readCPIO(from: stream, body)
     }

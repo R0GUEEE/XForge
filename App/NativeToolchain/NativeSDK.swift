@@ -270,10 +270,56 @@ enum NativeSDK {
                                 ])
         }
         if header.starts(with: Data("PK".utf8)) || kind == "zip" {
+            if try installAppleXcodeZipIfPresent(at: source, progress: progress) {
+                return ImportReport(files: 0, bytes: 0,
+                                    warnings: ["imported Apple Xcode Content stream"])
+            }
             try installDownloadedArchive(at: source)
             return ImportReport()
         }
         throw NativeSDKError.notABundle(source.lastPathComponent)
+    }
+
+    /// Apple Developer's Xcode download can reach Files as a ZIP wrapper containing
+    /// `Xcode_27/Content` and `Metadata`, rather than as a file named `.xip`. Do not
+    /// unzip it: `Content` declares a ~10 GB cpio and the ZIP itself can already be
+    /// 2 GB. Copy just that one compressed member to a temporary file, then use the
+    /// same streaming pbzx/cpio builder as a xar xip.
+    private static func installAppleXcodeZipIfPresent(
+        at source: URL,
+        progress: (@Sendable (DarwinSDKBuilder.Progress) -> Void)?
+    ) throws -> Bool {
+        let archive = try Archive(url: source, accessMode: .read)
+        guard let contentEntry = archive.first(where: {
+            $0.path == "Xcode_27/Content" ||
+            ($0.path.hasSuffix("/Content") && $0.path.split(separator: "/").count == 2)
+        }) else { return false }
+
+        let contentURL = XForgeEnvironment.nativeSDKDirectory
+            .appendingPathComponent("xcode-content-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: XForgeEnvironment.nativeSDKDirectory,
+                                                 withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: contentURL) }
+
+        var completed = Int64(0)
+        try archive.extract(contentEntry, to: contentURL) { bytes in
+            completed += Int64(bytes)
+            if let progress, contentEntry.uncompressedSize > 0 {
+                let fraction = min(0.95, Double(completed) / Double(contentEntry.uncompressedSize))
+                progress(DarwinSDKBuilder.Progress(fraction: fraction,
+                                                    message: "Copying Xcode Content — \(Int(fraction * 100))%"))
+            }
+            return true
+        }
+
+        let staging = XForgeEnvironment.nativeSDKDirectory
+            .appendingPathComponent("darwin.artifactbundle.building-\(UUID().uuidString)",
+                                    isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let built = try DarwinSDKBuilder.buildPBZX(from: contentURL, into: staging,
+                                                   progress: progress)
+        try install(preparedBundle: built.bundle)
+        return true
     }
 
     /// The first four bytes, read without mapping a multi-gigabyte file into memory.
