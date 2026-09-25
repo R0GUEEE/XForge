@@ -195,14 +195,19 @@ final class XipArchiveTests: XCTestCase {
 
     /// Write a synthesized xip into a fresh temporary directory.
     private func makeXip(payload: Data? = nil) throws -> URL {
+        let cpio = payload ?? Self.cpio(Self.fakeXcode())
+        return try writeXip(Self.xar(content: Self.pbzx(cpio)))
+    }
+
+    /// Write xar bytes into a fresh temporary directory.
+    private func writeXip(_ archive: Data) throws -> URL {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("xip-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
 
-        let cpio = payload ?? Self.cpio(Self.fakeXcode())
         let url = directory.appendingPathComponent("Xcode_27.xip")
-        try Self.xar(content: Self.pbzx(cpio)).write(to: url)
+        try archive.write(to: url)
         return url
     }
 
@@ -268,24 +273,59 @@ final class XipArchiveTests: XCTestCase {
         XCTAssertEqual(payloads["\(Self.platform)/Developer/SDKs/iPhoneOS.sdk"], 16)
     }
 
-    /// The one part that has to agree with another implementation of the format.
+    /// The compressed path, validated against an implementation other than this one.
     ///
-    /// The blob is 420 bytes of text compressed to 85 bytes of **raw LZMA2** by
-    /// liblzma, which is what a pbzx block holds. Apple's decoder has to reproduce it
-    /// byte for byte; an encoder round-trip through this process would have proved
-    /// nothing, since two matching bugs look exactly like correctness.
-    func testDecodesRawLZMA2ProducedByLiblzma() throws {
+    /// A pbzx block is an **xz** stream — `pbzx.c` checks for the `\xFD7zXZ` magic and
+    /// refuses anything else — and Apple's `COMPRESSION_LZMA` is what decodes it.
+    /// This fixture is 787 bytes of odc cpio compressed to 256 bytes by **liblzma**
+    /// (Python's `lzma` module, xz container), wrapped in a single pbzx block inside a
+    /// xar. Walking it exercises the whole compressed path — the framing decision
+    /// (compressed size differs from decompressed size), the xz decode and the cpio
+    /// parse — against a stream this process did not produce. An encoder round trip
+    /// would have proved nothing: two matching bugs look exactly like correctness.
+    func testWalksAnXZPayloadProducedByLiblzma() throws {
         let base64 = """
-        4AGjAE1dACwaSgQTYMiZxu0IMKQ6+2aC3gaIG0RBZoQd0tB/LAu8gQdovsXeV7hHLo7E0RzTAygy\
-        1lQcyW1wiJyvt23W96lpWfeimqcQPsLwdAAAAA==
+        /Td6WFoAAATm1rRGAgAhARYAAAB0L+Wj4AMSAL1dABgN3wegMRkMF/SCaXaknqoWiVsR\
+        ntc2yBB5DloIwewVgm0EJoUwmh+RvTVwtHxlYFJ1cZxGEPK8IgJOaAlEu44Mfu1l8oOZ\
+        B6IWQLeOhCnnHNhdx7piLXn/q9nM4+Ka84R4dbk6jozpre+YlFurXBoqU2Bn3zhVpRu1\
+        XnLHE0TGI/caB2jNykEyKiHElx5ZcXjGvi+cpoApZ4ZX3NbQxDozsrusWS7CR2dkq2yL\
+        Lc5s0cid+htDMzoOxwaAAAAAAAAh8cN2Rcr+YAAB2QGTBgAAcoJ8YLHEZ/sCAAAAAARZ\
+        Wg==
         """
         let compressed = try XCTUnwrap(Data(base64Encoded: base64))
-        let expected = Data(String(repeating: "XipArchive: a pbzx block is raw LZMA2, "
-                                   + "decoded with COMPRESSION_LZMA. ", count: 6).utf8)
-        XCTAssertEqual(expected.count, 420, "the fixture and this payload must stay in step")
+        XCTAssertEqual(compressed.prefix(6), Data([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]),
+                       "the fixture has to be an xz stream, which is what pbzx holds")
 
-        let decoded = try XipArchive.inflateLZMA(compressed, to: expected.count)
-        XCTAssertEqual(Data(decoded), expected)
+        // One block, compressed: the uncompressed size is in the block header, and the
+        // two sizes differing is what tells the reader to decompress it.
+        let uncompressedSize = 787
+        var stream = Data("pbzx".utf8)
+        stream += Self.bigEndian(UInt64(4_096), 8)
+        stream += Self.bigEndian(UInt64(uncompressedSize), 8)
+        stream += Self.bigEndian(UInt64(compressed.count), 8)
+        stream += compressed
+
+        let url = try writeXip(Self.xar(content: stream))
+        let content = try XipArchive.content(of: url)
+
+        var names: [String] = []
+        var stdio: [UInt8] = []
+        try XipArchive.forEachEntry(in: url, content: content) { entry, payload in
+            names.append(entry.name)
+            if entry.name.hasSuffix("/usr/include/stdio.h") {
+                stdio = try payload.readAll()
+            }
+        }
+
+        XCTAssertEqual(names, [
+            "Fixture.app",
+            "Fixture.app/Developer",
+            "Fixture.app/Developer/Info.plist",
+            "Fixture.app/Developer/SDKs/iPhoneOS99.0.sdk",
+            "Fixture.app/Developer/SDKs/iPhoneOS99.0.sdk/usr",
+            "Fixture.app/Developer/SDKs/iPhoneOS99.0.sdk/usr/include/stdio.h",
+        ])
+        XCTAssertEqual(Data(stdio), Data("#pragma once\n".utf8))
     }
 
     // MARK: - What becomes the bundle
@@ -296,6 +336,10 @@ final class XipArchiveTests: XCTestCase {
         let kept = [
             "\(Self.developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/iphoneos/Swift.swiftmodule",
             "\(Self.toolchain)/swift_static/iphoneos/libswiftCore.a",
+            // The directory itself is kept: it holds the static runtime, and it is what
+            // `swiftStaticResourcesPath` names.
+            "\(Self.toolchain)/swift_static/iphoneos",
+            "\(Self.toolchain)/swift_static",
             "\(Self.toolchain)/clang/include/stdarg.h",
             "\(Self.platform)/Info.plist",
             "\(Self.platform)/Developer/SDKs/iPhoneOS27.0.sdk/usr/include/stdio.h",
@@ -312,8 +356,10 @@ final class XipArchiveTests: XCTestCase {
             "\(Self.developer)/Applications/Whatever.app/Whatever",
             "Contents/Resources/English.lproj/InfoPlist.strings",
             "Xcode.app/Contents/version.plist",
-            "\(Self.toolchain)/swift_static/iphoneos",
             "\(Self.developer)",
+            "\(Self.developer)/Platforms",
+            "\(Self.developer)/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc",
+            "\(Self.developer)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-ide-test",
         ]
         for path in dropped {
             XCTAssertFalse(DarwinSDKBuilder.isWanted(path), "should be dropped: \(path)")
@@ -329,7 +375,9 @@ final class XipArchiveTests: XCTestCase {
             .appendingPathComponent("out", isDirectory: true)
 
         let result = try DarwinSDKBuilder.build(fromXip: url, into: destination)
-        XCTAssertGreaterThan(result.files, 5)
+        // Five: the platform manifest, a header, the static runtime, the archive's hard
+        // link to it, and the symlink. Directories are not counted.
+        XCTAssertGreaterThanOrEqual(result.files, 5)
         XCTAssertGreaterThan(result.skipped, 0, "the unwanted paths should be counted as skipped")
         XCTAssertEqual(result.sdkRoot,
                        "Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS27.0.sdk")

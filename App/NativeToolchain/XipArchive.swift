@@ -16,7 +16,8 @@ import Foundation
 ///   **Content** is a pbzx stream: the bytes `pbzx`, an 8-byte big-endian chunk
 ///   size, then blocks of (decompressed size, compressed size, bytes) — repeated
 ///   while a block's decompressed size equals the chunk size. A block is either
-///   stored or LZMA-compressed, which the two sizes reveal.
+///   stored or an **xz** stream, which the two sizes reveal (`pbzx.c` checks for
+///   the `\xFD7zXZ` magic, and Apple's `COMPRESSION_LZMA` accepts it).
 ///
 ///   **decompressed** it is an `odc` cpio archive (magic `070707`, six-digit octal
 ///   fields, no alignment padding) of the `Xcode.app` tree, ending at a
@@ -279,7 +280,7 @@ enum XipArchive {
             // corrupt xip rather than as the end of the stream.
             let available = end - offset
             let block = try readExact(Int(min(compressedSize, available)))
-            // The block is stored when it did not shrink; otherwise it is LZMA.
+            // The block is stored when it did not shrink; otherwise it is xz.
             if decompressedSize < chunkSize {
                 finished = true
             }
@@ -544,7 +545,7 @@ enum XipArchive {
         return Data(output)
     }
 
-    /// Raw LZMA2 as pbzx stores it, decoded by Apple's own implementation.
+    /// An xz stream as pbzx stores it, decoded by Apple's own implementation.
     static func inflateLZMA(_ data: Data, to size: Int) throws -> [UInt8] {
         var output = [UInt8](repeating: 0, count: size)
         let written = decode(data, into: &output, algorithm: COMPRESSION_LZMA)
