@@ -96,18 +96,41 @@ The consequences of linking the compiler in rather than shipping it as data:
 
 ## 3. Where the `darwin` SDK comes from
 
-`xtool sdk build <Xcode.xip>` produces the `darwin` SDK from a real Xcode —
-impossible on a phone. So the `darwin.artifactbundle` is **built once in CI** and
-published as a release asset under XForge's own `darwin-sdk-<n>` release series,
-and the app resolves the newest matching release at build time.
+`xtool sdk build <Xcode.xip>` produces the `darwin` SDK from a real Xcode. That is a
+macOS program shelling out to `xar`, so the `.xip` path used to stop at "impossible
+on a phone" — and the default is still the cheap one: a `darwin.artifactbundle` is
+**built once in CI** and published as a release asset under XForge's own
+`darwin-sdk-<n>` release series, and the app resolves the newest matching release at
+build time. About 460 MB.
 
-The bundle is installed into the app container at `<Documents>/native-sdk/darwin.artifactbundle`
-and read directly: `NativeSDK` parses the same `swift-sdk.json` layout xtool's
-builder emits, resolving the SDK root, the Swift resource directory and the static
-runtime search paths. It is about 460 MB. The Toolchain screen can also install one
-from a folder picked in Files, which is how a user with their own `Xcode.xip` — or
-a newer artifact — replaces it; the install is staged and validated before it
-replaces what is there, so a bad bundle cannot leave the app without an SDK.
+The bundle is installed into the app container at
+`<Documents>/native-sdk/darwin.artifactbundle` and read directly: `NativeSDK` parses
+the same `swift-sdk.json` layout xtool's builder emits, resolving the SDK root, the
+Swift resource directory and the static runtime search paths.
+
+Three things can be installed from the Toolchain screen, told apart by what they are
+rather than by what they are called: that hosted bundle (a zip), a
+`darwin.artifactbundle` **folder** (perhaps built by `xtool sdk build` on a Mac), and
+an Apple **`Xcode.xip`**, which the app now builds into a bundle itself
+(`DarwinSDKBuilder` + `XipArchive`). The third is the one that needs no Mac:
+
+- a `.xip` is a xar archive whose `Content` member is a pbzx stream of LZMA2 blocks,
+  which decompresses to an `odc` cpio archive of `Xcode.app`. `XipArchive` reads it
+  in one pass, streaming, and hands only the wanted entries to disk;
+- which entries those are is xtool's own list (`SDKBuilder.wanted`), not a guess:
+  `Contents/Developer/Platforms/iPhoneOS.platform/{Info.plist,Developer/{SDKs,usr/lib,Library/Frameworks,Library/PrivateFrameworks}}`
+  and `Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/{swift,swift_static,clang}`,
+  minus `swift/prebuilt-modules` (per-configuration build output measured in GB);
+- one deliberate narrowing: xtool builds a bundle for three platforms because a Mac
+  builds for all of them, and XForge only ever compiles for the device, so only
+  `iPhoneOS.platform` is extracted and `swift-sdk.json` declares only
+  `arm64-apple-ios`. A third of the work and a third of the disk for the same
+  capability.
+
+Extraction is minutes of CPU and ~1.5 GB of disk on top of whatever the document
+picker copied, and both are checked before it starts rather than discovered halfway
+through. The install is staged and validated (`NativeSDK.layout`) before it replaces
+what is there, so a bad bundle cannot leave the app without an SDK.
 
 > Note: Apple also publishes official iOS Swift SDKs on swift.org, but they use the
 > triple `aarch64-apple-ios` under a different bundle name. xtool hardcodes

@@ -186,4 +186,74 @@ enum NativeSDK {
         guard FileManager.default.fileExists(atPath: installedBundle.path) else { return }
         try FileManager.default.removeItem(at: installedBundle)
     }
+
+    // MARK: - Importing
+
+    /// Install a bundle the app built itself.
+    ///
+    /// A *move* where `install(from:)` copies: this bundle is already inside the
+    /// app's container, so copying a gigabyte only to delete the original costs a
+    /// gigabyte of writes and a second gigabyte of free space for nothing.
+    static func install(preparedBundle: URL) throws {
+        let fm = FileManager.default
+        let destination = installedBundle
+        try fm.createDirectory(at: XForgeEnvironment.nativeSDKDirectory,
+                               withIntermediateDirectories: true)
+        _ = try layout(at: preparedBundle)  // validate before replacing what is there
+        if fm.fileExists(atPath: destination.path) {
+            try fm.removeItem(at: destination)
+        }
+        try fm.moveItem(at: preparedBundle, to: destination)
+    }
+
+    /// Install from whatever the document picker handed over.
+    ///
+    /// Three shapes arrive this way, and they are told apart by what they are rather
+    /// than by what they are called:
+    ///
+    ///  - a `darwin.artifactbundle` **folder** — already built, perhaps by
+    ///    `xtool sdk build` on a Mac;
+    ///  - a **zip** of one, which is how the hosted bundle is published;
+    ///  - an Apple **`Xcode.xip`**, which `DarwinSDKBuilder` turns into one here.
+    ///    That is the case that needs a Mac otherwise, and the reason the picker no
+    ///    longer filters for folders only.
+    static func installImported(from source: URL,
+                                progress: (@Sendable (DarwinSDKBuilder.Progress) -> Void)? = nil) throws {
+        let accessed = source.startAccessingSecurityScopedResource()
+        defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: source.path, isDirectory: &isDirectory)
+        let kind = source.pathExtension.lowercased()
+
+        if exists, isDirectory.boolValue {
+            try install(from: source)
+        } else if kind == "xip" {
+            let built = try DarwinSDKBuilder.build(fromXip: source,
+                                                   into: XForgeEnvironment.nativeSDKDirectory,
+                                                   progress: progress)
+            try install(preparedBundle: built.bundle)
+        } else if kind == "zip" {
+            try installDownloadedArchive(at: source)
+        } else {
+            throw NativeSDKError.missingBundle
+        }
+    }
+
+    /// Delete the copy the document picker made of an imported archive.
+    ///
+    /// `fileImporter` hands over a copy inside the app's own container, and for an
+    /// `Xcode.xip` that copy is ~10 GB: leaving it behind would fill the device on
+    /// the first import. Only a file that really is one of ours is removed — the
+    /// picker's import directories are under `tmp/`, and a URL the picker returned
+    /// in place (or a folder the user owns) is left alone.
+    static func discardImportCopy(at source: URL) {
+        let fm = FileManager.default
+        let path = source.standardizedFileURL.path
+        let temporary = fm.temporaryDirectory.standardizedFileURL.path
+        let inbox = XForgeEnvironment.documentDirectory
+            .appendingPathComponent("Inbox", isDirectory: true).standardizedFileURL.path
+        guard path.hasPrefix(temporary + "/") || path.hasPrefix(inbox + "/") else { return }
+        try? fm.removeItem(at: source)
+    }
 }

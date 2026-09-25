@@ -23,6 +23,19 @@ struct ToolchainView: View {
     @State private var message: String?
     @State private var smokeResult: String?
     @State private var confirmingDownload = false
+    @StateObject private var importState = SDKImportState()
+
+    /// What the picker offers: a built bundle (a folder, or a zip of one) or Apple's
+    /// `Xcode.xip`, which the app turns into one. `.xip` has no system type, so it is
+    /// declared here by extension — without it the file is greyed out in Files and
+    /// the one import this screen exists for cannot be started.
+    private static var importableTypes: [UTType] {
+        var types: [UTType] = [.folder, .zip]
+        if let xip = UTType(filenameExtension: "xip", conformingTo: .data) {
+            types.append(xip)
+        }
+        return types
+    }
 
     private var capabilities: NativeToolchainCapabilities { .current }
 
@@ -57,7 +70,10 @@ struct ToolchainView: View {
             } footer: {
                 Text("The SDK is xtool's darwin.artifactbundle: the iPhoneOS headers, the "
                      + "tbd stubs and the static Swift runtime, read straight out of the "
-                     + "app's container. About 460 MB.")
+                     + "app's container. About 460 MB downloaded, or built here from an "
+                     + "Xcode.xip — which the picker copies into the container first, so "
+                     + "an 11 GB xip needs roughly 12 GB free, plus about 1.5 GB for the "
+                     + "bundle. Extraction takes a few minutes.")
             }
 
             Section {
@@ -71,9 +87,18 @@ struct ToolchainView: View {
                 Button {
                     importing = true
                 } label: {
-                    Label("Install from a bundle in Files…", systemImage: "doc.badge.plus")
+                    Label("Install from an Xcode.xip or a bundle…", systemImage: "doc.badge.plus")
                 }
                 .disabled(working)
+
+                if importState.isRunning {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: importState.fraction)
+                        Text(importState.status)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 if sdkPath != nil {
                     Button(role: .destructive) {
@@ -120,11 +145,11 @@ struct ToolchainView: View {
         .task { refresh() }
         .fileImporter(
             isPresented: $importing,
-            allowedContentTypes: [.folder],
+            allowedContentTypes: Self.importableTypes,
             allowsMultipleSelection: false
         ) { result in
             guard case .success(let urls) = result, let url = urls.first else { return }
-            install(from: url)
+            Task { await install(from: url) }
         }
         .confirmationDialog(
             "Download the Darwin SDK?",
@@ -176,17 +201,55 @@ struct ToolchainView: View {
         }
     }
 
-    private func install(from url: URL) {
+    /// Install whatever was picked, off the main actor, with progress.
+    ///
+    /// The work is minutes of blocking decompression, so it runs in a detached task.
+    /// Its progress comes back through a stream rather than a closure that writes to
+    /// this view's state: the closure handed to the detached task is `@Sendable`, and
+    /// capturing the view in one is the sort of thing that compiles until it does not
+    /// — the receiver is a `@MainActor` type, which is `Sendable`, so it can be
+    /// captured freely. Same shape as the build pipeline's stage streams.
+    private func install(from url: URL) async {
         working = true
         message = nil
-        defer { working = false }
+        sdkError = nil
+
+        // The object, not the property wrapper: this is what the consumer task
+        // captures, so that no closure here has to capture the view.
+        let state = importState
+        state.begin("Reading \(url.lastPathComponent)…")
+
+        let (updates, continuation) = AsyncStream<DarwinSDKBuilder.Progress>.makeStream()
+        let consumer = Task { @MainActor in
+            for await update in updates {
+                state.update(fraction: update.fraction, status: update.message)
+            }
+            state.finish()
+        }
+
         do {
-            try NativeSDK.install(from: url)
+            try await Task.detached(priority: .userInitiated) {
+                defer { continuation.finish() }
+                try NativeSDK.installImported(from: url) { continuation.yield($0) }
+            }.value
             refresh()
             message = "Darwin SDK installed from \(url.lastPathComponent)."
+        } catch is CancellationError {
+            message = "Import cancelled."
         } catch {
             sdkError = error.localizedDescription
         }
+
+        continuation.finish()
+        await consumer.value
+        state.finish()
+        working = false
+
+        // The picker's copy of the archive is the app's to delete, and for an
+        // `Xcode.xip` it is most of the free space on the device.
+        await Task.detached(priority: .utility) {
+            NativeSDK.discardImportCopy(at: url)
+        }.value
     }
 
     private func removeSDK() {
@@ -249,5 +312,35 @@ struct ToolchainView: View {
         } catch {
             smokeResult = error.localizedDescription
         }
+    }
+}
+
+/// Progress of a Darwin SDK import, as the screen renders it.
+///
+/// A reference type and a plain `ObservableObject` — the shape the rest of the app
+/// uses for state a long job updates — rather than two `@State` fields, because the
+/// consumer of the progress stream has to hold *something* across an actor boundary:
+/// this object is `@MainActor`, and therefore `Sendable`, while the view is not.
+/// Holding the view in a task's closure is the kind of capture that compiles until
+/// it does not.
+@MainActor
+final class SDKImportState: ObservableObject {
+    @Published private(set) var fraction: Double = 0
+    @Published private(set) var status = ""
+    @Published private(set) var isRunning = false
+
+    func begin(_ status: String) {
+        fraction = 0
+        self.status = status
+        isRunning = true
+    }
+
+    func update(fraction: Double, status: String) {
+        self.fraction = fraction
+        self.status = status
+    }
+
+    func finish() {
+        isRunning = false
     }
 }

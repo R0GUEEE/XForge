@@ -48,6 +48,17 @@ they are ordinary directories in the app's container.
 - **`App/Views/Toolchain/ToolchainView.swift`** — the toolchain and SDK screen, now
   native: it reports which libraries are linked in, installs or removes the Darwin
   SDK in the app container, and runs a compile smoke test.
+- **Importing an `Xcode.xip` on the device.** The Toolchain screen accepts Apple's
+  xip and builds the Darwin SDK out of it here — the job `xtool sdk build` does on a
+  Mac, and the reason a phone with no Mac could not use a newer SDK than the one we
+  publish. A xip is a xar archive holding a pbzx stream of LZMA2 blocks that
+  decompresses to a cpio archive of `Xcode.app`; `XipArchive` reads it in one
+  streaming pass (Apple's `Compression` decodes the LZMA2, so nothing is vendored)
+  and `DarwinSDKBuilder` keeps xtool's own list of paths, restricted to
+  `iPhoneOS.platform` because XForge only compiles for the device. The picker also
+  takes a zip or a folder, for a bundle built elsewhere. Free space is checked
+  before extraction starts, progress is reported while it runs, and the picker's own
+  copy of the archive — gigabytes, for a xip — is deleted afterwards.
 - **The toolchain bundle is published, not just uploaded.** `native-toolchain.yml`
   attaches the finished bundle to a release tagged
   `toolchain-<llvm>-<swift|noswift>-ios<target>-sdk<sdk>` — the tag names what is

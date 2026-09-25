@@ -33,6 +33,14 @@ alternative would be a remote build host, which is a different product.
   libraries and publishes the bundle. See below.
 - `NativeToolchain/install-bundle.sh <archive> | --release [tag]` — installs that
   bundle, from a local file or from its release.
+- `App/NativeToolchain/XipArchive.swift` — reads Apple's `.xip` container far enough
+  to take an SDK out of it. xar header and table of contents, the pbzx stream inside
+  the `Content` member, and the `odc` cpio archive that decompresses to — streamed,
+  one 16 MB block at a time, with Apple's own `Compression` decoding the LZMA2 blocks
+  so the app carries no decompressor of its own.
+- `App/NativeToolchain/DarwinSDKBuilder.swift` — turns an `Xcode.xip` into a
+  `darwin.artifactbundle` on the device: xtool's path list, its bundle layout, and
+  the `swift-sdk.json` `NativeSDK` reads.
 - `NativeToolchain/prepare-xcode.sh` — writes the xcconfig the app target consumes.
   `build-ipa.yml` runs it too, so CI never depends on a bundle being installed
   locally; on a checkout with no bundle it writes the disabled configuration and CI
@@ -191,6 +199,31 @@ When the bundle is **absent**, `prepare-xcode.sh` writes the same file with the
 backend disabled. That file is **checked in, disabled**, so a plain clone builds:
 the bridge compiles to a "not available" stub and the app says so. This is why
 `make gen` alone is a complete build for someone who only wants to work on the UI.
+
+## The Darwin SDK
+
+The compiler is in the binary; what it compiles *against* is a bundle in the app's
+container, `<Documents>/native-sdk/darwin.artifactbundle`. `NativeSDK` reads it the
+way xtool's builder writes it (`swift-sdk.json`: SDK root, Swift resource directory,
+static runtime search paths), and the Toolchain screen installs one of three things:
+
+| what you pick | what it is |
+| --- | --- |
+| *(button)* | the hosted `darwin-sdk-<n>` release asset — about 460 MB, no Mac needed |
+| a **folder** or **zip** | a `darwin.artifactbundle`, perhaps built by `xtool sdk build` on a Mac |
+| an **`Xcode.xip`** | Apple's Xcode; the app builds the bundle from it here |
+
+The third is the one that would otherwise send you to a Mac. A `.xip` is a xar archive
+whose `Content` member is a pbzx stream of LZMA2 blocks decompressing to an `odc` cpio
+archive of `Xcode.app`; `XipArchive` walks it in a single streaming pass and writes
+only the paths a build SDK needs, and `DarwinSDKBuilder` assembles them into a bundle
+— xtool's own list of paths, restricted to the device platform, because XForge only
+ever compiles for the device. Extracting is minutes of CPU and about 1.5 GB of disk
+on top of the copy the document picker makes, so the import checks free space before
+it starts, reports progress while it runs, and deletes the picker's copy afterwards.
+
+`Docs/DESIGN.md` §3 has the format and layout details; the code states them where the
+decisions are made.
 
 ## The runtime contract
 
