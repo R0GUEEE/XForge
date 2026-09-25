@@ -139,22 +139,59 @@ enum NativeToolchain {
             throw NativeToolchainError.link("No LLD arguments were supplied.")
         }
 
+        return try marshal(arguments, tool: "ld64.lld", failure: {
+            NativeToolchainError.link($0)
+        }) { argc, argv, diagnostics, capacity in
+            xf_native_lld_link(argc, argv, diagnostics, capacity)
+        }
+    }
+
+    /// Compile through `swift::performFrontend` with a caller-supplied argument
+    /// list.
+    ///
+    /// The argument list is built by `NativeToolchainInvocation`, not here: it is
+    /// pure, so it can be unit-tested on a simulator, where this call cannot even
+    /// be linked. The convention `performFrontend` expects is documented there.
+    static func runSwiftFrontend(arguments: [String]) throws -> NativeToolchainResult {
+        guard isAvailable, isSwiftAvailable else {
+            throw NativeToolchainError.unavailable
+        }
+        guard !arguments.isEmpty else {
+            throw NativeToolchainError.compile("No swift-frontend arguments were supplied.")
+        }
+        return try marshal(arguments, tool: "swift-frontend", failure: {
+            NativeToolchainError.compile($0)
+        }) { argc, argv, diagnostics, capacity in
+            xf_native_swift_frontend(argc, argv, diagnostics, capacity)
+        }
+    }
+
+    /// Marshal a Swift `[String]` into the C ABI's `char *const *` and collect the
+    /// diagnostics buffer both entry points share.
+    private static func marshal(
+        _ arguments: [String],
+        tool: String,
+        failure: (String) -> Error,
+        body: (Int32, UnsafePointer<UnsafePointer<CChar>?>?, UnsafeMutablePointer<CChar>, Int) -> Int32
+    ) throws -> NativeToolchainResult {
         let duplicated: [UnsafeMutablePointer<CChar>] = arguments.compactMap { strdup($0) }
         defer { duplicated.forEach { free($0) } }
         guard duplicated.count == arguments.count else {
-            throw NativeToolchainError.io("Could not allocate linker arguments.")
+            throw failure("Could not allocate \(tool) arguments.")
         }
 
         let argv: [UnsafePointer<CChar>?] = duplicated.map { UnsafePointer($0) }
         var diagnostics = [CChar](repeating: 0, count: 64 * 1024)
         let diagnosticsCapacity = diagnostics.count
         let code = argv.withUnsafeBufferPointer { buffer -> Int32 in
-            Int32(xf_native_lld_link(
-                Int32(arguments.count),
-                buffer.baseAddress,
-                &diagnostics,
-                diagnosticsCapacity
-            ))
+            diagnostics.withUnsafeMutableBufferPointer { storage in
+                body(
+                    Int32(arguments.count),
+                    buffer.baseAddress,
+                    storage.baseAddress!,
+                    diagnosticsCapacity
+                )
+            }
         }
         return NativeToolchainResult(
             exitCode: code,
@@ -171,7 +208,10 @@ enum NativeToolchain {
 
         let source = dir.appendingPathComponent("main.c")
         let object = dir.appendingPathComponent("main.o")
-        try "int xforge_native_smoke(void) { return 42; }\n"
+        // A real entry point, so the object can also be *linked*: a smoke test
+        // that only compiles cannot tell a working toolchain from one that can
+        // produce an object the linker rejects.
+        try "int main(void) { return 0; }\nint xforge_native_smoke(void) { return 42; }\n"
             .write(to: source, atomically: true, encoding: .utf8)
 
         let result = try compileC(source: source, object: object, sdk: sdk)

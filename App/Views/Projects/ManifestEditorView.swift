@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Edit the real Package.swift stored in the embedded Alpine guest.
+/// Edit the project's Package.swift.
 struct ManifestEditorView: View {
     let project: Project
     @Environment(\.dismiss) private var dismiss
@@ -78,7 +78,7 @@ struct ManifestEditorView: View {
         loading = true
         defer { loading = false }
         do {
-            text = try await GuestProjectFiles.load(
+            text = try await ProjectFiles.load(
                 relativePath: "Package.swift",
                 project: project
             ).contents
@@ -98,13 +98,13 @@ struct ManifestEditorView: View {
         error = nil
         defer { saving = false }
         do {
-            let file = GuestProjectFiles.File(
+            let file = ProjectFiles.File(
                 id: "Package.swift",
                 name: "Package.swift",
                 relativePath: "Package.swift",
                 contents: text
             )
-            try await GuestProjectFiles.save(text, file: file, project: project)
+            try await ProjectFiles.save(text, file: file, project: project)
             onSave(text)
             dismiss()
         } catch {

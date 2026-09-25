@@ -2,11 +2,14 @@ import Foundation
 
 /// A SwiftPM package that can be built into an iOS app.
 struct Project: Identifiable, Hashable, Codable {
-    static let projectsRoot = "/root/projects"
+    /// Project directories live under `<Documents>/projects`; this is the stored
+    /// prefix a project's `rootPath` is built from, kept so a project record and
+    /// its directory can be checked against each other.
+    static let projectsRoot = "projects"
     var id: UUID = UUID()
     var name: String
     var organizationIdentifier: String = "com.example"
-    /// Path of the package root inside the embedded Linux filesystem.
+    /// The project's stored path, relative to the app container (`projects/<name>`).
     var rootPath: String
     var createdAt: Date = Date()
     /// Configured Info.plist settings for the produced app (editable in the GUI).
@@ -14,6 +17,16 @@ struct Project: Identifiable, Hashable, Codable {
 
     var packageManifestPath: String { "\(rootPath)/Package.swift" }
     var ipaOutputPath: String { "\(rootPath)/.build/xforge-\(name).ipa" }
+
+    /// The project directory in XForge's own container.
+    ///
+    /// Derived from `name` rather than stored: `rootPath` is the string this model
+    /// carries around for display and for the safety check, and two stored
+    /// locations for one project is how a build ends up reading a directory nobody
+    /// created.
+    var rootURL: URL {
+        XForgeEnvironment.projectsDirectory.appendingPathComponent(name, isDirectory: true)
+    }
 
     static func validatedName(_ value: String) throws -> String {
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -63,7 +76,9 @@ enum BuildEvent: Sendable {
     case failed(String)
 }
 
-/// Pluggable build backend. `Local` = embedded Linux VM, `Remote` = future build server.
+/// Pluggable build backend. There is one implementation — the in-process
+/// toolchain (`NativeBuildExecutor`) — and the seam is kept so a future backend
+/// (a remote build server, say) does not have to rewrite the pipeline.
 @MainActor
 protocol BuildExecutor {
     /// Verify the user-installed base toolchain + xtool without installing it.
@@ -80,7 +95,8 @@ protocol BuildExecutor {
 
 enum SDKSource {
     /// A prebuilt `darwin.artifactbundle` we host (built in CI from Xcode).
+    ///
+    /// It used to have a `.bundled` case for an SDK already inside the guest
+    /// filesystem. There is no guest, so there is one way to get an SDK: fetch it.
     case hostedRemote(URL)
-    /// Already inside the embedded Linux filesystem.
-    case bundled(String)
 }

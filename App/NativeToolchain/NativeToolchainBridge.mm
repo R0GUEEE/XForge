@@ -16,16 +16,36 @@ static void xf_copy_diag(const std::string &value, char *buffer, size_t capacity
     __has_include(<clang/Frontend/CompilerInstance.h>) && \
     __has_include(<clang/Frontend/CompilerInvocation.h>) && \
     __has_include(<clang/Frontend/TextDiagnosticPrinter.h>) && \
+    __has_include(<clang/Serialization/PCHContainerOperations.h>) && \
     __has_include(<lld/Common/Driver.h>)
 
+// Apple's SDK predefines IBAction and IBOutlet as macros (`#define IBOutlet
+// __attribute__((iboutlet))`). Clang's generated AttrList.inc expands
+// `INHERITABLE_ATTR(IBAction)` into `ATTR(IBAction)` → `class IBAction##Attr;`, so
+// the predefined macro is pasted into the token paste and the header does not
+// compile: "pasting formed ')Attr', an invalid preprocessing token". Clang's own
+// headers undefine them for this reason on some revisions and not others, so it is
+// done here, before any clang header is included.
+#ifdef IBAction
+#undef IBAction
+#endif
+#ifdef IBOutlet
+#undef IBOutlet
+#endif
+
 #include <clang/Basic/Diagnostic.h>
+#include <clang/Basic/DiagnosticOptions.h>
 #include <clang/CodeGen/CodeGenAction.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/CompilerInvocation.h>
 #include <clang/Frontend/TextDiagnosticPrinter.h>
+#include <clang/Serialization/PCHContainerOperations.h>
 #include <lld/Common/Driver.h>
 #include <llvm/ADT/ArrayRef.h>
+#include <llvm/ADT/IntrusiveRefCntPtr.h>
 #include <llvm/Support/raw_ostream.h>
+
+#include <memory>
 
 #if defined(XFORGE_HAS_SWIFT_FRONTEND) && __has_include(<swift/FrontendTool/FrontendTool.h>)
 #include <swift/FrontendTool/FrontendTool.h>
@@ -65,7 +85,17 @@ extern "C" int xf_native_swift_frontend(int argc,
         xf_copy_diag("native swift: empty frontend argument list", diagnostics, diagnostics_capacity);
         return 64;
     }
-    llvm::ArrayRef<const char *> args(argv, static_cast<size_t>(argc));
+    // `swift-frontend -frontend …` is how the driver invokes the frontend, and it
+    // hands performFrontend everything *after* `-frontend`. Accept both shapes, so
+    // a caller that mirrors the command line does not hand parseArgs a flag it
+    // rejects ("error: unknown argument: '-frontend'").
+    const char *const *argsBegin = argv;
+    size_t argsCount = static_cast<size_t>(argc);
+    if (argsCount > 0 && std::strcmp(argsBegin[0], "-frontend") == 0) {
+        argsBegin += 1;
+        argsCount -= 1;
+    }
+    llvm::ArrayRef<const char *> args(argsBegin, argsCount);
     const int rc = swift::performFrontend(
         args,
         "swift-frontend",
@@ -101,11 +131,17 @@ extern "C" int xf_native_clang_compile(const char *source_path,
     std::string diagText;
     llvm::raw_string_ostream diagOS(diagText);
 
-    // DiagnosticOptions is a plain value and is taken by reference by both the
-    // printer and the engine; it is no longer refcounted (LLVM 19+), so it must
-    // not be wrapped in an IntrusiveRefCntPtr.
-    clang::DiagnosticOptions diagOpts;
-    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts);
+    // One clang generation, and it is the older one on purpose. Every bundle
+    // XForge builds comes from Swift's LLVM fork (`swiftlang/llvm-project`), which
+    // is where this API lives: `DiagnosticOptions` is reference-counted,
+    // `TextDiagnosticPrinter` takes a `DiagnosticOptions *`, and a
+    // `CompilerInstance` is handed its invocation rather than constructed with it.
+    // Supporting upstream's newer API as well was tried and abandoned: the two
+    // differ in three places, and a shared function cannot hold both, because a
+    // discarded `if constexpr` branch is still type-checked when its code does not
+    // depend on the template parameter.
+    auto diagOpts = llvm::makeIntrusiveRefCnt<clang::DiagnosticOptions>();
+    auto diagPrinter = std::make_unique<clang::TextDiagnosticPrinter>(diagOS, diagOpts.get());
     auto diagIDs = llvm::IntrusiveRefCntPtr<clang::DiagnosticIDs>(new clang::DiagnosticIDs());
     clang::DiagnosticsEngine diags(diagIDs, diagOpts, diagPrinter.get(), false);
 
@@ -141,9 +177,16 @@ extern "C" int xf_native_clang_compile(const char *source_path,
         return 65;
     }
 
-    // CompilerInstance takes its invocation through the constructor now;
-    // setInvocation() no longer exists.
-    clang::CompilerInstance compiler(invocation);
+    // The three signatures that differ between clang revisions, as this one
+    // declares them (swiftlang/llvm-project swift/release/6.2):
+    //   DiagnosticsEngine(IntrusiveRefCntPtr<DiagnosticIDs>,
+    //                     IntrusiveRefCntPtr<DiagnosticOptions>, DiagnosticConsumer *,
+    //                     bool)                        ← options are refcounted here
+    //   TextDiagnosticPrinter(raw_ostream &, DiagnosticOptions *)  ← pointer to them
+    //   CompilerInstance(shared_ptr<PCHContainerOperations>, ModuleCache *)
+    // and the invocation goes in through setInvocation().
+    clang::CompilerInstance compiler(std::make_shared<clang::PCHContainerOperations>());
+    compiler.setInvocation(invocation);
     compiler.createDiagnostics(diagPrinter.release(), true);
     if (!compiler.hasDiagnostics()) {
         xf_copy_diag("native clang: failed to create diagnostics engine", diagnostics, diagnostics_capacity);

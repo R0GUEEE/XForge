@@ -1,77 +1,180 @@
 # XForge
 
-**Build iOS apps on your iPhone — powered by [xtool](https://github.com/xtool-org/xtool).**
+**Build iOS apps on your iPhone, with no Mac in the loop.**
 
-XForge embeds a real Linux userspace (running xtool + a Swift toolchain) inside an iOS
-app. You author SwiftPM packages in the SwiftUI shell, and compile them into real,
-signed iOS `.ipa` files entirely on-device.
+XForge is an on-device alternative to Xcode's build step. It is built on
+[xtool](https://github.com/xtool-org/xtool)'s libraries — `XKit` for in-process
+codesigning, and xtool's `darwin.artifactbundle` for the iPhoneOS SDK — and it
+runs no helper process: the compiler and the Mach-O linker are linked into the app
+binary and called in-process through a small C++ bridge.
 
-The Linux engine is **[ish-arm64](https://github.com/OpenMinis/ish-arm64)** — a real Linux
-kernel + aarch64 emulator running **in-process** on iOS. Its aarch64 backend dispatches
-guest instructions to pre-compiled "gadget" functions instead of emitting machine code,
-so it needs no JIT entitlement and works in a sideloaded app. The Alpine aarch64 root filesystem ships
-**inside the app**, so there is nothing to download after install.
+> **Status: active, and narrower than it looks.** A project authored in the SwiftUI
+> shell is read into a build plan, compiled and linked in-process, packaged into an
+> unsigned `.ipa`, and — with a certificate the user already has — signed with XKit.
+> **C, Objective-C and Objective-C++ targets build today.** Swift needs a toolchain
+> bundle built with `with_swift=true`, which carries the frontend libraries; the app
+> links them, and running an actual Swift build on a device is the one step nobody
+> has taken yet. See *What works today* and *What does not*.
 
-> **Status: active.** The SwiftUI shell, build pipeline, and CI are in place, and the
-> embedded Linux is ish-arm64 with a bundled Alpine rootfs that already carries the
-> build toolchain — xtool, the Swift toolchain and the `darwin` Swift SDK are in the
-> root the app unpacks, so there is nothing to provision before the first build. The
-> remaining work is wiring signing — see [Docs/DESIGN.md](Docs/DESIGN.md).
+## How it is put together
 
-## Why this works
+```
+project (a directory)  →  build plan  →  compile + link in-process  →  <Name>.app
+   →  unsigned .ipa  →  XKit signing  →  signed .ipa
+```
 
-`xtool dev build` is SwiftPM cross-compilation to `arm64-apple-ios` using a Swift SDK
-named `darwin`. All three heavyweight pieces are self-contained Linux artifacts:
+1. **Project.** A project is an ordinary directory in the app's container,
+   `<Documents>/projects/<name>`, holding a `Package.swift`, `Sources/<Target>/`,
+   an optional `Support/Info.plist` and the `xtool.yml` metadata XForge and xtool
+   both read. `ProjectFiles` reads and writes it directly, keeping the
+   relative-path discipline the editor needs (a `..` is rejected rather than
+   normalised, because the paths come from editable text in the UI). A folder
+   picked in the Files app is copied in: an iOS process cannot run `git`, so a
+   clone is not something XForge can do.
+2. **Build plan.** `NativeBuildPlanFactory` turns that directory into a fully
+   resolved `NativeBuildPlan` — module, sources, resources, frameworks, search
+   paths. It is deliberately conservative: it refuses, *by name*, the one thing an
+   in-process driver cannot resolve (SwiftPM dependencies, which need a package
+   manager that fetches and runs manifests) instead of failing halfway through a
+   build.
+3. **Compile and link.** `NativeBuildExecutor` turns the plan into argument lists
+   (`NativeToolchainInvocation`, pure functions, so they can be unit-tested on a
+   simulator where no compiler exists) and calls the entry points behind the
+   bridge: clang through `CompilerInvocation` + `EmitObjAction`, `swift-frontend`
+   through `swift::performFrontend`, `ld64.lld` through `lld::lldMain`. The
+   blocking calls are pushed off the main actor so the Build screen keeps drawing.
+   The result is assembled into `<Name>.app` with an `Info.plist` and the
+   project's resources.
+4. **Package.** `IPABuilder` puts the bundle under `Payload/` and zips it into an
+   unsigned `.ipa`, staged as `<Documents>/staging/<name>-<version>.ipa`.
+5. **Sign.** `IPASigningJob` + `AppBundleSigner` do the signing in this process
+   with XKit: the `.p12` is read through the Security framework, used in memory,
+   and never written anywhere. The result lands as `<Documents>/Signed-<name>.ipa`.
 
-| Piece | Source | Notes |
-|---|---|---|
-| Linux engine | ish-arm64 (`Vendor/ish-arm64` submodule), built for iOS | runs in-process, no JIT entitlement |
-| Alpine aarch64 rootfs | `alpine-rootfs.zip` (Alpine 3.21, engine `fakefs`) | **bundled in the app**, unpacked on first boot; pinned by release tag |
-| Swift aarch64 Linux toolchain | swift.org, via `swiftly` | **in the bundled root**, installed at build time by `install-toolchain.sh` |
-| `xtool` aarch64 binary | prebuilt `xtool-aarch64.AppImage` | **in the bundled root** |
-| `darwin` Swift SDK (arm64-apple-ios) | XForge's `darwin-sdk-<n>` release | **in the bundled root**; the Toolchain screen can also install one from your own `Xcode.xip` |
+Every screen reports from the same values, so the app cannot claim a capability it
+does not have: the Build screen's stages, the Toolchain screen (capabilities, SDK,
+smoke test) and the Settings screen (log, project files, diagnostics) all read the
+in-process toolchain and the SDK in the container.
 
-The bundled root is **provisioned**: it is built by running the guest's own
-installer (`EmbeddedLinux/install-toolchain.sh`) in a chroot of the root being
-built, so the app unpacks a guest that already has xtool, the Swift toolchain and
-the Darwin SDK — the whole chain is exercised on a build machine with a real CPU
-and a fast network, once, instead of on a phone under emulation. Everything is
-installed *before* the fakefs conversion, because the conversion indexes the tree
-and anything added afterwards is on disk and invisible to the guest. The archive
-is then converted to the engine's `fakefs` format, so the app only unzips.
+## What works today
 
-That makes the artifact ~1.6 GB, which is the price of arriving ready to build.
-`EmbeddedLinux/build-rootfs.sh` takes `XFORGE_PROVISION=none` for a plain few-MB
-Alpine root where the guest provisions itself on demand — the same script, the
-same installer, run in the guest instead of at build time. The build also drops
-what an iOS build never loads (the static Linux stdlib, lldb, the editor tooling,
-and every download cache) and then *verifies the result compiles a Swift
-program*, so a slimmed toolchain fails the build rather than a user's first build.
+- **Building a project on device.** C, Objective-C and Objective-C++ sources are
+  compiled by clang and linked by `ld64.lld` against the Darwin SDK, in-process,
+  into a `.app` and then an unsigned `.ipa`.
+- **A project's own `Info.plist`.** A hand-written `Support/Info.plist` is merged
+  over the generated keys, so scene manifests and orientations survive a build.
+- **Signing an app with an identity you already have** — a `.p12` and a
+  provisioning profile, with entitlements if you have them.
+- **Exporting.** `ProjectExporter` zips a project into `<Documents>/exports`, and
+  the file is visible in the Files app and shareable from there. Build output
+  (`.xforge-build`, `.build`) is left out of the archive.
+- **Reading an `.xcodeproj`.** `App/Models/XcodeProject.swift` parses the project
+  model on device, with its own OpenStep parser. Nothing builds from it yet.
+- **Building and testing XForge itself without any toolchain bundle.** A plain
+  clone compiles the bridge to a "not available" stub; `make test` runs on the
+  simulator.
+
+## What does not work (yet)
+
+- **Swift, end to end on a device.** The frontend libraries (`swiftFrontendTool` and
+  the swiftAST / swiftSema / IRGen / ClangImporter set it pulls in) are built for
+  iPhoneOS by a `with_swift=true` toolchain run, published in that bundle, and linked
+  into the app — the Toolchain screen reports `swift-frontend` as linked. What has
+  not happened is a Swift *build* on a device: every part of the path is exercised
+  except that one, and a bundle without the frontend still refuses a Swift plan at
+  the compile stage with `swiftFrontendMissing` and the file count.
+- **SwiftPM dependencies.** Refused by name at plan time. Fetching and resolving
+  packages means running a package manager, which cannot happen here — and a
+  dependency editor that could only produce unbuildable projects was removed
+  rather than kept as a trap.
+- **Asset catalogs.** `.xcassets` are copied into the bundle uncompiled, with a
+  warning: `actool` is a macOS-only tool and there is no open-source replacement
+  to point at, so an app whose icon lives in a catalog ships without it.
+- **Apple ID provisioning.** Obtaining a certificate without one already in hand
+  means anisette + GrandSlam + 2FA, which is a separate, device-only piece of
+  work. The signer takes an existing identity; `XKitSigningService` throws rather
+  than reporting a session it does not have.
+- **Installing to the device.** Exporting to SideStore/AltStore remains the
+  working path; in-app install needs a usbmux transport the sandbox cannot reach.
+- **A remote build server.** `RemoteExecutor` is still a plan, not code.
+
+## Build the app
+
+Requires macOS + Xcode + [XcodeGen](https://github.com/yonaskolb/XcodeGen).
+
+```bash
+brew install xcodegen
+
+make gen && open XForge.xcodeproj
+```
+
+That is the whole of it for a plain clone: there is no submodule to initialise and
+no second build system to drive. The app builds with the compiler bridge compiled
+to a stub and says so on the Toolchain screen.
+
+To build with the compiler *linked in*, install the toolchain bundle first:
+
+```bash
+make toolchain-release          # the newest published bundle
+make gen
+```
+
+`install-bundle.sh --release` fetches the bundle from its release (a specific tag,
+or a local tarball, also work — see `make toolchain`), unpacks it into
+`Vendor/NativeToolchain` and runs `prepare-xcode.sh`, which writes
+`Support/NativeToolchain.generated.xcconfig` — the file the app target consumes.
+That xcconfig is checked in *with the backend disabled*, so a clone without the
+bundle is buildable; see
+[Docs/NATIVE-TOOLCHAIN.md](Docs/NATIVE-TOOLCHAIN.md).
+
+The only build prerequisite beyond XcodeGen is the toolchain bundle, and only if
+you want a working compiler.
+
+Or build the unsigned IPA for sideloading via GitHub Actions
+(`.github/workflows/build-ipa.yml`) and install it with SideStore/AltStore.
+
+## On-device build pipeline
+
+1. **Check build toolchain** — `NativeToolchainCapabilities` reports clang,
+   `ld64.lld`, `swift-frontend` and the SDK; the stage fails with an explanation
+   when nothing is linked, rather than letting a build die in the middle.
+2. **Install Darwin SDK** — the SDK is a folder in the app container. The stage
+   skips itself when it is already there, otherwise it downloads the newest
+   `darwin-sdk-*` release asset.
+3. **Configure app** — records the app identity (bundle ID, version, build number,
+   configuration) into `<project>/.xforge-build/build.json` so a failed build is
+   reproducible, and checks that the project directory exists.
+4. **Resolve dependencies** — reports "nothing to resolve" for a project with no
+   dependencies, and refuses a project that declares any.
+5. **Compile (arm64-apple-ios)** — the work described above; also assembles the
+   `.app` and packages the unsigned `.ipa`.
+6. **Package & sign .ipa** — accepts the packaged artifact. (The signing itself is
+   on the Signing screen, not in this stage.)
+7. **Stage artifact** — confirms the `.ipa` exists and is non-empty, and reports
+   its size.
 
 ## Repo layout
 
 ```
 App/                    SwiftUI app — project editing, build pipeline, signing
-App/EmbeddedVM/         ish-arm64 bridge: ISHEmulator, C shim, rootfs unpack
-App/Build/              BuildExecutor protocol + EmbeddedLinuxExecutor, IPABuilder
+App/Build/              BuildExecutor protocol, the NativeBuild* pipeline, IPABuilder
 App/Models/             pipeline, history, project store, XcodeProject (reads .xcodeproj)
-App/NativeToolchain/    in-process Clang/LLD bridge + host-side Darwin SDK store
-App/Services/           auth/signing/device seams, downloads, toolchain components
-App/Views/              screens: Projects, Build, Toolchain, Terminal, Settings
-Vendor/ish-arm64/       git submodule: the embedded Linux engine
-Vendor/NativeToolchain/ where an installed LLVM/Clang bundle goes (empty by default)
-EmbeddedLinux/          build-rootfs.sh, build-ish-core.sh, install-toolchain.sh
-NativeToolchain/        prepare-xcode.sh (wires a vendor bundle into the project)
-Support/                entitlements, assets, Resources/ (bundled rootfs)
-Tools/                  gen-appicon.py, the engine smoke harness, rootfs test
+App/NativeToolchain/    in-process Clang/LLD bridge + the Darwin SDK store
+App/Services/           signing, project files, export, device seams, the log
+App/Views/              screens: Projects, Build, Signing, Settings (Toolchain, …)
+AppTests/               unit tests (plan and argument construction, which run without a compiler)
+Vendor/NativeToolchain/ where an installed toolchain bundle goes (absent by default)
+NativeToolchain/        install-bundle.sh, prepare-xcode.sh
+Support/                entitlements, assets, the generated toolchain xcconfig
+Tools/                  gen-appicon.py (writes the app icon into the asset catalog)
 project.yml             XcodeGen definition
-.github/workflows/      build-ipa.yml (the IPA), build-rootfs.yml (the pinned root),
+Makefile                gen, build, test, ipa, toolchain
+.github/workflows/      build-ipa.yml (the unsigned IPA),
                         native-toolchain.yml (the iOS LLVM cross-build)
 Docs/DESIGN.md                  full architecture write-up
-Docs/ISH-ARM64-INTEGRATION.md   the engine integration vs. its reference implementation
 Docs/IPA-BUILD.md               the build pipeline and its stages
+Docs/NATIVE-TOOLCHAIN.md        the toolchain bundle, how it is built and linked
 Docs/XCODE-ALTERNATIVE.md       what building existing Xcode projects on-device takes
-Docs/NATIVE-TOOLCHAIN.md        the in-process LLVM/Clang/LLD path
 CHANGELOG.md            what changed, release by release
 ```
 
@@ -84,7 +187,7 @@ Everything about the app's identity lives in the project-level `settings` block 
 |---|---|
 | Bundle identifier | `com.r0gueee.xforge` |
 | Display name | `XForge` |
-| Apple team | set in `XFORGE_DEVELOPMENT_TEAM` (a wildcard `TEAMID.*` profile, so any bundle ID works) |
+| Apple team | set in `XFORGE_DEVELOPMENT_TEAM` |
 | Marketing version | `XFORGE_MARKETING_VERSION` |
 | Build number | `XFORGE_BUILD_NUMBER` |
 | App icon | `Support/Assets.xcassets/AppIcon.appiconset` |
@@ -111,73 +214,47 @@ the forge palette) and written into the asset catalog:
 make icon        # rewrites Support/Assets.xcassets
 ```
 
-## Build the app
+## Continuous integration
 
-Requires macOS + Xcode + [XcodeGen](https://github.com/yonaskolb/XcodeGen), meson and
-ninja (for the ish-arm64 core).
-
-```bash
-brew install xcodegen meson ninja llvm lld libarchive
-
-# One-time: engine sources, bundled rootfs, then the iOS engine libraries.
-make bootstrap
-
-make gen && open XForge.xcodeproj
-```
-
-`make bootstrap` runs three steps:
-
-1. `git submodule update --init --depth 1 Vendor/ish-arm64` — the engine sources
-   (plus its `deps/libarchive` submodule, which the fakefs tools link against).
-2. `EmbeddedLinux/build-rootfs.sh` — builds the Alpine aarch64 rootfs into
-   `Support/Resources/` so it is bundled into `XForge.app`. It shapes a plain
-   Alpine minirootfs, installs the glibc layer and the build toolchain into a
-   chroot of it (needs root: a chroot needs mounts), and converts the result to
-   the engine's fakefs format *on this machine*, so the app only has to unzip it.
-   `build-ipa.yml` downloads the published copy instead of rebuilding it — see
-   `EmbeddedLinux/build-rootfs.sh` and `build-rootfs.yml`. A local build without
-   root or without room for the toolchain can use `XFORGE_PROVISION=none`.
-3. `EmbeddedLinux/build-ish-core.sh` — builds the engine's static libraries into
-   `Vendor/ish-arm64-build/lib` for the linker. This step needs macOS: the
-   aarch64 gadgets use `.req` register aliases that only clang's assembler
-   accepts.
-
-The engine is device-only; simulator builds (and `make test`) compile a stub instead
-and need none of the above beyond a plain `make gen`.
-
-Or build the unsigned IPA for sideloading via GitHub Actions
-(`.github/workflows/build-ipa.yml`) and install it with SideStore/AltStore.
-
-## On-device build pipeline
-
-1. **Embedded Linux** — ish-arm64 boots the bundled Alpine aarch64 rootfs, which is
-   already in the engine's `fakefs` format and is unpacked on first use.
-2. **Toolchain** — nothing to do: the bundled root already carries the apk build
-   dependencies, the glibc compatibility layer, xtool, the Swift toolchain and the
-   Darwin SDK, all installed at build time. The Toolchain screen verifies them and
-   can install any of them into a guest that lacks one
-   (`sh /root/install-toolchain.sh all`, `sh /root/install-toolchain.sh sdk`), and
-   can replace the Darwin SDK with one built from your own `Xcode.xip`.
-3. **Build** — `xtool dev build -s -i` runs in the guest; the `.ipa` is copied back out.
-4. **Signing** — export the unsigned `.ipa` to SideStore/AltStore or another signing
-   service. Direct free-Apple-ID signing through XKit remains planned.
+- **`build-ipa.yml`** — runs the unit tests, archives the app unsigned
+  (`CODE_SIGNING_ALLOWED=NO`), verifies the built app and the final IPA, and
+  publishes the unsigned IPA for sideloading. It runs `prepare-xcode.sh` too, so CI
+  never depends on a toolchain bundle being installed in the checkout.
+- **`native-toolchain.yml`** — cross-builds LLVM's Clang and Mach-O LLD for
+  iPhoneOS (and, with `with_swift=true`, Swift's frontend libraries) on a macOS
+  runner, merges the static archives into one, compile-checks and link-checks
+  `NativeToolchainBridge.mm` against the LLVM headers it just built, and publishes
+  `XForgeNativeToolchain-arm64-ios.tar.gz` as a release asset tagged
+  `toolchain-<llvm>-<swift|noswift>-ios<target>-sdk<sdk>` (and as a workflow
+  artifact). It is dispatched by hand or by a pull request that touches
+  `App/NativeToolchain/**`; only a dispatched run publishes, because a run that
+  never built the Swift half must not become "the newest bundle". Its build trees
+  are cached, so a run whose inputs are unchanged finishes in minutes rather than
+  the ~80 minutes a cold build takes.
+  See [Docs/NATIVE-TOOLCHAIN.md](Docs/NATIVE-TOOLCHAIN.md).
 
 ## Roadmap
 
-- [x] Embedded Linux engine: ish-arm64 built for iOS, running in-process
-- [x] Alpine aarch64 rootfs bundled in the app and imported on first boot
-- [x] Provisioned Alpine rootfs — bundled with the build dependencies, the glibc
-      layer, xtool, the Swift toolchain and the Darwin SDK, all installed at build
-      time; the Toolchain screen can still install or replace any of them in-guest
-- [ ] XKit signing (free Apple ID) wired into the export flow
+- [x] In-process compilation: clang + `ld64.lld` linked into the app, called
+      through a C++ bridge
+- [x] Projects as ordinary directories in the app container
+- [x] XKit signing wired into the export flow, for an identity the user has
+- [x] Native toolchain bundle, built in CI, published as a release, installed by
+      `make toolchain-release`
+- [x] **The Swift frontend libraries for iPhoneOS** — built by a `with_swift=true`
+      toolchain run, linked into the app, reported by the Toolchain screen. The
+      remaining unknown is a Swift *build* on a device, which is what the screen's
+      smoke test is for
+- [ ] Build-setting evaluation and a build driver for a dependency graph
+- [ ] `actool`/`ibtool` replacements (asset catalogs, storyboards)
+- [ ] Apple ID provisioning (certificate issuance, 2FA) in-app
 - [ ] Hand-off of built `.ipa` to SideStore/AltStore for install
 - [ ] `RemoteExecutor` (build server) for fast compilation of real apps
 
 ## Licence note
 
-XForge links the engine's core. That core is GPLv2/GPLv3 depending on which guest
-architectures and native programs are compiled in. XForge builds it with native
-bash/zsh/dash/helix **disabled** and only the arm64 guest, which keeps the linked
-subset to the engine's own GPLv2 kernel code. If you redistribute XForge you must comply
-with those terms; see [the engine's README](https://github.com/OpenMinis/ish-arm64) for the
-full breakdown.
+XForge links no emulator and no kernel code; the app target is the SwiftUI sources
+plus two SwiftPM dependencies, xtool's `XKit` and
+[ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (MIT). xtool's own terms
+apply to `XKit` — see its repository. The GPL note that used to be here concerned a
+bundled emulator that is no longer part of the app.

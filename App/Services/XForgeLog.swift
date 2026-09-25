@@ -1,21 +1,13 @@
 import Foundation
 
-/// On-device diagnostics for the embedded Linux.
+/// On-device diagnostics.
 ///
-/// Two writers, one file:
+/// Plain file writes, no `os_log`: the point is a file the user can share from the
+/// app, and `os_log` messages are only readable with a console attached.
 ///
-///  - **The engine.** Its `printk` — every kernel message, including the one
-///    `die()` prints immediately before it calls `abort()` — goes to file
-///    descriptor 555 (`kernel/log.c`'s dprintf handler). Nothing in an iOS app
-///    opens that descriptor, so without `prepare()` a guest crash kills the app
-///    and leaves no trace anywhere.
-///  - **This app.** `note(_:)` writes a breadcrumb through the same bridge call,
-///    so the last line of the file says how far an install got before the app
-///    disappeared — which is the difference between "it crashes" and a bug
-///    report.
-///
-/// Plain file writes, no `os_log`: the point is a file the user can share from
-/// the app, and `os_log` messages are only readable with a console attached.
+/// The engine that used to share this file — the embedded Linux, whose `printk`
+/// went to file descriptor 555 through the ish bridge — is gone, so this is now
+/// only XForge's own breadcrumb trail.
 enum XForgeLog {
     /// `<Documents>/logs` — the same container the Files app shows.
     static var directory: URL {
@@ -23,17 +15,24 @@ enum XForgeLog {
             .appendingPathComponent("logs", isDirectory: true)
     }
 
-    static var url: URL { directory.appendingPathComponent("engine.log") }
+    static var url: URL { directory.appendingPathComponent("xforge.log") }
 
     /// Rotate past this size so the file stays shareable.
     static let maxBytes = 512 * 1024
 
-    /// Point the bridge (and therefore the engine) at the log file.
-    /// Safe to call repeatedly; also safe to call after the guest has booted.
+    /// Create the log directory and rotate an oversized log.
+    ///
+    /// Kept as a separate step from `note(_:)` so the directory exists before the
+    /// first breadcrumb, and so a caller that wants the log path can ask for it
+    /// without writing anything.
     @discardableResult
     static func prepare() -> Bool {
         let fm = FileManager.default
-        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        do {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            return false
+        }
 
         if let attributes = try? fm.attributesOfItem(atPath: url.path),
            let size = attributes[.size] as? Int,
@@ -45,13 +44,37 @@ enum XForgeLog {
                 try? String(tail).write(to: url, atomically: true, encoding: .utf8)
             }
         }
-
-        return url.path.withCString { xf_ish_set_log_file($0) } == 0
+        return true
     }
 
-    /// Append one breadcrumb line, timestamped by the bridge.
+    /// ISO-8601 UTC, built per call.
+    ///
+    /// `ISO8601DateFormatter` is not `Sendable`, so it cannot live in a static
+    /// that `note(_:)` — a nonisolated function — reaches: Swift 6 rejects that
+    /// outright. Constructing one per line costs a few microseconds on a call that
+    /// always writes a file anyway.
+    private static func timestamp() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.string(from: Date())
+    }
+
+    /// Append one timestamped breadcrumb line.
+    ///
+    /// Best effort by design: a diagnostic that can fail a build is worse than a
+    /// diagnostic that is missing a line.
     static func note(_ line: String) {
-        _ = line.withCString { xf_ish_log($0) }
+        let entry = "\(Self.timestamp()) \(line)\n"
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) {
+            _ = prepare()
+            try? entry.write(to: url, atomically: true, encoding: .utf8)
+            return
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: Data(entry.utf8))
 #if DEBUG
         print("[XForge] \(line)")
 #endif

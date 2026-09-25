@@ -1,7 +1,63 @@
 name: Native iOS Toolchain
 
+# Builds the compiler that XForge links into the app: Clang + Mach-O LLD for
+# iPhoneOS, and — when `with_swift` is set — Swift's frontend libraries.
+#
+# Two things about the Swift half are worth knowing before editing it:
+#
+#  * Every bundle is built from Swift's LLVM fork (`swiftlang/llvm-project` at the
+#    branch paired with the Swift version), never from upstream. Swift is developed
+#    against that fork (the `swiftasync` calling convention, the coroutine passes,
+#    the C++ API it compiles against), and — the part that decided it — upstream's
+#    clang is a different *API generation*: value-typed `DiagnosticOptions` and
+#    reference-taking constructors, against the fork's reference-counted options and
+#    pointer-taking ones. The app's C bridge is compiled against whichever bundle is
+#    installed, so it can only be written for one generation. Pinning the fork for
+#    both bundles is also what removes the old "unpinned checkout of llvm-project
+#    main" this workflow used to have.
+#  * `-DSWIFT_INSTALL_COMPONENTS=` is load-bearing. Swift's CMake writes that as a
+#    *cache* variable, so an empty value on the command line survives its default
+#    and no component is ever installed — which means `swift_install_in_component`
+#    returns early and its `install(TARGETS ...)` never runs. That rule is what
+#    aborts the configure when Swift is cross-configured for iOS: CMake refuses
+#    `install(TARGETS)` for an executable without a BUNDLE destination on an iOS
+#    target, and Swift's host tools have no such destination.
+#
+# The Swift version must match the Swift runtime inside the darwin SDK the app
+# compiles against (that SDK is built from an Xcode; Xcode 26.6 ships Swift
+# 6.2.4), otherwise the frontend cannot read the SDK's standard-library modules.
+
 on:
   workflow_dispatch:
+    inputs:
+      with_swift:
+        description: Build the Swift frontend libraries as well
+        type: boolean
+        default: false
+      swift_ref:
+        description: swiftlang/swift tag or branch
+        type: string
+        default: swift-6.2.4-RELEASE
+      swift_llvm_ref:
+        description: swiftlang/llvm-project branch paired with swift_ref
+        type: string
+        default: swift/release/6.2
+      configure_only:
+        description: Stop after configuring the Swift build (cheap iteration)
+        type: boolean
+        default: false
+      deployment_target:
+        description: Minimum iOS version
+        type: string
+        default: "17.0"
+      cache_salt:
+        description: Bump to discard the cached iOS builds (do this when the configure recipe below changes)
+        type: string
+        default: "3"
+      publish:
+        description: Publish the finished bundle as a release asset
+        type: boolean
+        default: true
   pull_request:
     paths:
       - "App/NativeToolchain/**"
@@ -16,24 +72,191 @@ on:
 jobs:
   llvm-ios:
     runs-on: macos-15
-    timeout-minutes: 180
+    timeout-minutes: 350
+    # `contents: write` is for the publish step at the bottom: the bundle is worth
+    # more as a release asset than as a workflow artifact, because artifacts expire
+    # (7-90 days, at GitHub's discretion) and cannot be fetched by tag.
+    permissions:
+      contents: write
+    env:
+      IOS_DEPLOYMENT_TARGET: ${{ inputs.deployment_target || '17.0' }}
+      SWIFT_REF: ${{ inputs.swift_ref || 'swift-6.2.4-RELEASE' }}
+      SWIFT_LLVM_REF: ${{ inputs.swift_llvm_ref || 'swift/release/6.2' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build tools
         run: brew install cmake ninja
 
+      # One LLVM for every bundle this workflow builds: Swift's fork, at the branch
+      # paired with the Swift version. Upstream's clang is a *different API
+      # generation* from the fork's (reference-counted options and pointer-taking
+      # printers versus value options and references), and the C bridge that the app
+      # compiles against the bundle can only be written for one of them — so the
+      # bundle must always be the same generation. Pinning it also removes the
+      # "unpinned checkout of llvm-project main" this workflow used to have.
       - name: Checkout LLVM
         uses: actions/checkout@v4
         with:
-          repository: llvm/llvm-project
+          repository: swiftlang/llvm-project
+          ref: ${{ env.SWIFT_LLVM_REF }}
           path: llvm-project
           fetch-depth: 1
+
+      - name: Checkout Swift
+        if: ${{ inputs.with_swift }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift
+          ref: ${{ env.SWIFT_REF }}
+          path: swift
+          fetch-depth: 1
+
+      # Swift's configure step executes `cmark --version` and generates
+      # documentation with it, so a native cmark has to exist before the
+      # cross-configure runs.
+      - name: Checkout cmark
+        if: ${{ inputs.with_swift }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift-cmark
+          ref: release/6.2
+          path: swift-cmark
+          fetch-depth: 1
+
+      # Only needed to *find* the sources at configure time; the macro and ASTGen
+      # libraries are switched off, because a macro plugin is a separate process
+      # and iOS has no way to run one.
+      - name: Checkout swift-syntax
+        if: ${{ inputs.with_swift }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift-syntax
+          ref: release/6.2
+          path: swift-syntax
+          fetch-depth: 1
+
+      - name: Checkout swift-experimental-string-processing
+        if: ${{ inputs.with_swift }}
+        uses: actions/checkout@v4
+        with:
+          repository: swiftlang/swift-experimental-string-processing
+          ref: release/6.2
+          path: swift-experimental-string-processing
+          fetch-depth: 1
+
+      - name: Identify the iOS compiler toolchain
+        id: toolchain-versions
+        run: |
+          {
+            echo "value=$(xcodebuild -version | tr '\n' ' ')-$(xcrun --sdk iphoneos --show-sdk-version)"
+          } >> "$GITHUB_OUTPUT"
+
+      # The bundle's *name*, decided from what goes into it rather than from when it
+      # was built: the LLVM commit, the Swift revision (or the fact that it is not
+      # included) and the deployment target decide which archives exist, and the
+      # SDK decides what they were compiled against. Two builds of the same inputs
+      # therefore land on the same tag, and a build that could not be substituted
+      # for another can never shadow it — which is what makes
+      # `build-ipa.yml`'s "the newest `toolchain-*` release" a safe rule.
+      - name: Name the bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LLVM_SHA="$(git -C llvm-project rev-parse --short=12 HEAD)"
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            # `/` is legal in a tag and awkward in a URL and a shell word.
+            SWIFT_MARK="swift-$(printf '%s' "$SWIFT_REF" | tr '/' '-')"
+          else
+            SWIFT_MARK="noswift"
+          fi
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          TAG="toolchain-${LLVM_SHA}-${SWIFT_MARK}-ios${IOS_DEPLOYMENT_TARGET}-sdk${SDK_VERSION}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "bundle tag: $TAG"
+
+      # A restored build tree carries the timestamps of the run that saved it, and
+      # those are *older* than the sources this run has just checked out. Ninja
+      # compares timestamps, so the tree it just restored would be rebuilt in full
+      # — the one thing the cache exists to prevent. The fix is to age the sources
+      # instead of refreshing the tree: "every file in the tree is newer than every
+      # source" then holds for whatever the cache restores, and it holds for ninja's
+      # generator check as well, because build.ninja is an *output* of that edge and
+      # any source newer than it sends ninja into a re-configure.
+      #
+      # Stamping the tree with `find … -exec touch` (what this workflow used to do,
+      # after configure) is unsound: the files are stamped in batches milliseconds
+      # apart, so whether a generator *input* ends up after build.ninja is decided
+      # by directory order. When it does, ninja re-runs CMake, CMake rewrites
+      # llvm/Config/*.h, and every object that includes them is dirty again — a
+      # full 2601-edge rebuild that the restore paid seconds to avoid.
+      - name: Age the source checkouts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for dir in llvm-project swift swift-cmark swift-syntax \
+                     swift-experimental-string-processing; do
+            [ -d "$dir" ] && find "$dir" -exec touch -h -t 202001010000 {} + 2>/dev/null || true
+          done
+
+      # The expensive half is LLVM's cross-build and (when enabled) Swift's. The
+      # key deliberately does not include the workflow file: editing this file —
+      # which is what iterating on it looks like — must not force a rebuild of a
+      # compiler that did not change. `cache_salt` is the way to ask for one.
+      #
+      # Bump it whenever the *recipe* changes too. A cache entry is immutable: once
+      # a partial tree has been stored under a key, every later run gets a "hit"
+      # for it, the save below is skipped (the key already exists, so the upload
+      # would be refused anyway) and the key can never be repaired. That is the
+      # trap the old `always()`-gated save walked into — it stored whatever existed
+      # even when the build it was saving had just failed.
+      - name: Restore the LLVM builds
+        id: llvm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            llvm-host-build
+            llvm-build
+            cmark-host-build
+            cmark-ios-build
+          key: ${{ runner.os }}-${{ runner.arch }}-llvm-${{ steps.toolchain-versions.outputs.value }}-${{ env.SWIFT_LLVM_REF }}-${{ env.IOS_DEPLOYMENT_TARGET }}-${{ inputs.cache_salt || '3' }}
+
+      # Swift's own build is the longer half and is cached separately, because it
+      # is saved *after* the LLVM half has been built and Swift's has too. Its key
+      # deliberately ignores `cache_salt`: that salt exists to discard an LLVM tree
+      # when the LLVM source changes, and the Swift tree is a function of the Swift
+      # refs and the SDK alone — discarding it too would throw away the 45-minute
+      # half for a change to the other one. The `-vN` suffix is this half's own
+      # salt: bump it when the Swift configure or build recipe changes, because a
+      # stored tree can never be replaced under the key it was stored with.
+      - name: Restore the Swift build
+        if: ${{ inputs.with_swift }}
+        id: swift-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: swift-build
+          key: ${{ runner.os }}-${{ runner.arch }}-swift-${{ env.SWIFT_REF }}-${{ env.SWIFT_LLVM_REF }}-${{ steps.toolchain-versions.outputs.value }}-${{ env.IOS_DEPLOYMENT_TARGET }}-v2
 
       - name: Build host TableGen tools
         shell: bash
         run: |
           set -euxo pipefail
+          # All four, not just the TableGen pair: `llvm-ar` is what the packaging
+          # step merges the archives with, and a restored tree that has the two
+          # TableGen tools but not it used to pass this check and fail three seconds
+          # into staging ("llvm-host-build/bin/llvm-ar: No such file or directory").
+          if [ -x llvm-host-build/bin/llvm-tblgen ] \
+             && [ -x llvm-host-build/bin/clang-tblgen ] \
+             && [ -x llvm-host-build/bin/llvm-ar ] \
+             && [ -x llvm-host-build/bin/llvm-nm ]; then
+            echo "host tools already built"
+            mkdir -p llvm-build/bin
+            for tool in llvm-host-build/bin/*; do
+              ln -sf "$PWD/$tool" "llvm-build/bin/$(basename "$tool")"
+            done
+            exit 0
+          fi
           cmake -S llvm-project/llvm -B llvm-host-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DLLVM_ENABLE_PROJECTS="clang" \
@@ -46,12 +269,107 @@ jobs:
             -DLLVM_ENABLE_ZSTD=OFF \
             -DLLVM_ENABLE_LIBXML2=OFF \
             -DLLVM_ENABLE_CURL=OFF
-          ninja -C llvm-host-build llvm-tblgen clang-tblgen
+          ninja -C llvm-host-build llvm-tblgen clang-tblgen llvm-ar llvm-nm
 
-      - name: Configure LLVM for iPhoneOS arm64
+          # Swift's CMake resolves its native tools through LLVM_TOOLS_BINARY_DIR,
+          # which for the iOS build is a directory with no tools in it
+          # (LLVM_BUILD_TOOLS=OFF). Mirroring the host tools there means every
+          # path it might take finds them.
+          mkdir -p llvm-build/bin
+          for tool in llvm-host-build/bin/*; do
+            ln -sf "$PWD/$tool" "llvm-build/bin/$(basename "$tool")"
+          done
+
+      - name: Build native cmark
+        if: ${{ inputs.with_swift }}
         shell: bash
         run: |
           set -euxo pipefail
+          if [ -x cmark-host-build/src/cmark-gfm ]; then
+            echo "native cmark already cached"
+            exit 0
+          fi
+          cmake -S swift-cmark -B cmark-host-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMARK_TESTS=OFF
+          cmake --build cmark-host-build --target cmark-gfm
+          mkdir -p cmark-host-build/src
+          ln -sf cmark-host-build/src/cmark-gfm cmark-host-build/src/cmark
+
+      # Gated exactly like the Swift checkouts and the Swift stages: it is only
+      # needed when the frontend is, and on a PR/push run the cmark sources are not
+      # checked out at all — which is how this step failed its first two runs.
+      - name: Build cmark for iPhoneOS
+        if: ${{ inputs.with_swift }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -f cmark-ios-build/src/libcmark-gfm.a ]; then
+            echo "iOS cmark already cached"
+            exit 0
+          fi
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          # CMAKE_SYSTEM_NAME=Darwin, not iOS, for the same reason the Swift
+          # configure uses it: on iOS CMake refuses \`install(TARGETS ...)\` for an
+          # executable without a BUNDLE destination, and cmark installs its
+          # command-line tool. The target is still iOS — sysroot, architecture and
+          # compiler target below say so — and nothing is installed here anyway.
+          # Static archives are cmark's default; naming CMARK_TESTS/CMARK_SHARED here
+          # only produces "manually-specified variables were not used" warnings.
+          cmake -S swift-cmark -B cmark-ios-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Darwin \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET
+          # cmark-gfm-extensions is a separate archive and swift's Markup references
+          # symbols from both.
+          # The *library* targets are libcmark-gfm and libcmark-gfm-extensions; the
+          # bare names are the command-line tool, which only the host build needs.
+          ninja -C cmark-ios-build libcmark-gfm libcmark-gfm-extensions
+          find cmark-ios-build -name 'libcmark-gfm*.a'
+
+      # Skipping the configure below is only sound if the restored tree really is
+      # the configured-and-built one it was saved from. Checking is cheap, it has to
+      # happen *before* the step it gates (a step's output does not exist yet when
+      # the condition above it is evaluated), and the alternative is a confusing
+      # failure — no build.ninja — where the old workflow had a slow-but-working path.
+      - name: Verify the restored LLVM build tree
+        if: ${{ steps.llvm-cache.outputs.cache-hit == 'true' }}
+        id: llvm-tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MISSING=""
+          for file in llvm-build/build.ninja llvm-build/CMakeCache.txt \
+                      llvm-build/include/llvm/Config/llvm-config.h \
+                      llvm-host-build/bin/llvm-tblgen llvm-host-build/bin/clang-tblgen; do
+            [ -e "$file" ] || MISSING="$MISSING $file"
+          done
+          OBJECTS="$(find llvm-build -name '*.o' -print -quit)"
+          if [ -n "$MISSING" ] || [ -z "$OBJECTS" ]; then
+            echo "::warning::restored LLVM tree is not usable (missing:$MISSING, objects:$([ -n "$OBJECTS" ] && echo present || echo none)); configuring from scratch"
+            echo "reusable=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "restored LLVM tree is configured and built; the configure below is skipped"
+            echo "reusable=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure LLVM for iPhoneOS arm64
+        if: ${{ steps.llvm-cache.outputs.cache-hit != 'true' || steps.llvm-tree.outputs.reusable != 'true' }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # CLANG_BUILD_TOOLS is ON on purpose, and nothing builds that target.
+          # Swift's CMake assumes the unified build it is configured against has a
+          # `clang` executable target — lib/Tooling/libSwiftScan/CMakeLists.txt
+          # does `add_dependencies(libSwiftScan clang …)` — and generation fails
+          # outright when the target does not exist ("The dependency target
+          # \"clang\" of target \"libSwiftScan\" does not exist"), even though
+          # neither target is ever built here. Defining it is cheaper than
+          # disabling Swift's subdirectories one generation error at a time.
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
           cmake -S llvm-project/llvm -B llvm-build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -59,11 +377,11 @@ jobs:
             -DCMAKE_MACOSX_BUNDLE=OFF \
             -DCMAKE_OSX_SYSROOT="$SDK" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=17.0 \
-            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios17.0 \
-            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios17.0 \
-            -DLLVM_HOST_TRIPLE=arm64-apple-ios17.0 \
-            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios17.0 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_HOST_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
             -DLLVM_NATIVE_TOOL_DIR="$PWD/llvm-host-build/bin" \
             -DLLVM_ENABLE_PROJECTS="clang;lld" \
             -DLLVM_TARGETS_TO_BUILD=AArch64 \
@@ -80,11 +398,30 @@ jobs:
             -DLLVM_ENABLE_CURL=OFF \
             -DLLVM_ENABLE_RTTI=ON \
             -DCLANG_INCLUDE_TESTS=OFF \
-            -DCLANG_BUILD_TOOLS=OFF \
+            -DCLANG_BUILD_TOOLS=ON \
             -DLLD_INCLUDE_TESTS=OFF \
             -DLLD_BUILD_TOOLS=OFF
 
+      # Cheap by construction when the tree above was restored: the sources are all
+      # older than the objects, so ninja has nothing to do. It is also where the
+      # cache is proven — a restore that does not come back built shows up here as
+      # a 2601-edge rebuild in the log, not as a mystery.
+      #
+      # The target list is not "everything the app might use" but the closure the
+      # bundle has to satisfy, because the smoke link force-loads every archive:
+      # each member's undefined symbols must resolve inside the bundle. Two of these
+      # are invisible to clang's own libraries and only Swift references them, which
+      # is why they were missing:
+      #   * LLVMOrcJIT — swift's JIT (SwiftMaterializationUnit.cpp) and LLJIT;
+      #   * clangDependencyScanning — ClangImporter's explicit-module dependency
+      #     scanning (ModuleDepCollector/ScanAndUpdateArgs).
+      # Their transitive dependencies (JITLink, ExecutionEngine, RuntimeDyld,
+      # OrcShared/OrcTargetProcess, clangTooling, clangCAS, …) come with them.
+      # Adding a target here changes the delivered bundle, so bump `cache_salt`
+      # when you do: the cache key cannot see this list.
       - name: Build Clang and Mach-O LLD libraries
+        id: llvm-build
+        if: ${{ !inputs.configure_only }}
         run: |
           set -euxo pipefail
           ninja -C llvm-build \
@@ -98,20 +435,217 @@ jobs:
             clangAST \
             clangLex \
             clangBasic \
+            clangDependencyScanning \
             lldMachO \
-            lldCommon
+            lldCommon \
+            LLVMOrcJIT
 
-      - name: Compile-check XForge bridge against LLVM headers
+      # The step this workflow exists for. Everything above is shared with the
+      # LLVM-only bundle; everything below only happens when Swift is asked for.
+      # Saved here, before the step most likely to fail, so that a failed Swift
+      # configure does not cost another LLVM cross-build.
+      #
+      # Gated on the build having *succeeded*, not on `always()`: saving a tree
+      # ninja never finished stores a partial one under a key that can never be
+      # rewritten, and every later run then "hits" it and rebuilds anyway.
+      - name: Save the LLVM builds
+        if: ${{ steps.llvm-build.outcome == 'success' && steps.llvm-cache.outputs.cache-hit != 'true' }}
+        # A refused save must not fail a build that succeeded: an entry whose key
+        # already exists cannot be reserved, and the other workflow that stored it
+        # stored the same tree. The cache is an optimisation; the build is the work.
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.llvm-cache.outputs.cache-primary-key }}
+          path: |
+            llvm-host-build
+            llvm-build
+            cmark-host-build
+            cmark-ios-build
+
+      # Same contract as the LLVM tree check above, and the same reason: the
+      # configure is skipped when the tree came back built, so a tree that came back
+      # *unbuilt* would fail on the missing archive instead of just rebuilding.
+      - name: Verify the restored Swift build tree
+        if: ${{ inputs.with_swift && steps.swift-cache.outputs.cache-hit == 'true' }}
+        id: swift-tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MISSING=""
+          for file in swift-build/build.ninja swift-build/CMakeCache.txt \
+                      swift-build/lib/libswiftFrontendTool.a; do
+            [ -e "$file" ] || MISSING="$MISSING $file"
+          done
+          OBJECTS="$(find swift-build -name '*.o' -print -quit)"
+          if [ -n "$MISSING" ] || [ -z "$OBJECTS" ]; then
+            echo "::warning::restored Swift tree is not usable (missing:$MISSING, objects:$([ -n "$OBJECTS" ] && echo present || echo none)); configuring from scratch"
+            echo "reusable=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "restored Swift tree is configured and built; the configure below is skipped"
+            echo "reusable=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure the Swift frontend for iPhoneOS
+        if: ${{ inputs.with_swift && (steps.swift-cache.outputs.cache-hit != 'true' || steps.swift-tree.outputs.reusable != 'true') }}
         shell: bash
         run: |
           set -euxo pipefail
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          HOST_SWIFT_BIN="$(dirname "$(xcrun -f swiftc)")"
+
+          # CMAKE_SYSTEM_NAME=Darwin, not iOS, and that is deliberate. Swift's own
+          # iOS builds are configured exactly this way (build-script-impl passes
+          # the sysroot and SWIFT_HOST_VARIANT_SDK and never sets the system
+          # name), because its CMake branches on `CMAKE_SYSTEM_NAME STREQUAL
+          # "Darwin"` for Apple:
+          #   * lib/Basic/CMakeLists.txt does `find_package(UUID REQUIRED)` on
+          #     anything else — a Linux dependency for Swift-on-Linux builds;
+          #   * SwiftSharedCMakeConfig's Libdispatch.cmake errors out with
+          #     "libdispatch requires a newer clang compiler" unless it is Darwin
+          #     (on Darwin, dispatch comes from the SDK).
+          # The target is still iOS: the sysroot, the architectures, the
+          # deployment target and the compiler target triple below say so.
+          cmake -S swift -B swift-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_SYSTEM_NAME=Darwin \
+            -DCMAKE_MACOSX_BUNDLE=OFF \
+            -DCMAKE_OSX_SYSROOT="$SDK" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DCMAKE_Swift_COMPILER="$(xcrun -f swiftc)" \
+            -DCMAKE_Swift_COMPILER_TARGET=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_DIR="$PWD/llvm-build/lib/cmake/llvm" \
+            -DClang_DIR="$PWD/llvm-build/lib/cmake/clang" \
+            -DLLVM_HOST_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_DEFAULT_TARGET_TRIPLE=arm64-apple-ios$IOS_DEPLOYMENT_TARGET \
+            -DLLVM_TABLEGEN="$PWD/llvm-host-build/bin/llvm-tblgen" \
+            -DCLANG_TABLEGEN="$PWD/llvm-host-build/bin/clang-tblgen" \
+            -DSWIFT_NATIVE_LLVM_TOOLS_PATH="$PWD/llvm-host-build/bin" \
+            -DSWIFT_NATIVE_CLANG_TOOLS_PATH="$PWD/llvm-host-build/bin" \
+            -DSWIFT_NATIVE_SWIFT_TOOLS_PATH="$HOST_SWIFT_BIN" \
+            -DSWIFT_PATH_TO_CMARK_BUILD="$PWD/cmark-host-build" \
+            -DSWIFT_PATH_TO_CMARK_SOURCE="$PWD/swift-cmark" \
+            -DSWIFT_PATH_TO_STRING_PROCESSING_SOURCE="$PWD/swift-experimental-string-processing" \
+            -DSWIFT_PATH_TO_SWIFT_SYNTAX_SOURCE="$PWD/swift-syntax" \
+            -DSWIFT_HOST_VARIANT=iphoneos \
+            -DSWIFT_HOST_VARIANT_SDK=IOS \
+            -DSWIFT_HOST_VARIANT_ARCH=arm64 \
+            -DSWIFT_DARWIN_DEPLOYMENT_VERSION_IOS="$IOS_DEPLOYMENT_TARGET" \
+            -DSWIFT_BUILD_DYNAMIC_STDLIB=OFF \
+            -DSWIFT_BUILD_STATIC_STDLIB=OFF \
+            -DSWIFT_BUILD_DYNAMIC_SDK_OVERLAY=OFF \
+            -DSWIFT_BUILD_STATIC_SDK_OVERLAY=OFF \
+            -DSWIFT_BUILD_STDLIB_EXTRA_TOOLCHAIN_CONTENT=OFF \
+            -DSWIFT_BUILD_SOURCEKIT=OFF \
+            -DSWIFT_BUILD_SWIFT_SYNTAX=OFF \
+            -DSWIFT_BUILD_REMOTE_MIRROR=OFF \
+            -DSWIFT_BUILD_PERF_TESTSUITE=OFF \
+            -DSWIFT_INCLUDE_TESTS=OFF \
+            -DSWIFT_INCLUDE_DOCS=OFF \
+            -DSWIFT_INSTALL_COMPONENTS=
+
+          # Proof that the configure produced what the app will link, before the
+          # hours of building.
+          test -f swift-build/lib/swift/host/libswiftFrontendTool.a \
+            || test -f swift-build/lib/libswiftFrontendTool.a \
+            || echo "::warning::swiftFrontendTool archive not found where expected; listing swift-build/lib"
+          ls -la swift-build/lib | head -40 || true
+
+      - name: Build the Swift frontend libraries
+        id: swift-build
+        if: ${{ inputs.with_swift && !inputs.configure_only }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # The static library holding `swift::performFrontend`. Its transitive
+          # dependencies (swiftAST, swiftSema, the SIL and IRGen libraries, the
+          # Clang importer and Swift's own Clang/LLVM) come along with it; the
+          # swift/driver executable libraries are deliberately not built, because
+          # nothing on the device runs a driver.
+          ninja -C swift-build swiftFrontendTool
+
+      - name: Save the Swift build
+        if: ${{ inputs.with_swift && !inputs.configure_only && steps.swift-build.outcome == 'success' && steps.swift-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          key: ${{ steps.swift-cache.outputs.cache-primary-key }}
+          path: swift-build
+
+      - name: Verify the Swift frontend
+        if: ${{ inputs.with_swift && !inputs.configure_only }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          find swift-build/lib -maxdepth 3 -type f -name 'libswift*.a' | sort > /tmp/swift-archives.txt
+          test -s /tmp/swift-archives.txt || { echo "::error::no Swift libraries were produced"; exit 1; }
+          echo "Swift archives: $(wc -l < /tmp/swift-archives.txt)"
+
+          # Every archive must be arm64: a bundle that mixes architectures links
+          # and then misbehaves, which is worse than one that fails here.
+          while IFS= read -r library; do
+            archs="$(lipo -archs "$library" 2>/dev/null || true)"
+            case " $archs " in
+              *" arm64 "*) ;;
+              *) echo "::error::$library is not arm64 ($archs)"; exit 1 ;;
+            esac
+          done < /tmp/swift-archives.txt
+          echo "every Swift archive is arm64"
+
+          # `performFrontend` lives in libswiftFrontendTool.a (FrontendTool.cpp).
+          # The search is reported, not enforced: the gate that matters is the
+          # link below, which fails if the symbol is missing for real. An earlier
+          # version of this step failed the job because `nm` did not print the
+          # symbol for a library that had just been built.
+          FRONTEND_ARCHIVE="$PWD/swift-build/lib/libswiftFrontendTool.a"
+          test -f "$FRONTEND_ARCHIVE" || { echo "::error::libswiftFrontendTool.a was not produced"; exit 1; }
+          NM=""
+          if [ -x llvm-host-build/bin/llvm-nm ]; then NM="$PWD/llvm-host-build/bin/llvm-nm"; else NM="nm"; fi
+          echo "--- $NM -gU $FRONTEND_ARCHIVE | grep -c performFrontend"
+          SYMBOLS="$("$NM" -gU "$FRONTEND_ARCHIVE" 2>&1 || true)"
+          if printf '%s\n' "$SYMBOLS" | grep -q performFrontend; then
+            echo "performFrontend is in libswiftFrontendTool.a"
+          else
+            echo "::warning::no performFrontend symbol in libswiftFrontendTool.a; the link below decides"
+            printf '%s\n' "$SYMBOLS" | head -20
+          fi
+
+      - name: Compile-check XForge bridge against LLVM headers
+        if: ${{ !inputs.configure_only }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+          # Accumulated in a *string*, not an array. `shell: bash` on a macOS runner
+          # is macOS's bash 3.2, where `set -u` plus an empty `"${ARRAY[@]}"` is an
+          # unbound-variable error — and the arrays here are empty on every run that
+          # does not build the Swift half, which is every pull request and push run.
+          # The step died on `EXTRA_DEFINES[@]: unbound variable` before compiling
+          # anything, so the half of CI that runs unattended was red for a reason
+          # that had nothing to do with the bridge.
+          EXTRA_FLAGS=""
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            # Exercises the Swift half of the bridge: with the define and the
+            # headers present, NativeToolchainBridge.mm compiles the code path
+            # that calls swift::performFrontend instead of the stub.
+            EXTRA_FLAGS="$EXTRA_FLAGS -DXFORGE_HAS_SWIFT_FRONTEND=1 -I swift/include"
+            if [ -d swift-build/include ]; then
+              EXTRA_FLAGS="$EXTRA_FLAGS -I swift-build/include"
+            fi
+            if [ -d swift-build/tools/swift/include ]; then
+              EXTRA_FLAGS="$EXTRA_FLAGS -I swift-build/tools/swift/include"
+            fi
+          fi
           xcrun --sdk iphoneos clang++ \
             -std=c++20 \
             -arch arm64 \
-            -miphoneos-version-min=17.0 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
             -isysroot "$SDK" \
             -DXFORGE_HAS_LLVM=1 \
+            $EXTRA_FLAGS \
             -I llvm-project/llvm/include \
             -I llvm-build/include \
             -I llvm-project/clang/include \
@@ -121,29 +655,160 @@ jobs:
             -c App/NativeToolchain/NativeToolchainBridge.mm \
             -o /tmp/NativeToolchainBridge.o
 
-      - name: Stage native toolchain SDK
+      # The iteration substrate. Caches were the wrong tool for this: the entries
+      # either never stored (a 6-second "save" of a multi-gigabyte tree) or were
+      # evicted, so a workflow that restored them found nothing and failed steps this
+      # one passes. Artifacts are not evicted, and this is only what a check needs —
+      # the static archives and the generated headers — not the object files and
+      # CMake metadata that make up most of the trees.
+      #
+      # Uploaded with `always()` so a failure *after* the builds still publishes them:
+      # that is exactly the case the fast loop exists to iterate on.
+      - name: Package the build trees
+        if: ${{ always() && !inputs.configure_only }}
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p dist/include dist/lib
-          cp -R llvm-project/llvm/include/llvm dist/include/
-          cp -R llvm-build/include/llvm dist/include/
-          cp -R llvm-project/clang/include/clang dist/include/
-          if [ -d llvm-build/tools/clang/include/clang ]; then
-            cp -R llvm-build/tools/clang/include/clang dist/include/
+          mkdir -p build-trees
+          ITEMS=()
+          for item in \
+            llvm-build/lib \
+            swift-build/lib \
+            cmark-ios-build \
+            llvm-build/include \
+            llvm-build/tools/clang/include \
+            swift-build/include \
+            swift-build/tools/swift/include; do
+            [ -d "$item" ] && ITEMS+=("$item")
+          done
+          if [ "${#ITEMS[@]}" -eq 0 ]; then
+            echo "nothing to package"
+            exit 0
           fi
-          cp -R llvm-project/lld/include/lld dist/include/
+          tar -cf build-trees/build-trees.tar "${ITEMS[@]}"
+          du -sh build-trees/build-trees.tar
 
-          # Flatten the static dependency graph into one archive. XForge then
-          # links a single library instead of depending on LLVM's internal
-          # archive ordering.
-          find llvm-build/lib -maxdepth 1 -type f -name '*.a' -print | sort > /tmp/llvm-archives.txt
-          test -s /tmp/llvm-archives.txt
+      - name: Upload the build trees
+        if: ${{ always() && !inputs.configure_only }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: XForgeBuildTrees
+          path: build-trees/build-trees.tar
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
+
+      - name: Stage native toolchain SDK
+        id: stage
+        if: ${{ !inputs.configure_only }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Two header roots, searched in this order, and they must not be merged:
+          # the build tree generates a *file* at `swift/bridging` (the C++ interop
+          # header, included as <swift/bridging>) while the sources have a
+          # *directory* of the same name (`include/swift/Bridging/`, holding
+          # ASTGen.h and MacroEvaluation.h). On a case-insensitive filesystem that
+          # is a single path, so copying the build tree over the source tree fails
+          # with "cp: .../swift/bridging: Is a directory" and stages nothing.
+          #
+          # `-L` is load-bearing too: the build tree mirrors headers as symlinks
+          # into this checkout, and a bundle that ships those links is dead
+          # anywhere but this runner.
+          mkdir -p dist/include-generated dist/include dist/lib
+          stage_headers() { cp -R -L "$1" "$2"; }
+
+          # Every top-level header root the sources ship, not just the one named
+          # after the project. `llvm/include/llvm-c/DataTypes.h` is included from
+          # `llvm/include/llvm/Support/DataTypes.h`, and staging only `llvm/` left it
+          # out of the bundle: the app build failed on it while the bridge
+          # compile-check passed, because that check compiles against the source
+          # tree rather than against what is shipped. Same for `clang-c`, and for
+          # anything a future revision grows.
+          for source_root in llvm-project/llvm/include \
+                             llvm-project/clang/include \
+                             llvm-project/lld/include; do
+            for dir in "$source_root"/*/; do
+              stage_headers "${dir%/}" dist/include/
+            done
+          done
+
+          # The generated headers, likewise per top-level directory: the build tree
+          # writes `llvm/Config/…` and `clang/…`, and `llvm-c` if a revision ever
+          # generates one.
+          for generated_root in llvm-build/include llvm-build/tools/clang/include; do
+            [ -d "$generated_root" ] || continue
+            for dir in "$generated_root"/*/; do
+              stage_headers "${dir%/}" dist/include-generated/
+            done
+          done
+
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            stage_headers swift/include/swift dist/include/
+            for swift_headers in swift-build/include/swift swift-build/tools/swift/include/swift; do
+              if [ -d "$swift_headers" ]; then
+                stage_headers "$swift_headers" dist/include-generated/
+              fi
+            done
+          fi
+
+          for required in dist/include/llvm dist/include/llvm-c dist/include/clang dist/include/lld; do
+            [ -d "$required" ] || { echo "::error::missing staged header root $required"; exit 1; }
+          done
+
+          # A symlink here would point into the runner's checkout.
+          if [ -n "$(find dist/include dist/include-generated -type l -print -quit)" ]; then
+            echo "::error::staged headers still contain symlinks:"
+            find dist/include dist/include-generated -type l -print
+            exit 1
+          fi
+
+          # Archives are staged *unmerged*, deliberately.
+          #
+          # This used to flatten every library into one archive with
+          # `libtool -static`, which was wrong: libtool de-duplicates members by name
+          # ("duplicate member name 'X86.cpp.o' from libclangCodeGen.a and …"), and a
+          # dropped member is a silently missing object. That is what produced
+          # undefined JIT symbols referenced from an object that was demonstrably in
+          # the archive. Swift's libraries collide the same way.
+          #
+          # The app already links a list — `prepare-xcode.sh` globs `lib/*.a` into
+          # XFORGE_NATIVE_LDFLAGS — so the merge only ever saved a line of shell.
+          find llvm-build/lib -maxdepth 1 -type f -name '*.a' -print | sort > /tmp/archives.txt
+          if [ -d cmark-ios-build ]; then
+            find cmark-ios-build -type f -name 'libcmark-gfm*.a' -print | sort >> /tmp/archives.txt
+          fi
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            find swift-build/lib -maxdepth 3 -type f -name '*.a' -print | sort >> /tmp/archives.txt
+          fi
+          test -s /tmp/archives.txt
           ARCHIVES=()
-          while IFS= read -r archive; do
-            ARCHIVES+=("$archive")
-          done < /tmp/llvm-archives.txt
-          /usr/bin/libtool -static -o dist/lib/libXForgeNativeToolchain.a "${ARCHIVES[@]}"
+          while IFS= read -r archive; do ARCHIVES+=("$archive"); done < /tmp/archives.txt
+          cp /tmp/archives.txt dist/lib/XForgeToolchain.libraries.txt
+
+          # One archive, merged with GNU MRI rather than `libtool -static`.
+          # libtool de-duplicates members by name — the log warns "duplicate member
+          # name 'X86.cpp.o' from libclangCodeGen.a and …" for clang's libraries and
+          # the same happens across Swift's — and a dropped member is a silently
+          # missing object, which is how the JIT symbols came out undefined while
+          # their object was demonstrably in the archive. `addlib` copies every
+          # member, duplicates included.
+          AR="$PWD/llvm-host-build/bin/llvm-ar"
+          MRI="$(mktemp)"
+          echo "create dist/lib/libXForgeNativeToolchain.a" > "$MRI"
+          for archive in "${ARCHIVES[@]}"; do echo "addlib $archive" >> "$MRI"; done
+          echo "save" >> "$MRI"
+          echo "end" >> "$MRI"
+          "$AR" -M < "$MRI"
+
+          # The guard: a merge that loses members is an error here, not a link
+          # failure two steps later that looks like a missing library.
+          MERGED=$("$AR" t dist/lib/libXForgeNativeToolchain.a | wc -l | tr -d ' ')
+          EXPECTED=$(for archive in "${ARCHIVES[@]}"; do "$AR" t "$archive"; done | wc -l | tr -d ' ')
+          echo "merged members: $MERGED, sources: $EXPECTED in ${#ARCHIVES[@]} archives"
+          [ "$MERGED" -ge "$EXPECTED" ] \
+            || { echo "::error::the merge dropped members ($MERGED < $EXPECTED)"; exit 1; }
+          ls -la dist/lib/libXForgeNativeToolchain.a
 
           cat > /tmp/native_link_smoke.mm <<'EOF'
           #include "NativeToolchainBridge.h"
@@ -153,10 +818,33 @@ jobs:
           EOF
 
           SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+
+          # Compile the bridge against the *staged* roots and link the result. This
+          # is the check that the shipped bundle is self-contained — the earlier
+          # compile-check compiles against the source tree, which says nothing about
+          # what was staged. A header missing here is a header missing from every
+          # app that links this bundle, and finding that in a 20-minute app build
+          # instead of here is how `llvm-c/` stayed missing.
+          BRIDGE_DEFINES=(-DXFORGE_HAS_LLVM=1)
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            BRIDGE_DEFINES+=(-DXFORGE_HAS_SWIFT_FRONTEND=1)
+          fi
           xcrun --sdk iphoneos clang++ \
             -std=c++20 \
             -arch arm64 \
-            -miphoneos-version-min=17.0 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
+            -isysroot "$SDK" \
+            "${BRIDGE_DEFINES[@]}" \
+            -I dist/include \
+            -I dist/include-generated \
+            -I App/NativeToolchain \
+            -c App/NativeToolchain/NativeToolchainBridge.mm \
+            -o /tmp/StageBundleBridge.o
+
+          xcrun --sdk iphoneos clang++ \
+            -std=c++20 \
+            -arch arm64 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
             -isysroot "$SDK" \
             -I App/NativeToolchain \
             -c /tmp/native_link_smoke.mm \
@@ -164,32 +852,118 @@ jobs:
 
           xcrun --sdk iphoneos clang++ \
             -arch arm64 \
-            -miphoneos-version-min=17.0 \
+            -miphoneos-version-min=$IOS_DEPLOYMENT_TARGET \
             -isysroot "$SDK" \
             /tmp/native_link_smoke.o \
-            /tmp/NativeToolchainBridge.o \
-            dist/lib/libXForgeNativeToolchain.a \
+            /tmp/StageBundleBridge.o \
+            $(for library in dist/lib/*.a; do printf ' -Wl,-force_load,%s' "$library"; done) \
             -lc++ -lz -liconv -lsqlite3 \
             -framework Foundation \
-            -o /tmp/XForgeNativeToolchainSmoke
+            -o /tmp/XForgeNativeToolchainSmoke \
+            2> /tmp/native-link-errors.txt || {
+              echo "::error::linking the toolchain into an app-shaped target failed"
+              # ld prints one `  "<symbol>", referenced from:` line per undefined
+              # symbol. `tail -60` showed the last of them and hid the rest, which
+              # is how a whole missing library stayed a mystery for a run: print
+              # every one, deduplicated, so the next iteration is not another guess.
+              grep 'referenced from:' /tmp/native-link-errors.txt \
+                | sed 's/, referenced from:$//' | sort -u || true
+              tail -20 /tmp/native-link-errors.txt
+              exit 1
+            }
 
           file /tmp/XForgeNativeToolchainSmoke
-          file /tmp/NativeToolchainBridge.o
-          cp /tmp/NativeToolchainBridge.o dist/
+          file /tmp/StageBundleBridge.o
+          cp /tmp/StageBundleBridge.o dist/
 
+          # The manifest is what the consumers read, so everything they have to
+          # agree with is in it: `bundle_tag` is the release this can be fetched
+          # from, `xcode`/`ios_sdk` are the SDK the archives were compiled against
+          # (a different SDK is a different bundle), and `swift_ref` is the Swift
+          # version the frontend speaks — the app's own Swift must match it, because
+          # the frontend reads the SDK's standard-library modules.
           cat > dist/manifest.txt <<EOF
+          bundle_tag=${{ steps.bundle.outputs.tag }}
           target=arm64-apple-ios
-          deployment_target=17.0
+          deployment_target=$IOS_DEPLOYMENT_TARGET
           llvm_commit=$(git -C llvm-project rev-parse HEAD)
+          swift_frontend=${{ inputs.with_swift && '1' || '0' }}
+          swift_ref=${{ inputs.with_swift && env.SWIFT_REF || 'none' }}
+          xcode=$(xcodebuild -version | head -n 1 | awk '{print $2}')
+          ios_sdk=$(xcrun --sdk iphoneos --show-sdk-version)
           built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          archive=lib/libXForgeNativeToolchain.a
+          archives=lib/XForgeToolchain.libraries.txt
+          header_roots=include-generated include
           EOF
           tar -C dist -czf XForgeNativeToolchain-arm64-ios.tar.gz .
 
       - name: Upload native toolchain artifact
+        if: ${{ !inputs.configure_only }}
         uses: actions/upload-artifact@v4
         with:
           name: XForgeNativeToolchain-arm64-ios
           path: XForgeNativeToolchain-arm64-ios.tar.gz
           if-no-files-found: error
           compression-level: 0
+
+      # What makes the expensive build a once-per-recipe cost rather than a
+      # per-run one. `build-ipa.yml` installs the bundle from here, so building the
+      # app never requires a toolchain run, and a toolchain run never has to be in
+      # the same repository state as the app it serves.
+      #
+      # Hand-dispatched runs only. A pull request or push run builds the LLVM-only
+      # half, and publishing that as the newest `toolchain-*` release would hand a
+      # consumer asking for "the newest one" a bundle with no Swift frontend in it.
+      # The tag already tells the two apart; this keeps them from racing for the
+      # same "newest" slot in the first place.
+      #
+      # And only when the Swift half was built, for the same reason one level down:
+      # a `noswift` bundle is a complete deliverable for C and Objective-C targets,
+      # but a consumer that asks for "the newest toolchain release" means the full
+      # one. Clang-only bundles stay reachable as workflow artifacts
+      # (`toolchain_tag: artifact` in build-ipa.yml, `--release artifact` locally).
+      - name: Publish the toolchain bundle
+        if: ${{ !inputs.configure_only && inputs.with_swift && github.event_name == 'workflow_dispatch' && inputs.publish && steps.stage.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TAG="${{ steps.bundle.outputs.tag }}"
+          ARCHIVE="XForgeNativeToolchain-arm64-ios.tar.gz"
+          test -f "$ARCHIVE" || { echo "::error::$ARCHIVE is missing"; exit 1; }
+
+          # GitHub refuses a release asset over 2 GiB. The bundle is a few hundred
+          # MB, so this only catches a runaway one — before the upload does.
+          bytes="$(stat -f%z "$ARCHIVE")"
+          echo "bundle: $((bytes / 1048576)) MB"
+          if [ "$bytes" -gt 2000000000 ]; then
+            echo "::error::the bundle is over GitHub's 2 GiB release-asset limit"
+            exit 1
+          fi
+
+          # A tag is created once and then only ever replaced. Rebuilding the same
+          # inputs is normal — a `cache_salt` bump rebuilds without changing the
+          # revision — and the newest upload of identical inputs is the one to keep,
+          # so the asset is clobbered rather than a second release being made.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; replacing its asset"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Native toolchain $TAG" \
+              --notes-file dist/manifest.txt
+          fi
+          gh release upload "$TAG" "$ARCHIVE" --repo "$GITHUB_REPOSITORY" --clobber
+
+          # The point of publishing is that someone else can consume it, so assert
+          # what the consumer will see rather than what we just sent.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,assets \
+            --jq '.assets[] | select(.name == "XForgeNativeToolchain-arm64-ios.tar.gz") | "\(.name): \(.size) bytes"'
+          {
+            echo '### Published toolchain bundle'
+            echo
+            echo "- tag: \`$TAG\`"
+            echo "- asset: \`$ARCHIVE\` ($((bytes / 1048576)) MB)"
+            echo "- install in an app build: \`with_toolchain: true\`"
+          } >> "$GITHUB_STEP_SUMMARY"

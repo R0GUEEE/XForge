@@ -2,6 +2,127 @@
 
 All notable changes to **XForge** are documented here.
 
+## [0.6.0] — 2026-09-24 — The embedded Linux is removed; the toolchain runs in the app
+
+**Breaking change.** XForge no longer boots a Linux guest. The emulator, the
+root filesystem, the Terminal tab and the guest-side services that provisioned and
+drove them are gone from the app; what builds an app now is the LLVM/Clang/LLD and
+Swift libraries linked into the process, called through a C++ bridge. Anyone who
+relied on the guest or on the Terminal has nothing to fall back to: the Terminal
+existed to type into the guest, and with the guest gone there was nothing behind
+it. Projects are no longer files inside a Linux filesystem you could `cd` into;
+they are ordinary directories in the app's container.
+
+### Removed
+- **`App/EmbeddedVM/**`** — the ish-arm64 bridge, the emulator, the rootfs
+  installer, the console and shell sessions. The app links no Linux kernel now.
+- **`App/Build/EmbeddedLinuxExecutor.swift` and `App/Build/SDKInstaller.swift`** —
+  replaced by `NativeBuildExecutor` and `NativeSDK`.
+- **`App/Services/{SystemComponents,GuestNetwork,ToolchainManager,IPAConfigureSignService}.swift`,
+  `HostDNS.{c,h}`, `DownloadManager.swift`, `DirectorySize.swift`** — guest
+  provisioning, guest DNS, the in-guest component installer and the `zsign` job.
+- **`App/Views/Terminal/**`, `EngineLogView`, `DownloadsView`** — the Terminal, the
+  engine log screen, and the download screen that existed to drive `curl` inside
+  the guest. The app is now three tabs: Projects, Build, Settings.
+- **The bundled Alpine rootfs and everything that produced it.** The artifact was
+  ~1.6 GB and arrived with a five-gigabyte provisioning story attached; there is no
+  rootfs, no `install-toolchain.sh` to run in a guest, and no pinned root asset to
+  download. `EmbeddedLinux/` is gone, and `project.yml` no longer links `-lish`,
+  `-lz` or `-liconv`, sets `GUEST_ARM64`, or requires `Vendor/ish-arm64*` to exist.
+- **`.github/workflows/ios-share.yml` (30 KB) and `builder.json`.** A build-for-the-
+  simulator workflow whose own comments tell you to keep its `js toolchain` blocks
+  identical to `ios-build.yml` and `runner.sh` — neither of which is in the
+  repository — and which drives the Flutter / React Native / Expo / KMP branches of
+  a multi-framework builder. It has never run here (no `ios-share/*` tag has ever
+  been pushed) and this is a Swift app with an in-process toolchain. Both are in git
+  history if the MobAI simulator flow is ever wanted back.
+- **`.github/workflows/bridge-api-check.yml`.** A "fast loop" for the bridge
+  compile-check, written when reaching that check cost 40–90 minutes. It now costs
+  eleven seconds inside a two-minute warm toolchain run, and the workflow carried
+  its own copy of the LLVM configure recipe — a second place to update, and a
+  silent divergence waiting to happen.
+
+### Added
+- **`App/Build/NativeBuildPlan.swift`** — reads a project directory into a fully
+  resolved plan (module, sources, resources, frameworks, search paths) and refuses,
+  **by name**, the one thing an in-process driver cannot resolve: SwiftPM
+  dependencies.
+- **`App/Build/NativeToolchainInvocation.swift`** — the `swift-frontend` and
+  `ld64.lld` argument lists as pure functions, so they are testable on a simulator
+  where no compiler libraries exist.
+- **`App/Services/AppBundleSigner.swift` and `App/Services/IPASigningJob.swift`** —
+  in-process signing with XKit. The private key is read through the Security
+  framework and used in memory; the `.p12` password file that `zsign` needed on
+  disk is gone with it.
+- **`App/Services/ProjectFiles.swift`** — replaces `GuestProjectFiles`, keeping the
+  same relative-path discipline (a `..` is rejected, not normalised) without a
+  guest underneath it.
+- **`App/Views/Toolchain/ToolchainView.swift`** — the toolchain and SDK screen, now
+  native: it reports which libraries are linked in, installs or removes the Darwin
+  SDK in the app container, and runs a compile smoke test.
+- **Importing an `Xcode.xip` on the device.** The Toolchain screen accepts Apple's
+  xip and builds the Darwin SDK out of it here — the job `xtool sdk build` does on a
+  Mac, and the reason a phone with no Mac could not use a newer SDK than the one we
+  publish. A xip is a xar archive holding a pbzx stream of xz blocks that
+  decompresses to a cpio archive of `Xcode.app`; `XipArchive` reads it in one
+  streaming pass (Apple's `Compression` decodes the xz, so nothing is vendored)
+  and `DarwinSDKBuilder` keeps xtool's own list of paths, restricted to
+  `iPhoneOS.platform` because XForge only compiles for the device. The picker also
+  takes a zip or a folder, for a bundle built elsewhere. Free space is checked
+  before extraction starts, progress is reported while it runs, and the picker's own
+  copy of the archive — gigabytes, for a xip — is deleted afterwards.
+- **The toolchain bundle is published, not just uploaded.** `native-toolchain.yml`
+  attaches the finished bundle to a release tagged
+  `toolchain-<llvm>-<swift|noswift>-ios<target>-sdk<sdk>` — the tag names what is
+  inside, because the tag is what a consumer asks for and a bundle that could not be
+  substituted for another must never be handed over as "the newest one". A dispatched
+  run is the only thing that publishes; a pull request or push run builds the
+  LLVM-only half and stays out of the way. `NativeToolchain/install-bundle.sh --release
+  [tag]` (and `make toolchain-release`) installs one without ever having run the
+  workflow, and `build-ipa.yml` takes `with_toolchain: true` plus an optional
+  `toolchain_tag` to link it into the app. Workflow artifacts expire and cannot be
+  fetched by tag; a release can.
+
+### Changed
+- **Build path.** `NativeBuildExecutor` compiles each translation unit through the
+  bridge, links with `ld64.lld`, assembles the `.app` and packages the unsigned
+  `.ipa`, streaming every step into the Build screen's console. `BuildManager`'s
+  stages lost their guest commands: the SDK stage installs the bundle into the app
+  container, and "Configure" validates the project directory instead of `mkdir`-ing
+  inside a guest.
+- **Projects move to the app's own container**, `<Documents>/projects/<name>`, and
+  `Project.rootURL` is derived from the project name. They used to live inside the
+  guest filesystem, which is why `Project.rootPath` still carries a guest-shaped
+  string (`projects/<name>`) that is now only used to check a record against the
+  directory it names.
+- **Export is a ZIP of a directory instead of a `tar` inside the guest**
+  (`ProjectExporter`, ZIPFoundation), skipping `.xforge-build` and `.build`.
+- **The app's log is an ordinary file the user can share.** It used to be the
+  engine's kernel messages through the ish bridge.
+- **Importing a project copies a folder picked in Files.** An iOS process cannot
+  run `git`, so a clone is not something the app can offer.
+- **The dependencies editor is gone.** A project that declares SwiftPM dependencies
+  cannot be resolved without a package manager, so `NativeBuildPlanFactory` refuses
+  such a project with a message that names the packages — an editor that could only
+  produce unbuildable projects was worse than no editor.
+- **The guest filesystem is no longer the reason a project is not backed up.** See
+  the reversal under "Projects can leave the device" below: what that entry
+  described as impossible is now the default, because a project is a plain
+  directory in the container rather than a file inside an opaque fakefs.
+
+### Known gap
+- **Swift needs a bundle that carries the frontend.** `.github/workflows/native-toolchain.yml`
+  builds the Swift frontend libraries when it is dispatched with `with_swift=true`,
+  and that bundle says `swift_frontend=1` in its manifest; the default dispatch and
+  every pull-request run build the Clang/LLD half only. Against a bundle without the
+  frontend a project whose sources are Swift still fails at the Swift compile step
+  with `swiftFrontendMissing`, naming the count of files, instead of silently needing
+  a guest. C and Objective-C targets compile and link either way. The guest is not
+  coming back as a fallback: the honest replacement for it is a bundle that carries
+  the frontend, which is now a thing you can build and install.
+- **Asset catalogs are copied uncompiled**, with a warning: `actool` is a
+  macOS-only tool with no open-source replacement.
+
 ## Projects can leave the device, and the guest filesystem stays out of backups
 
 ### Added
