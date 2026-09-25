@@ -209,8 +209,19 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          if [ -x llvm-host-build/bin/llvm-tblgen ] && [ -x llvm-host-build/bin/clang-tblgen ]; then
-            echo "host TableGen tools already cached"
+          # All four, not just the TableGen pair: `llvm-ar` is what the packaging
+          # step merges the archives with, and a restored tree that has the two
+          # TableGen tools but not it used to pass this check and fail three seconds
+          # into staging ("llvm-host-build/bin/llvm-ar: No such file or directory").
+          if [ -x llvm-host-build/bin/llvm-tblgen ] \
+             && [ -x llvm-host-build/bin/clang-tblgen ] \
+             && [ -x llvm-host-build/bin/llvm-ar ] \
+             && [ -x llvm-host-build/bin/llvm-nm ]; then
+            echo "host tools already built"
+            mkdir -p llvm-build/bin
+            for tool in llvm-host-build/bin/*; do
+              ln -sf "$PWD/$tool" "llvm-build/bin/$(basename "$tool")"
+            done
             exit 0
           fi
           cmake -S llvm-project/llvm -B llvm-host-build -G Ninja \
