@@ -24,8 +24,9 @@ call in XForge's own process:
    paths. Nothing compiles until this value exists, and nothing in the executor
    re-decides any of it.
 2. **Compile.** Swift sources would go through `swift::performFrontend` — but the
-   frontend libraries are not in the toolchain artifact yet, so a plan with Swift
-   files is refused at this point (§2, third bullet). C, Objective-C and
+   frontend libraries are only in a bundle built with `with_swift`, so a plan with
+   Swift files is refused at this point when the installed bundle has none (§2,
+   third bullet). C, Objective-C and
    Objective-C++ sources compile through clang's `CompilerInstance` with
    `EmitObjAction`. Both take an argument list built by
    `NativeToolchainInvocation`, against the iPhoneOS SDK in the Darwin SDK bundle.
@@ -72,10 +73,11 @@ what is needed, and the executor states plainly where it can only copy:
 ## 2. Where the toolchain comes from
 
 The Clang/LLD libraries are **cross-built for iPhoneOS in CI** on a macOS runner
-(`.github/workflows/native-toolchain.yml`), flattened into a single static archive
-and published as a workflow artifact. `NativeToolchain/install-bundle.sh` unpacks
-that artifact into `Vendor/NativeToolchain` and `NativeToolchain/prepare-xcode.sh`
-writes the xcconfig the app target consumes.
+(`.github/workflows/native-toolchain.yml`), merged into a single static archive and
+published as a release asset (tagged `toolchain-<llvm>-<swift|noswift>-ios…`).
+`NativeToolchain/install-bundle.sh --release` fetches it, or unpacks a local archive,
+into `Vendor/NativeToolchain`, and `NativeToolchain/prepare-xcode.sh` writes the
+xcconfig the app target consumes.
 
 The consequences of linking the compiler in rather than shipping it as data:
 

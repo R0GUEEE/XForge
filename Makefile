@@ -1,24 +1,29 @@
-.PHONY: toolchain icon gen build test ipa clean
+.PHONY: toolchain toolchain-release icon gen build test ipa clean
 
 XCODE := xcodebuild
 SCHEME := XForge
 
 ## Install the native toolchain bundle into Vendor/NativeToolchain.
 ##
-## The bundle is built by the `Native iOS Toolchain` workflow (Clang + Mach-O LLD
-## for iPhoneOS, cross-built on a Mac) and attached to the run as an artifact.
-## Without it the app still builds and runs: the C bridge compiles to a
-## "not available" stub and the Toolchain screen says so, which is what a plain
-## clone should do.
+## The bundle is built by the `Native iOS Toolchain` workflow and published as a
+## release asset whose tag names its contents, so the newest one is a well-defined
+## thing to ask for. Without a bundle the app still builds and runs: the C bridge
+## compiles to a "not available" stub and the Toolchain screen says so.
+##
+##   make toolchain-release            # newest published bundle
+##   make toolchain-release TAG=...    # a specific one
+##   make toolchain ARCHIVE=...        # a local tarball
 toolchain:
 	@if [ -z "$(ARCHIVE)" ]; then \
 		echo "usage: make toolchain ARCHIVE=XForgeNativeToolchain-arm64-ios.tar.gz"; \
-		echo ""; \
-		echo "Download the artifact from a successful 'Native iOS Toolchain' run:"; \
-		echo "    gh run download --repo R0GUEEE/XForge --name XForgeNativeToolchain-arm64-ios"; \
+		echo "       make toolchain-release [TAG=...]"; \
 		exit 64; \
 	fi
 	@bash NativeToolchain/install-bundle.sh "$(ARCHIVE)"
+
+## Install the newest published toolchain bundle (see `toolchain` above)
+toolchain-release:
+	@bash NativeToolchain/install-bundle.sh --release $(TAG)
 
 ## Regenerate the app icon + accent colour asset catalog (needs Pillow)
 icon:

@@ -48,6 +48,17 @@ they are ordinary directories in the app's container.
 - **`App/Views/Toolchain/ToolchainView.swift`** — the toolchain and SDK screen, now
   native: it reports which libraries are linked in, installs or removes the Darwin
   SDK in the app container, and runs a compile smoke test.
+- **The toolchain bundle is published, not just uploaded.** `native-toolchain.yml`
+  attaches the finished bundle to a release tagged
+  `toolchain-<llvm>-<swift|noswift>-ios<target>-sdk<sdk>` — the tag names what is
+  inside, because the tag is what a consumer asks for and a bundle that could not be
+  substituted for another must never be handed over as "the newest one". A dispatched
+  run is the only thing that publishes; a pull request or push run builds the
+  LLVM-only half and stays out of the way. `NativeToolchain/install-bundle.sh --release
+  [tag]` (and `make toolchain-release`) installs one without ever having run the
+  workflow, and `build-ipa.yml` takes `with_toolchain: true` plus an optional
+  `toolchain_tag` to link it into the app. Workflow artifacts expire and cannot be
+  fetched by tag; a release can.
 
 ### Changed
 - **Build path.** `NativeBuildExecutor` compiles each translation unit through the
@@ -77,13 +88,15 @@ they are ordinary directories in the app's container.
   directory in the container rather than a file inside an opaque fakefs.
 
 ### Known gap
-- **The Swift frontend is not in the toolchain artifact.**
-  `.github/workflows/native-toolchain.yml` builds Clang and Mach-O LLD only, so a
-  project whose sources are Swift still cannot be compiled. The build now fails at
-  the Swift compile step with `swiftFrontendMissing`, naming the count of files,
-  instead of silently needing a guest. C and Objective-C targets compile and link
-  today. The guest is not coming back as a fallback: the honest replacement for it
-  is a toolchain artifact that carries the frontend.
+- **Swift needs a bundle that carries the frontend.** `.github/workflows/native-toolchain.yml`
+  builds the Swift frontend libraries when it is dispatched with `with_swift=true`,
+  and that bundle says `swift_frontend=1` in its manifest; the default dispatch and
+  every pull-request run build the Clang/LLD half only. Against a bundle without the
+  frontend a project whose sources are Swift still fails at the Swift compile step
+  with `swiftFrontendMissing`, naming the count of files, instead of silently needing
+  a guest. C and Objective-C targets compile and link either way. The guest is not
+  coming back as a fallback: the honest replacement for it is a bundle that carries
+  the frontend, which is now a thing you can build and install.
 - **Asset catalogs are copied uncompiled**, with a warning: `actool` is a
   macOS-only tool with no open-source replacement.
 

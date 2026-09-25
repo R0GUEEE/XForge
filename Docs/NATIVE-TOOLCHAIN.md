@@ -31,76 +31,136 @@ alternative would be a remote build host, which is a different product.
   simulator build) compiles and runs with no toolchain present.
 - `.github/workflows/native-toolchain.yml` — builds the iOS-hosted LLVM/Clang/LLD
   libraries and publishes the bundle. See below.
-- `NativeToolchain/install-bundle.sh <archive>` — installs that bundle.
+- `NativeToolchain/install-bundle.sh <archive> | --release [tag]` — installs that
+  bundle, from a local file or from its release.
 - `NativeToolchain/prepare-xcode.sh` — writes the xcconfig the app target consumes.
   `build-ipa.yml` runs it too, so CI never depends on a bundle being installed
   locally; on a checkout with no bundle it writes the disabled configuration and CI
   builds the stub.
 
-## What the bundle contains — and what it does not
+## What a bundle contains — and which half it has
 
 The workflow cross-builds, for iPhoneOS arm64:
 
 - **Clang**, as the library set the bridge calls (`clangCodeGen`, `clangFrontend`,
   `clangFrontendTool`, `clangDriver`, `clangSerialization`, `clangSema`, `clangParse`,
-  `clangAST`, `clangLex`, `clangBasic`);
-- **Mach-O LLD** (`lldMachO`, `lldCommon`).
+  `clangAST`, `clangLex`, `clangBasic`), plus `clangDependencyScanning`;
+- **Mach-O LLD** (`lldMachO`, `lldCommon`);
+- **`LLVMOrcJIT`**, which Swift's in-process JIT needs;
+- and, in a `with_swift` build, **Swift's frontend libraries** (`swiftFrontendTool`
+  and the swiftAST / swiftSema / IRGen / ClangImporter set it pulls in), built from
+  `swiftlang/swift` against `swiftlang/llvm-project` — for iOS, as a library set.
 
-It does **not** contain the Swift frontend. `swift-frontend` is not part of
-`llvm-project`: it has to be built from `swiftlang/swift` against
-`swiftlang/llvm-project` **for iOS**, as a library set. That port is the long pole
-and it is not done, so:
+The target list is not "everything the app might use" but the closure the bundle has
+to satisfy, because the link check force-loads every archive: each member's undefined
+symbols must resolve *inside* the bundle. `clangDependencyScanning` (used by
+`ClangImporter` to scan a target's module dependencies) and `LLVMOrcJIT` (used by
+`SwiftMaterializationUnit.cpp`) are the two that no clang library pulls in by itself,
+and leaving them out produced a bundle that compiled and then failed to link — with
+the missing symbols visible only as a truncated tail. The link check now prints all
+of them.
 
-- **Swift sources cannot be compiled today.** A plan that contains Swift files
-  fails at the compile stage with `swiftFrontendMissing`, naming the count of files.
-- C, Objective-C and Objective-C++ sources compile and link today.
-- The bridge does expose the entry point (`xf_native_swift_frontend`), gated behind
-  `XFORGE_HAS_SWIFT_FRONTEND`, so the port has somewhere to land. Until a frontend
-  library set exists, the gate is closed and the UI reports `swift-frontend: missing`.
+`manifest.txt` is how a consumer knows what it has:
 
-The two halves are deliberately independent: the Clang/LLD port can be validated
-and used on its own while the considerably larger Swift compiler port is brought up.
+```
+bundle_tag=toolchain-<llvm sha>-<swift ref|noswift>-ios<target>-sdk<sdk>
+target=arm64-apple-ios
+deployment_target=17.0
+llvm_commit=…
+swift_frontend=0|1
+swift_ref=swift-6.2.4-RELEASE|none
+xcode=16.4
+ios_sdk=18.5
+built_at=…
+archives=lib/XForgeToolchain.libraries.txt
+header_roots=include-generated include
+```
+
+`prepare-xcode.sh` reads `swift_frontend` and defines `XFORGE_HAS_SWIFT_FRONTEND`
+accordingly, so a bundle without the frontend still builds the whole app: the bridge
+compiles to the stub for that entry point and the UI reports `swift-frontend: missing`
+rather than claiming a compiler it does not have.
+
+The two halves are deliberately independent. The Clang/LLD half is a complete
+deliverable for C, Objective-C and Objective-C++ targets and can be validated on its
+own while the considerably larger Swift port is brought up; the tag says which one a
+bundle is (`…-swift-<ref>-…` versus `…-noswift-…`), so they never have to be guessed
+apart.
 
 ## How the bundle is built (CI)
 
 `.github/workflows/native-toolchain.yml`, job `llvm-ios`, on a `macos-15` runner:
 
-1. Build host TableGen tools (`llvm-tblgen`, `clang-tblgen`) natively — the iOS
-   cross-build needs a native TableGen to generate tables it can run.
-2. Configure LLVM for iPhoneOS arm64 with `LLVM_ENABLE_PROJECTS="clang;lld"`,
+1. Check out Swift's LLVM fork (`swiftlang/llvm-project`, the branch paired with the
+   Swift version) and, for a `with_swift` build, `swiftlang/swift`, `swift-cmark`,
+   `swift-syntax` and `swift-experimental-string-processing`.
+2. Restore the build trees from the Actions cache. The key names the LLVM revision,
+   the deployment target and the runner's Xcode/SDK, so a hit means "the compiler for
+   exactly these inputs" — and the sources are then aged to a fixed past date, so the
+   restored tree is newer than every source. Without that ageing ninja treats the
+   whole tree as stale and rebuilds it: the restore paid seconds to avoid a
+   2601-edge rebuild and got it anyway.
+3. Build the host tools natively (`llvm-tblgen`, `clang-tblgen`, `llvm-ar`,
+   `llvm-nm`) and, with Swift, a native `cmark` plus the iOS cmark archives.
+4. Configure LLVM for iPhoneOS arm64 with `LLVM_ENABLE_PROJECTS="clang;lld"`,
    `LLVM_TARGETS_TO_BUILD=AArch64`, deployment target 17.0, tools and examples off.
-3. Build the Clang and LLD library targets listed above.
-4. **Compile-check the bridge against the headers just built** — `clang++ -arch arm64
+   Skipped when the restored tree came back already configured and built.
+5. Build the library targets listed above (~37 minutes cold), then, with Swift,
+   the frontend libraries (~34 minutes cold).
+6. **Compile-check the bridge against the headers just built** — `clang++ -arch arm64
    -isysroot <iPhoneOS SDK> -DXFORGE_HAS_LLVM=1 -c App/NativeToolchain/NativeToolchainBridge.mm`.
    This is the check that keeps a header change in LLVM from silently breaking the
    bridge in a device build nobody can run yet.
-5. Stage the headers into two roots — sources into `include/`, the build tree into
-   `include-generated/`, because they disagree about `swift/bridging` — then
-   **flatten every
-   static archive in the build into one** `dist/lib/libXForgeNativeToolchain.a` with
-   `libtool -static`. Flattening is deliberate: the app then links one archive
-   instead of depending on LLVM's internal archive ordering, which would otherwise
-   have to be reproduced by hand in the xcconfig.
-6. **Link-check**: link a program that calls `xf_native_toolchain_available()`
-   against the flattened archive and the bridge object, and assert the result is a
-   real Mach-O. A library set that compiles but cannot link is the failure this step
-   exists to catch.
-7. Write `manifest.txt` (`target=arm64-apple-ios`, `deployment_target=17.0`,
-   `llvm_commit=…`, `built_at=…`, `archive=…`) and tar the result as
-   `XForgeNativeToolchain-arm64-ios.tar.gz`, uploaded as the workflow artifact of the
-   same name.
+7. Stage the headers into two roots — sources into `include/`, the build tree into
+   `include-generated/`, because they disagree about `swift/bridging` — and merge
+   every static archive in the build into one `dist/lib/libXForgeNativeToolchain.a`
+   with `llvm-ar -M` and an MRI `addlib` script. `addlib` copies *every* member:
+   `libtool -static` de-duplicates them by name (`duplicate member name 'X86.cpp.o'
+   from libclangCodeGen.a and …`), and a dropped member is a silently missing object —
+   which is how the JIT symbols once came out undefined while their object was
+   demonstrably in the archive. The merge fails if it produced fewer members than it
+   consumed.
+8. **Link-check**: link a program that calls `xf_native_toolchain_available()` against
+   the merged archive and the bridge object, with every archive force-loaded, and
+   assert the result is a real Mach-O. Force-loading makes this the strictest check
+   available: it fails unless every member resolves inside the bundle. On failure it
+   prints every undefined symbol, not a tail of them.
+9. Write `manifest.txt` and tar the result as `XForgeNativeToolchain-arm64-ios.tar.gz`
+   — uploaded as the workflow artifact of the same name, and, on a hand-dispatched
+   run that succeeded, **published as a release asset** tagged
+   `toolchain-<llvm>-<swift|noswift>-ios<target>-sdk<sdk>`.
 
-It is dispatched by hand (or by a pull request that touches `App/NativeToolchain/**`),
-because it takes hours and its output changes only when the LLVM commit does.
+The cache is why none of this needs doing twice. A run whose inputs are unchanged
+restores both trees and goes straight to the staging and link checks. Everything
+unusual about the workflow — the key salts, the save gating (a tree is stored only if
+the build that produced it finished), the "skip the configure when the tree is already
+built" rule, the aged sources — exists for that one property, and each was added after
+a run that spent an hour rebuilding what the cache already had.
+
+Publishing is what takes the cost off everyone else. `build-ipa.yml` installs the
+bundle from the newest `toolchain-*` release, so building the app never waits for a
+toolchain run and a toolchain run never has to be in the same repository state as the
+app it serves. Only dispatched runs publish: a pull request or push run builds the
+LLVM-only half, and publishing that as the newest bundle is exactly what a consumer
+asking for "the newest one" must not get.
 
 ## How it is installed
 
 ```bash
-make toolchain ARCHIVE=XForgeNativeToolchain-arm64-ios.tar.gz
+make toolchain-release          # the newest published bundle
 make gen
 ```
 
-`install-bundle.sh` unpacks the archive into `Vendor/NativeToolchain` and refuses an
+A specific release, a local tarball, or a bundle that was built but not published:
+
+```bash
+make toolchain-release TAG=toolchain-<…>
+make toolchain ARCHIVE=XForgeNativeToolchain-arm64-ios.tar.gz
+NativeToolchain/install-bundle.sh --release artifact
+```
+
+`install-bundle.sh` fetches the asset (the GitHub CLI if it is installed, `curl`
+otherwise) or unpacks the local archive into `Vendor/NativeToolchain`, and refuses an
 archive that is missing `manifest.txt`, `include/`, `include-generated/` or `lib/` — a
 partial bundle would otherwise surface as an inscrutable compile error much later. It
 then runs `prepare-xcode.sh`, which writes `Support/NativeToolchain.generated.xcconfig`:
@@ -161,12 +221,18 @@ fails here in a way the capability rows cannot detect. The screen's own footer
 describes the check as compiling *and linking*; the button currently compiles only,
 and the build-time link check lives in the toolchain workflow (step 6 above).
 
-## Known gap
+## Which half you have
 
-Until the Swift frontend libraries exist for iPhoneOS:
+The frontend is in the bundle or it is not, and `manifest.txt` says which — so the
+honest statement is per bundle rather than per project:
 
-- Swift projects cannot be built on device. This is not a fallback situation — there
-  is no guest to fall back to — it is the remaining port.
-- The Swift capability row is reported honestly (`missing`), the Swift smoke test
-  remains unreachable, and a build that needs it fails up front with
-  `swiftFrontendMissing` and the file count.
+- A **`noswift`** bundle has no frontend. Swift projects cannot be built from it and
+  fail up front with `swiftFrontendMissing` and the file count; that is not a fallback
+  situation — there is no guest to fall back to — it is the other half of the port,
+  while C, Objective-C and Objective-C++ work in full.
+- A **`swift-*`** bundle carries the frontend, so the Swift capability row reports it
+  like any other part and the Swift smoke test is reachable. Its Swift revision has to
+  match the app's: the frontend reads the deployment SDK's standard-library modules,
+  which is why the workflow pins the LLVM/Swift refs to the pair the Xcode in use
+  ships, and why `build-ipa.yml` warns when the installed bundle and the runner's
+  Xcode disagree.

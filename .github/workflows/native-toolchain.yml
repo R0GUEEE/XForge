@@ -54,6 +54,10 @@ on:
         description: Bump to discard the cached iOS builds (do this when the configure recipe below changes)
         type: string
         default: "3"
+      publish:
+        description: Publish the finished bundle as a release asset
+        type: boolean
+        default: true
   pull_request:
     paths:
       - "App/NativeToolchain/**"
@@ -69,6 +73,11 @@ jobs:
   llvm-ios:
     runs-on: macos-15
     timeout-minutes: 350
+    # `contents: write` is for the publish step at the bottom: the bundle is worth
+    # more as a release asset than as a workflow artifact, because artifacts expire
+    # (7-90 days, at GitHub's discretion) and cannot be fetched by tag.
+    permissions:
+      contents: write
     env:
       IOS_DEPLOYMENT_TARGET: ${{ inputs.deployment_target || '17.0' }}
       SWIFT_REF: ${{ inputs.swift_ref || 'swift-6.2.4-RELEASE' }}
@@ -142,6 +151,30 @@ jobs:
           {
             echo "value=$(xcodebuild -version | tr '\n' ' ')-$(xcrun --sdk iphoneos --show-sdk-version)"
           } >> "$GITHUB_OUTPUT"
+
+      # The bundle's *name*, decided from what goes into it rather than from when it
+      # was built: the LLVM commit, the Swift revision (or the fact that it is not
+      # included) and the deployment target decide which archives exist, and the
+      # SDK decides what they were compiled against. Two builds of the same inputs
+      # therefore land on the same tag, and a build that could not be substituted
+      # for another can never shadow it — which is what makes
+      # `build-ipa.yml`'s "the newest `toolchain-*` release" a safe rule.
+      - name: Name the bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LLVM_SHA="$(git -C llvm-project rev-parse --short=12 HEAD)"
+          if [ "${{ inputs.with_swift }}" = "true" ]; then
+            # `/` is legal in a tag and awkward in a URL and a shell word.
+            SWIFT_MARK="swift-$(printf '%s' "$SWIFT_REF" | tr '/' '-')"
+          else
+            SWIFT_MARK="noswift"
+          fi
+          SDK_VERSION="$(xcrun --sdk iphoneos --show-sdk-version)"
+          TAG="toolchain-${LLVM_SHA}-${SWIFT_MARK}-ios${IOS_DEPLOYMENT_TARGET}-sdk${SDK_VERSION}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "bundle tag: $TAG"
 
       # A restored build tree carries the timestamps of the run that saved it, and
       # those are *older* than the sources this run has just checked out. Ninja
@@ -657,6 +690,7 @@ jobs:
           compression-level: 0
 
       - name: Stage native toolchain SDK
+        id: stage
         if: ${{ !inputs.configure_only }}
         shell: bash
         run: |
@@ -794,12 +828,21 @@ jobs:
           file /tmp/NativeToolchainBridge.o
           cp /tmp/NativeToolchainBridge.o dist/
 
+          # The manifest is what the consumers read, so everything they have to
+          # agree with is in it: `bundle_tag` is the release this can be fetched
+          # from, `xcode`/`ios_sdk` are the SDK the archives were compiled against
+          # (a different SDK is a different bundle), and `swift_ref` is the Swift
+          # version the frontend speaks — the app's own Swift must match it, because
+          # the frontend reads the SDK's standard-library modules.
           cat > dist/manifest.txt <<EOF
+          bundle_tag=${{ steps.bundle.outputs.tag }}
           target=arm64-apple-ios
           deployment_target=$IOS_DEPLOYMENT_TARGET
           llvm_commit=$(git -C llvm-project rev-parse HEAD)
           swift_frontend=${{ inputs.with_swift && '1' || '0' }}
           swift_ref=${{ inputs.with_swift && env.SWIFT_REF || 'none' }}
+          xcode=$(xcodebuild -version | head -n 1 | awk '{print $2}')
+          ios_sdk=$(xcrun --sdk iphoneos --show-sdk-version)
           built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           archives=lib/XForgeToolchain.libraries.txt
           header_roots=include-generated include
@@ -814,3 +857,59 @@ jobs:
           path: XForgeNativeToolchain-arm64-ios.tar.gz
           if-no-files-found: error
           compression-level: 0
+
+      # What makes the expensive build a once-per-recipe cost rather than a
+      # per-run one. `build-ipa.yml` installs the bundle from here, so building the
+      # app never requires a toolchain run, and a toolchain run never has to be in
+      # the same repository state as the app it serves.
+      #
+      # Hand-dispatched runs only. A pull request or push run builds the LLVM-only
+      # half, and publishing that as the newest `toolchain-*` release would hand a
+      # consumer asking for "the newest one" a bundle with no Swift frontend in it.
+      # The tag already tells the two apart; this keeps them from racing for the
+      # same "newest" slot in the first place.
+      - name: Publish the toolchain bundle
+        if: ${{ !inputs.configure_only && github.event_name == 'workflow_dispatch' && inputs.publish && steps.stage.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TAG="${{ steps.bundle.outputs.tag }}"
+          ARCHIVE="XForgeNativeToolchain-arm64-ios.tar.gz"
+          test -f "$ARCHIVE" || { echo "::error::$ARCHIVE is missing"; exit 1; }
+
+          # GitHub refuses a release asset over 2 GiB. The bundle is a few hundred
+          # MB, so this only catches a runaway one — before the upload does.
+          bytes="$(stat -f%z "$ARCHIVE")"
+          echo "bundle: $((bytes / 1048576)) MB"
+          if [ "$bytes" -gt 2000000000 ]; then
+            echo "::error::the bundle is over GitHub's 2 GiB release-asset limit"
+            exit 1
+          fi
+
+          # A tag is created once and then only ever replaced. Rebuilding the same
+          # inputs is normal — a `cache_salt` bump rebuilds without changing the
+          # revision — and the newest upload of identical inputs is the one to keep,
+          # so the asset is clobbered rather than a second release being made.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists; replacing its asset"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Native toolchain $TAG" \
+              --notes-file dist/manifest.txt
+          fi
+          gh release upload "$TAG" "$ARCHIVE" --repo "$GITHUB_REPOSITORY" --clobber
+
+          # The point of publishing is that someone else can consume it, so assert
+          # what the consumer will see rather than what we just sent.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json tagName,assets \
+            --jq '.assets[] | select(.name == "XForgeNativeToolchain-arm64-ios.tar.gz") | "\(.name): \(.size) bytes"'
+          {
+            echo '### Published toolchain bundle'
+            echo
+            echo "- tag: \`$TAG\`"
+            echo "- asset: \`$ARCHIVE\` ($((bytes / 1048576)) MB)"
+            echo "- install in an app build: \`with_toolchain: true\`"
+          } >> "$GITHUB_STEP_SUMMARY"

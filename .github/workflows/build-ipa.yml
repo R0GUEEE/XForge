@@ -24,9 +24,13 @@ on:
         type: boolean
         default: false
       with_toolchain:
-        description: Download the native toolchain artifact and link it into the app
+        description: Install the published native toolchain bundle and link it into the app
         type: boolean
         default: false
+      toolchain_tag:
+        description: Toolchain release tag to install (default - the newest toolchain-* release, or "artifact" for the newest workflow artifact)
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -75,19 +79,84 @@ jobs:
       # installed where the generated xcconfig points, so the bridge compiles with
       # XFORGE_HAS_LLVM / XFORGE_HAS_SWIFT_FRONTEND and the app *links* the merged
       # archive — the step that no other workflow exercises.
+      #
+      # From the published release, not a workflow artifact: the toolchain build
+      # takes ~90 minutes and its output only changes when an LLVM or Swift revision
+      # does, so making the app build depend on a toolchain run would put that cost
+      # on every app build for no reason. The tag names its contents, so "the newest
+      # `toolchain-*` release" is a well-defined thing to ask for.
       - name: Install the native toolchain bundle
         if: ${{ inputs.with_toolchain }}
         env:
           GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.toolchain_tag }}
         run: |
           set -euo pipefail
-          gh run download --repo "$GITHUB_REPOSITORY" \
-            --name XForgeNativeToolchain-arm64-ios \
-            --dir .toolchain-artifact
-          bash NativeToolchain/install-bundle.sh \
-            .toolchain-artifact/XForgeNativeToolchain-arm64-ios.tar.gz
+          ARCHIVE_NAME="XForgeNativeToolchain-arm64-ios.tar.gz"
+          tag="$REQUESTED_TAG"
+
+          if [ "$tag" = "artifact" ]; then
+            # Escape hatch for testing a bundle that was just built and has not been
+            # published: the newest artifact of that name.
+            echo "installing the newest workflow artifact"
+            gh run download --repo "$GITHUB_REPOSITORY" \
+              --name XForgeNativeToolchain-arm64-ios --dir .toolchain-artifact
+          else
+            if [ -z "$tag" ]; then
+              # `gh release list` is newest-first, so the first toolchain-* tag is
+              # the newest published bundle.
+              tag="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+                --json tagName --jq '[.[] | select(.tagName | startswith("toolchain-"))][0].tagName')"
+            fi
+            if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+              echo "::error::no published toolchain release found."
+              echo "Run the 'Native iOS Toolchain' workflow by hand (with_swift=true) and let it publish, or pass toolchain_tag."
+              exit 1
+            fi
+            echo "installing the toolchain bundle from release $tag"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern "XForgeNativeToolchain-*.tar.gz" --dir .toolchain-artifact
+          fi
+
+          bash NativeToolchain/install-bundle.sh ".toolchain-artifact/$ARCHIVE_NAME"
           cat Vendor/NativeToolchain/manifest.txt
           cat Support/NativeToolchain.generated.xcconfig
+
+      # The frontend can only read the deployment SDK's standard-library modules when
+      # it is the same Swift version as the app it is linked into. The bundle records
+      # what it was built from; this says so loudly instead of shipping an app whose
+      # Swift support fails on a device nobody can debug here. A mismatch is a
+      # warning, not a failure: the exact version string of an Apple toolchain is not
+      # something to bet the build on.
+      - name: Check the toolchain bundle against this Xcode
+        if: ${{ inputs.with_toolchain }}
+        run: |
+          set -euo pipefail
+          MANIFEST="Vendor/NativeToolchain/manifest.txt"
+          get() { sed -n "s/^$1=//p" "$MANIFEST"; }
+
+          echo "bundle: $(get bundle_tag)"
+          echo "  built with Xcode $(get xcode), iPhoneOS SDK $(get ios_sdk)"
+          echo "  LLVM commit $(get llvm_commit)"
+
+          runner_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+          if [ "$(get ios_sdk)" != "$runner_sdk" ]; then
+            echo "::warning::the bundle was built against iPhoneOS SDK $(get ios_sdk) but this runner has $runner_sdk"
+          fi
+
+          if ! grep -q '^swift_frontend=1' "$MANIFEST"; then
+            echo "this bundle has no Swift frontend; Swift targets will report it missing"
+            exit 0
+          fi
+
+          built_version="$(get swift_ref | sed -n 's/^swift-\([0-9][0-9.]*\).*/\1/p')"
+          app_version="$(xcrun swift --version 2>/dev/null | head -n 1)"
+          echo "  Swift frontend built from $(get swift_ref)"
+          echo "  this runner's Swift: $app_version"
+          case "$app_version" in
+            *"$built_version"*) echo "Swift versions agree" ;;
+            *) echo "::warning::the bundle's Swift frontend is $built_version, this Xcode's Swift is '$app_version' — the frontend may not read this SDK's standard library modules" ;;
+          esac
 
       - name: Prepare the native toolchain configuration
         run: |

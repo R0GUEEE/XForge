@@ -114,14 +114,16 @@ to a stub and says so on the Toolchain screen.
 To build with the compiler *linked in*, install the toolchain bundle first:
 
 ```bash
-make toolchain ARCHIVE=XForgeNativeToolchain-arm64-ios.tar.gz
+make toolchain-release          # the newest published bundle
 make gen
 ```
 
-`install-bundle.sh` unpacks the archive into `Vendor/NativeToolchain` and runs
-`prepare-xcode.sh`, which writes `Support/NativeToolchain.generated.xcconfig` —
-the file the app target consumes. That xcconfig is checked in *with the backend
-disabled*, so a clone without the bundle is buildable; see
+`install-bundle.sh --release` fetches the bundle from its release (a specific tag,
+or a local tarball, also work — see `make toolchain`), unpacks it into
+`Vendor/NativeToolchain` and runs `prepare-xcode.sh`, which writes
+`Support/NativeToolchain.generated.xcconfig` — the file the app target consumes.
+That xcconfig is checked in *with the backend disabled*, so a clone without the
+bundle is buildable; see
 [Docs/NATIVE-TOOLCHAIN.md](Docs/NATIVE-TOOLCHAIN.md).
 
 The only build prerequisite beyond XcodeGen is the toolchain bundle, and only if
@@ -219,12 +221,16 @@ make icon        # rewrites Support/Assets.xcassets
   publishes the unsigned IPA for sideloading. It runs `prepare-xcode.sh` too, so CI
   never depends on a toolchain bundle being installed in the checkout.
 - **`native-toolchain.yml`** — cross-builds LLVM's Clang and Mach-O LLD for
-  iPhoneOS on a macOS runner, flattens the static dependency graph into one
-  archive, compile-checks and link-checks `NativeToolchainBridge.mm` against the
-  LLVM headers it just built, and uploads
-  `XForgeNativeToolchain-arm64-ios.tar.gz` as a workflow artifact. It is
-  dispatched by hand or by a pull request that touches `App/NativeToolchain/**`,
-  because it takes hours and its output changes only when the LLVM commit does.
+  iPhoneOS (and, with `with_swift=true`, Swift's frontend libraries) on a macOS
+  runner, merges the static archives into one, compile-checks and link-checks
+  `NativeToolchainBridge.mm` against the LLVM headers it just built, and publishes
+  `XForgeNativeToolchain-arm64-ios.tar.gz` as a release asset tagged
+  `toolchain-<llvm>-<swift|noswift>-ios<target>-sdk<sdk>` (and as a workflow
+  artifact). It is dispatched by hand or by a pull request that touches
+  `App/NativeToolchain/**`; only a dispatched run publishes, because a run that
+  never built the Swift half must not become "the newest bundle". Its build trees
+  are cached, so a run whose inputs are unchanged finishes in minutes rather than
+  the ~80 minutes a cold build takes.
   See [Docs/NATIVE-TOOLCHAIN.md](Docs/NATIVE-TOOLCHAIN.md).
 - **`ios-share.yml`** — builds the app for the simulator and keeps that simulator
   usable from a machine that is not a Mac, so a build can be tried by hand.
