@@ -350,7 +350,9 @@ enum DarwinSDKBuilder {
         let staging = destination
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         let writer = Writer(staging: staging)
-        try XipArchive.forEachPBZX(at: content, progress: progress) { entry, payload in
+        try XipArchive.forEachPBZX(at: content, progress: { fraction in
+            progress?(Progress(fraction: fraction, message: "Extracting Xcode Content — \(Int(fraction * 100))%"))
+        }) { entry, payload in
             try writer.accept(entry, payload)
         }
         return try writer.finish(progress: progress)
