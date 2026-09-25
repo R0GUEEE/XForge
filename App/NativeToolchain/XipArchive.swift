@@ -358,7 +358,8 @@ enum XipArchive {
         private let stream: BlockStream
         private var remaining: Int64
 
-        init(stream: BlockStream, size: Int64) {
+        /// `private` because `BlockStream` is: only the walk constructs payloads.
+        private init(stream: BlockStream, size: Int64) {
             self.stream = stream
             self.remaining = size
         }
@@ -465,11 +466,22 @@ enum XipArchive {
 
     /// `odc`: magic consumed, then six-digit octal fields.
     private static func odcHeader(from stream: BlockStream) throws -> RawHeader {
-        func octal(_ digits: Int, as type: UInt32.Type = UInt32.self) throws -> UInt32 {
+        func octal(_ digits: Int) throws -> UInt32 {
             let bytes = try stream.read(upTo: digits)
             guard bytes.count == digits,
                   let value = UInt32(String(decoding: bytes, as: UTF8.self), radix: 8) else {
                 throw Error.unsupportedPayload("unreadable cpio field")
+            }
+            return value
+        }
+        // Sizes get their own parse: `odc` gives them eleven octal digits, which is
+        // 33 bits, and reading that into a `UInt32` would fail on exactly the large
+        // files a compiler's SDK is most likely to contain.
+        func sizeField(_ digits: Int) throws -> Int64 {
+            let bytes = try stream.read(upTo: digits)
+            guard bytes.count == digits,
+                  let value = Int64(String(decoding: bytes, as: UTF8.self), radix: 8) else {
+                throw Error.unsupportedPayload("unreadable cpio file size")
             }
             return value
         }
@@ -482,39 +494,39 @@ enum XipArchive {
         _ = try octal(6)  // rdev
         _ = try stream.read(upTo: 11)  // mtime
         let nameLength = try octal(6)
-        let size = try octal(11)
+        let size = try sizeField(11)
 
         return RawHeader(mode: mode, inode: inode, device: device, linkCount: linkCount,
-                         size: Int64(size), nameLength: Int(nameLength), padded: false)
+                         size: size, nameLength: Int(nameLength), padded: false)
     }
 
     /// `newc`: magic consumed, then eight-digit hex fields.
     private static func newcHeader(from stream: BlockStream) throws -> RawHeader {
-        func hex(_ digits: Int) throws -> UInt32 {
+        func hexField<T: FixedWidthInteger>(_ digits: Int, as type: T.Type) throws -> T {
             let bytes = try stream.read(upTo: digits)
             guard bytes.count == digits,
-                  let value = UInt32(String(decoding: bytes, as: UTF8.self), radix: 16) else {
+                  let value = T(String(decoding: bytes, as: UTF8.self), radix: 16) else {
                 throw Error.unsupportedPayload("unreadable cpio field")
             }
             return value
         }
-        let inode = try hex(8)
-        let mode = try hex(8)
-        _ = try hex(8)  // uid
-        _ = try hex(8)  // gid
-        let linkCount = try hex(8)
-        _ = try hex(8)  // mtime
-        let size = try hex(8)
-        let deviceMajor = try hex(8)
-        let deviceMinor = try hex(8)
-        _ = try hex(8)  // rdev major
-        _ = try hex(8)  // rdev minor
-        let nameLength = try hex(8)
-        _ = try hex(8)  // check
+        let inode = try hexField(8, as: UInt32.self)
+        let mode = try hexField(8, as: UInt32.self)
+        _ = try hexField(8, as: UInt32.self)  // uid
+        _ = try hexField(8, as: UInt32.self)  // gid
+        let linkCount = try hexField(8, as: UInt32.self)
+        _ = try hexField(8, as: UInt32.self)  // mtime
+        let size = try hexField(8, as: Int64.self)
+        let deviceMajor = try hexField(8, as: UInt32.self)
+        let deviceMinor = try hexField(8, as: UInt32.self)
+        _ = try hexField(8, as: UInt32.self)  // rdev major
+        _ = try hexField(8, as: UInt32.self)  // rdev minor
+        let nameLength = try hexField(8, as: UInt32.self)
+        _ = try hexField(8, as: UInt32.self)  // check
 
         return RawHeader(mode: mode, inode: inode,
                          device: (deviceMajor << 16) | deviceMinor,
-                         linkCount: linkCount, size: Int64(size),
+                         linkCount: linkCount, size: size,
                          nameLength: Int(nameLength), padded: true)
     }
 
@@ -524,8 +536,7 @@ enum XipArchive {
     static func inflate(_ data: Data, to size: Int, what: String) throws -> Data {
         guard size > 0 else { throw Error.unsupportedPayload("\(what) declares no size") }
         var output = [UInt8](repeating: 0, count: size)
-        let written = compression_decode_buffer(&output, size, [UInt8](data), data.count,
-                                                nil, COMPRESSION_ZLIB)
+        let written = decode(data, into: &output, algorithm: COMPRESSION_ZLIB)
         guard written == size else { throw Error.unsupportedArchive("could not inflate \(what)") }
         return Data(output)
     }
@@ -533,10 +544,20 @@ enum XipArchive {
     /// Raw LZMA2 as pbzx stores it, decoded by Apple's own implementation.
     static func inflateLZMA(_ data: Data, to size: Int) throws -> [UInt8] {
         var output = [UInt8](repeating: 0, count: size)
-        let written = compression_decode_buffer(&output, size, [UInt8](data), data.count,
-                                                nil, COMPRESSION_LZMA)
+        let written = decode(data, into: &output, algorithm: COMPRESSION_LZMA)
         guard written == size else { throw Error.decompressionFailed(Int64(size)) }
         return output
+    }
+
+    /// `compression_decode_buffer`, with the input handed over as a pointer rather
+    /// than relying on the implicit array conversion at the call site.
+    private static func decode(_ data: Data, into output: inout [UInt8],
+                               algorithm: compression_algorithm) -> Int {
+        data.withUnsafeBytes { raw in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return 0 }
+            return compression_decode_buffer(&output, output.count, base, data.count,
+                                             nil, algorithm)
+        }
     }
 }
 

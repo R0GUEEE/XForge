@@ -170,16 +170,22 @@ final class XipArchiveTests: XCTestCase {
 
     private static func zlibEncode(_ data: Data) -> Data? {
         var buffer = [UInt8](repeating: 0, count: data.count + 4_096)
-        let written = compression_encode_buffer(&buffer, buffer.count, [UInt8](data), data.count,
-                                                nil, COMPRESSION_ZLIB)
-        return written > 0 ? Data(buffer[0..<written]) : nil
+        return data.withUnsafeBytes { raw -> Data? in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
+            let written = compression_encode_buffer(&buffer, buffer.count, base, data.count,
+                                                    nil, COMPRESSION_ZLIB)
+            return written > 0 ? Data(buffer[0..<written]) : nil
+        }
     }
 
     private static func lzmaEncode(_ data: Data) -> Data? {
         var buffer = [UInt8](repeating: 0, count: data.count * 2 + 4_096)
-        let written = compression_encode_buffer(&buffer, buffer.count, [UInt8](data), data.count,
-                                                nil, COMPRESSION_LZMA)
-        return written > 0 ? Data(buffer[0..<written]) : nil
+        return data.withUnsafeBytes { raw -> Data? in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return nil }
+            let written = compression_encode_buffer(&buffer, buffer.count, base, data.count,
+                                                    nil, COMPRESSION_LZMA)
+            return written > 0 ? Data(buffer[0..<written]) : nil
+        }
     }
 
     /// Write a synthesized xip into a fresh temporary directory.
@@ -207,8 +213,8 @@ final class XipArchiveTests: XCTestCase {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         try handle.seek(toOffset: UInt64(content.offset))
-        let magic = try handle.read(upToCount: 4)
-        XCTAssertEqual(magic.map { [UInt8]($0) }, Array("pbzx".utf8),
+        let magic = try XCTUnwrap(try handle.read(upToCount: 4))
+        XCTAssertEqual(magic, Data("pbzx".utf8),
                        "the Content member should start at the pbzx stream")
         XCTAssertGreaterThan(content.length, 0)
     }
@@ -367,7 +373,8 @@ final class XipArchiveTests: XCTestCase {
         XCTAssertEqual(triple["sdkRootPath"] as? String, result.sdkRoot)
         XCTAssertEqual(triple["swiftStaticResourcesPath"] as? String,
                        "Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift_static")
-        XCTAssertEqual(try String(contentsOf: bundle.appendingPathComponent("darwin-sdk-version.txt"))
+        XCTAssertEqual(try String(contentsOf: bundle.appendingPathComponent("darwin-sdk-version.txt"),
+                                  encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines), "27.0")
 
         // And the app's own reader resolves it — the assertion that matters, because a
@@ -392,7 +399,8 @@ final class XipArchiveTests: XCTestCase {
             .appendingPathComponent("out", isDirectory: true)
 
         XCTAssertThrowsError(try DarwinSDKBuilder.build(fromXip: url, into: destination)) { error in
-            guard case DarwinSDKBuilder.Error.noiPhoneOSSDK = error else {
+            guard let builderError = error as? DarwinSDKBuilder.Error,
+                  case .noiPhoneOSSDK = builderError else {
                 return XCTFail("expected noiPhoneOSSDK, got \(error)")
             }
         }
