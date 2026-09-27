@@ -21,8 +21,8 @@ enum SystemInfo {
 
     /// Free and total space.
     ///
-    /// Free is the *important usage* figure — the same one the app decides with
-    /// (`XForgeEnvironment.availableBytes`, which guards the Xcode.xip import) — so
+    /// Free is the *important usage* figure — the same one an import decides with
+    /// (`DarwinSDKBuilder.availableBytes`, which guards the `Xcode.xip` build) — so
     /// this screen cannot report space that an import then refuses. The two come
     /// from different APIs and disagree: `systemFreeSize` does not count the space
     /// iOS would free up for you.

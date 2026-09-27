@@ -5,7 +5,14 @@ import Combine
 final class ProjectStore: ObservableObject {
     @Published var projects: [Project] = []
 
-    private static let storageURL = URL(fileURLWithPath: "~/Documents/xforge-projects.json".nsExpandingTildeInPath)
+    /// The project list lives in the app's own Documents directory, resolved the
+    /// way every other path in the app is (`XForgeEnvironment.documentDirectory`)
+    /// rather than through a `~` expansion, which is a second source of truth for
+    /// the same place and silently writes nowhere useful if the container moves.
+    private static var storageURL: URL {
+        XForgeEnvironment.documentDirectory
+            .appendingPathComponent("xforge-projects.json", isDirectory: false)
+    }
 
     init() {
         load()

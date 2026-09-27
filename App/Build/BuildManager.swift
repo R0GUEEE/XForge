@@ -2,8 +2,8 @@ import Foundation
 import Combine
 
 /// Orchestrates the on-device IPA build pipeline. Exposes a `PipelineSnapshot` that
-/// drives the GUI's stage UI. Toolchain checks, dependency resolution, compilation,
-/// packaging, and SDK tooling all run inside Alpine via `BuildExecutor`.
+/// drives the GUI's stage UI. Every stage runs in this process, through the
+/// toolchain linked into the app (`NativeBuildExecutor`).
 @MainActor
 final class BuildManager: ObservableObject {
     let project: Project
@@ -76,33 +76,27 @@ final class BuildManager: ObservableObject {
         } catch { markFailed(.provision, error) }
     }
 
+    /// The Darwin SDK is installed into the app's own container.
+    ///
+    /// It used to be installed by `swift sdk install` inside the guest; the SDK
+    /// bundle is the same artifact either way, so this only had to stop going
+    /// through a guest to get it.
     private func ensureSDK() async {
         let executor = makeExecutor()
         markRunning(.sdk)
         do {
-            // Ask the guest before the network. Every published rootfs ships a
-            // darwin SDK, and the release lookup below is a network call — so a
-            // device that is offline (or rate-limited by the GitHub API) failed a
-            // build at this stage for an SDK it already had. The probe mirrors
-            // ToolchainManager's: `swift sdk list` is a program, so its output goes
-            // to the pipe rather than /dev/null, which this engine kills.
-            let vm = XForgeEnvironment.makeVM()
-            if !vm.isBooted { try await vm.boot() }
-            let installed = try await vm.run(
-                "command -v swift >/dev/null 2>&1 && swift sdk list 2>&1 | grep -qi darwin",
-                environment: nil
-            ) { _ in }
-            if installed == 0 {
-                appendConsole("▸ darwin SDK: already installed in the guest")
+            if NativeSDK.isInstalled {
+                appendConsole("▸ darwin SDK: already installed")
                 markSucceeded(.sdk)
                 return
             }
 
-            // Resolve the published asset first: the darwin SDK lives under its own
-            // `darwin-sdk-*` release series, so `releases/latest/download/…` 404s.
             let url = try await XForgeReleases.darwinSDKURL()
             appendConsole("▸ darwin SDK: \(url.lastPathComponent)")
             try await executor.installSDK(from: .hostedRemote(url))
+            guard NativeSDK.isInstalled else {
+                throw NativeSDKError.missingBundle
+            }
             markSucceeded(.sdk)
         } catch { markFailed(.sdk, error) }
     }
@@ -110,21 +104,22 @@ final class BuildManager: ObservableObject {
     /// Make sure the project exists in the guest and record the app identity the
     /// build should produce. Previously this stage only printed a line and
     /// reported success unconditionally, even after provision had failed.
+    /// Record the app identity the build should produce.
+    ///
+    /// A project is a directory in the app container now, so there is nothing to
+    /// create inside a guest and nothing to copy into one; what remains is the
+    /// check that the directory is really there and the metadata dump that makes a
+    /// failed build reproducible.
     private func configure() async {
         markRunning(.configure)
         do {
-            let vm = XForgeEnvironment.makeVM()
-            if !vm.isBooted { try await vm.boot() }
-
             guard project.hasSafeRootPath else {
                 throw ProjectValidationError.unsafePath
             }
-            let dir = project.rootPath
-            let mkdir = try await vm.run(
-                "mkdir -p \(GuestShell.quote(dir))",
-                environment: nil
-            ) { _ in }
-            guard mkdir == 0 else { throw BuildError.stepFailed("mkdir \(dir)", mkdir) }
+            let root = project.rootURL
+            guard FileManager.default.fileExists(atPath: root.path) else {
+                throw NativeBuildError.missingProjectDirectory(root)
+            }
 
             let metadata = BuildMetadata(
                 bundleIdentifier: appInfo.bundleIdentifier,
@@ -134,14 +129,14 @@ final class BuildManager: ObservableObject {
                 minimumOSVersion: appInfo.minimumOSVersion,
                 configuration: configuration.rawValue
             )
-            let temp = FileManager.default.temporaryDirectory
-                .appendingPathComponent("xforge-app-\(UUID().uuidString).json")
-            try JSONEncoder().encode(metadata).write(to: temp, options: .atomic)
-            defer { try? FileManager.default.removeItem(at: temp) }
-            try await vm.copyIn(hostURL: temp, to: "\(dir)/xforge-app.json")
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent(".xforge-build", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            let record = root.appendingPathComponent(".xforge-build/build.json")
+            try JSONEncoder().encode(metadata).write(to: record, options: .atomic)
 
             appendConsole("▸ bundle \(appInfo.bundleIdentifier) · \(configuration.rawValue)")
-            appendConsole("▸ wrote app identity to \(dir)/xforge-app.json")
             markSucceeded(.configure)
         } catch {
             markFailed(.configure, error)
@@ -187,8 +182,8 @@ final class BuildManager: ObservableObject {
         } catch { markFailed(.compile, error) }
     }
 
-    /// Packaging belongs to xtool inside Alpine. The host receives only the final
-    /// IPA for export; it never runs build or SDK tooling.
+    /// The executor packages the IPA as the last step of compiling, so this stage
+    /// only has to accept the result.
     private func package() async {
         guard let compiled = compiledURL,
               compiled.pathExtension.lowercased() == "ipa" else {
@@ -197,7 +192,7 @@ final class BuildManager: ObservableObject {
         }
         markRunning(.package)
         snapshot.lastIpa = compiled
-        appendConsole("✓ .ipa packaged by xtool inside Alpine")
+        appendConsole("✓ .ipa packaged by the native toolchain")
         markSucceeded(.package)
     }
 
@@ -297,9 +292,9 @@ enum BuildError: LocalizedError {
         case .noArtifact:
             return "The build did not produce an artifact."
         case .notProvisioned:
-            return "The Alpine build toolchain is not installed. Run `sh /root/install-toolchain.sh all` in Terminal."
+            return "The native compiler toolchain is not linked into this build of XForge."
         case .stepFailed(let step, let status):
-            return "\(step) failed inside the embedded Linux (exit \(status))."
+            return "\(step) failed (exit \(status))."
         }
     }
 }

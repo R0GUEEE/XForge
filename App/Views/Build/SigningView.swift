@@ -1,17 +1,21 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Full IPA configure, sign and install surface.
+/// Sign a built IPA with an Apple Developer identity.
 ///
-/// Signing is intentionally performed by zsign inside the Alpine guest. zsign is
-/// a cross-platform C++ signer, not an iOS framework; running it in the guest
-/// keeps the private key on the device, gives the user live command output, and
-/// avoids pretending XKit's currently-unwired Apple-ID service can sign an IPA.
+/// The signing itself is XKit — xtool's own signer — running in this process, so
+/// the private key is read through the Security framework, used, and never written
+/// anywhere. That used to be a `zsign` binary inside the embedded Linux with a
+/// password file on disk; both are gone.
+///
+/// The Apple ID half of xtool (obtaining a certificate, 2FA, provisioning) is a
+/// separate piece of work and is not faked here: this signs with an identity the
+/// user already has.
 struct SigningView: View {
     @ObservedObject var signing: XKitSigningService
     @ObservedObject var device: XKitDeviceService
 
-    @StateObject private var job = IPAConfigureSignService()
+    @StateObject private var job = IPASigningJob()
     @State private var importer: ImportTarget?
     @State private var showPassword = false
 
@@ -35,24 +39,25 @@ struct SigningView: View {
                 fileRow(title: "IPA to sign", url: job.inputIPA, icon: "app.badge") {
                     importer = .ipa
                 }
-                if job.inputIPA != nil {
-                    Text("The original IPA is copied into the guest and never modified in place.")
+                if let ipa = job.inputIPA {
+                    Text("The original is never modified: the signed IPA is written next to it in Documents.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Text(ipa.lastPathComponent).font(.caption).foregroundStyle(.secondary)
                 }
             }
 
             Section("Signing files") {
-                fileRow(title: "Provisioning profile", url: job.provisioningProfile,
-                        icon: "checkmark.seal") { importer = .mobileprovision }
                 fileRow(title: "Certificate / private key (.p12)", url: job.p12,
                         icon: "key.fill") { importer = .p12 }
                 SecureField("PKCS#12 password", text: $job.password)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                fileRow(title: "Provisioning profile (optional)", url: job.provisioningProfile,
+                        icon: "checkmark.seal") { importer = .mobileprovision }
                 fileRow(title: "Entitlements (optional)", url: job.entitlements,
                         icon: "list.bullet.rectangle") { importer = .entitlements }
 
-                Text("Keep the .p12 password private. It is held in memory for this signing job and is never saved to the project or build history.")
+                Text("The password and key stay in memory for this signing job and are never written to disk.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -64,7 +69,7 @@ struct SigningView: View {
                 TextField("Version (optional)", text: $job.version)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
-                Text("Leave a field blank to preserve the IPA's existing value. If you change the bundle identifier, the provisioning profile must authorize it.")
+                Text("Leave a field blank to keep the IPA's existing value. If you change the bundle identifier, the provisioning profile must authorize it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -74,8 +79,7 @@ struct SigningView: View {
                 } label: {
                     HStack {
                         if job.isWorking { ProgressView().controlSize(.small) }
-                        Label(job.isWorking ? "Signing in Alpine…" : "Configure & Sign IPA",
-                              systemImage: "signature")
+                        Label(job.isWorking ? "Signing…" : "Sign IPA", systemImage: "signature")
                         Spacer()
                     }
                 }
@@ -90,73 +94,65 @@ struct SigningView: View {
             } header: {
                 Text("Action")
             } footer: {
-                Text("zsign is installed into the embedded Linux guest on first use. It supports .p12/.pfx keys, .mobileprovision profiles, entitlements, bundle ID/name/version changes, and IPA output.")
+                Text(job.status)
             }
 
-            Section("Status") {
-                Text(job.status).font(.system(.footnote, design: .monospaced))
-                if let error = job.error {
-                    Text(error).foregroundStyle(.red)
+            if let error = job.error {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote).foregroundStyle(.red)
                 }
             }
-        }
-        .navigationTitle("Configure & Sign")
-        .fileImporter(isPresented: Binding(
-            get: { importer != nil },
-            set: { if !$0 { importer = nil } }
-        ), allowedContentTypes: importer?.types ?? [.data], allowsMultipleSelection: false) { result in
-            guard case .success(let urls) = result, let url = urls.first,
-                  let target = importer else { return }
-            do {
-                let localURL = try persistImportedFile(url)
-                switch target {
-                case .ipa: job.inputIPA = localURL
-                case .p12: job.p12 = localURL
-                case .mobileprovision: job.provisioningProfile = localURL
-                case .entitlements: job.entitlements = localURL
+
+            Section {
+                NavigationLink {
+                    InstallView(device: device)
+                } label: {
+                    Label("Install on this device", systemImage: "iphone.and.arrow.forward")
                 }
-            } catch {
-                job.error = "Import failed: \(error.localizedDescription)"
+            } footer: {
+                Text("Installing a signed build needs a device link that an app cannot open by itself; "
+                     + "the Install screen explains the ways that do work on device.")
+            }
+        }
+        .navigationTitle("Signing")
+        .fileImporter(
+            isPresented: Binding(
+                get: { importer != nil },
+                set: { if !$0 { importer = nil } }
+            ),
+            allowedContentTypes: importer?.types ?? [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            switch importer {
+            case .ipa: job.inputIPA = url
+            case .p12: job.p12 = url
+            case .mobileprovision: job.provisioningProfile = url
+            case .entitlements: job.entitlements = url
+            case nil: break
             }
             importer = nil
         }
     }
 
-    /// File-provider URLs returned by UIDocumentPicker are security-scoped and can
-    /// become unreadable as soon as the picker callback returns. Copy the selected
-    /// item into XForge's sandbox while access is active so signing can reliably
-    /// stage it into Alpine later.
-    private func persistImportedFile(_ source: URL) throws -> URL {
-        let scoped = source.startAccessingSecurityScopedResource()
-        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-
-        let directory = XForgeEnvironment.documentDirectory
-            .appendingPathComponent("Signing Imports", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory,
-                                                withIntermediateDirectories: true)
-        let destination = directory.appendingPathComponent(source.lastPathComponent)
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        try FileManager.default.copyItem(at: source, to: destination)
-        return destination
-    }
-
     @ViewBuilder
-    private func fileRow(title: String, url: URL?, icon: String,
-                         choose: @escaping () -> Void) -> some View {
-        Button(action: choose) {
-            HStack(spacing: 12) {
-                Image(systemName: icon).foregroundStyle(.tint).frame(width: 22)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).foregroundStyle(.primary)
-                    Text(url?.lastPathComponent ?? "Choose from Files…")
-                        .font(.caption).foregroundStyle(url == nil ? .secondary : .primary)
-                        .lineLimit(1)
-                }
+    private func fileRow(
+        title: String,
+        url: URL?,
+        icon: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack {
+                Label(title, systemImage: icon)
                 Spacer()
-                Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+                Text(url?.lastPathComponent ?? "Choose…")
+                    .font(.caption)
+                    .foregroundStyle(url == nil ? .secondary : .primary)
+                    .lineLimit(1)
             }
         }
+        .foregroundStyle(.primary)
     }
 }

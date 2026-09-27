@@ -1,24 +1,18 @@
 import SwiftUI
 
-/// iOS-16-compatible empty-state view (replaces iOS 17+ `ContentUnavailableView`).
+/// The app's empty state. iOS 17 has a native `ContentUnavailableView`, so this
+/// only exists to keep the call sites terse; it renders the system view, which
+/// gets Dynamic Type, VoiceOver and the platform's own layout for free.
 struct ContentUnavailableViewCompat: View {
     let title: String
     let systemImage: String
     var message: String = ""
 
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.system(size: 40))
-                .foregroundStyle(.secondary)
-            Text(title).font(.headline)
-            if !message.isEmpty {
-                Text(message)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .padding(32)
+        ContentUnavailableView(
+            title,
+            systemImage: systemImage,
+            description: message.isEmpty ? nil : Text(message)
+        )
     }
 }

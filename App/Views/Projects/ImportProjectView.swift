@@ -1,10 +1,17 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// Sheet for importing an existing SwiftPM package from a git URL.
+/// Import an existing package from the Files app.
+///
+/// This used to `git clone` into the embedded Linux. There is no `git` in an iOS
+/// process and no process to run it in, so the import is now what an app can
+/// actually do: copy a folder the user picked into the projects directory. A
+/// repository can still be fetched with an app that does have git — Working Copy,
+/// or Files' own "Download" on a zip — and imported from there.
 struct ImportProjectView: View {
     @EnvironmentObject private var preferences: AppPreferences
     @Environment(\.dismiss) private var dismiss
-    @State private var gitURL = ""
+    @State private var picked: URL?
     @State private var name = ""
     @State private var orgId = ""
     @State private var isImporting = false
@@ -13,32 +20,49 @@ struct ImportProjectView: View {
     let onImported: (Project) -> Void
 
     private var derivedName: String {
-        name.isEmpty ? (gitURL.split(separator: "/").last?.split(separator: ".").first.map(String.init) ?? "Imported") : name
+        if !name.isEmpty { return name }
+        guard let picked else { return "" }
+        return picked.lastPathComponent
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Repository") {
-                    TextField("https://github.com/you/repo.git", text: $gitURL)
-                        .keyboardType(.URL).autocorrectionDisabled().textInputAutocapitalization(.never)
+                Section("Folder") {
+                    Button {
+                        showingPicker = true
+                    } label: {
+                        Label(picked?.lastPathComponent ?? "Choose a project folder…",
+                              systemImage: "folder")
+                    }
+                    if let picked {
+                        Text(picked.path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
                 }
+
                 Section("Project") {
                     TextField("Name", text: $name)
                     TextField("Organization Identifier", text: $orgId)
                         .keyboardType(.alphabet).autocorrectionDisabled()
                 }
+
                 Section {
                     if isImporting {
-                        HStack { ProgressView(); Text("Cloning into embedded Linux…") }
+                        HStack { ProgressView(); Text("Copying into XForge…") }
                     }
                     if let error {
                         Label(error, systemImage: "exclamationmark.triangle.fill")
                             .font(.footnote).foregroundStyle(.red)
                     }
+                } footer: {
+                    Text("The folder must contain a Package.swift with a Sources/ directory. "
+                         + "It is copied, not moved: the original stays where it is.")
                 }
             }
-            .navigationTitle("Import from Git")
+            .navigationTitle("Import a project")
             .onAppear {
                 if orgId.isEmpty { orgId = preferences.defaultOrgId }
             }
@@ -48,39 +72,59 @@ struct ImportProjectView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Import") { startImport() }
-                        .disabled(gitURL.isEmpty || isImporting)
+                        .disabled(picked == nil || isImporting)
                 }
             }
         }
         .interactiveDismissDisabled(isImporting)
+        .fileImporter(
+            isPresented: $showingPicker,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            picked = url
+            if name.isEmpty { name = url.lastPathComponent }
+        }
     }
 
+    @State private var showingPicker = false
+
     private func startImport() {
+        guard let source = picked else { return }
         isImporting = true
         error = nil
-        let url = gitURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectName = derivedName
         let org = orgId
+
         Task {
             defer { isImporting = false }
             do {
-                let projectName = try Project.validatedName(derivedName)
-                // Clone into the guest; without this the project path does not
-                // exist and every later build step fails.
-                let vm = XForgeEnvironment.makeVM()
-                if !vm.isBooted { try await vm.boot() }
-                let path = Project.path(forValidatedName: projectName)
-                let status = try await vm.run(
-                    "mkdir -p \(GuestShell.quote(Project.projectsRoot)) && "
-                    + "rm -rf \(GuestShell.quote(path)) && "
-                    + "git clone --depth 1 -- \(GuestShell.quote(url)) \(GuestShell.quote(path))",
-                    environment: nil
-                ) { _ in }
-                guard status == 0 else {
-                    throw ImportError.cloneFailed(status, url)
+                let validated = try Project.validatedName(projectName)
+                let accessed = source.startAccessingSecurityScopedResource()
+                defer { if accessed { source.stopAccessingSecurityScopedResource() } }
+
+                let manifest = source.appendingPathComponent("Package.swift")
+                guard FileManager.default.fileExists(atPath: manifest.path) else {
+                    throw ImportError.notAPackage(source.lastPathComponent)
                 }
-                onImported(Project(name: projectName,
-                                   organizationIdentifier: org,
-                                   rootPath: path))
+
+                let project = Project(
+                    name: validated,
+                    organizationIdentifier: org,
+                    rootPath: Project.path(forValidatedName: validated)
+                )
+                let destination = project.rootURL
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(),
+                    withIntermediateDirectories: true
+                )
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    throw ImportError.alreadyExists(validated)
+                }
+                try FileManager.default.copyItem(at: source, to: destination)
+
+                onImported(project)
                 dismiss()
             } catch {
                 self.error = error.localizedDescription
@@ -90,13 +134,15 @@ struct ImportProjectView: View {
 }
 
 enum ImportError: LocalizedError {
-    case cloneFailed(Int32, String)
+    case notAPackage(String)
+    case alreadyExists(String)
 
     var errorDescription: String? {
         switch self {
-        case .cloneFailed(let status, let url):
-            return "git clone failed (exit \(status)) for \(url). Check the URL, and that the "
-                + "embedded Linux has network access."
+        case .notAPackage(let name):
+            return "\(name) has no Package.swift, so it is not a Swift package."
+        case .alreadyExists(let name):
+            return "A project named \(name) already exists. Rename it, or remove the existing one first."
         }
     }
 }

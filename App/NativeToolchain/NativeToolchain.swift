@@ -1,0 +1,250 @@
+import Foundation
+import Darwin
+
+struct NativeToolchainResult: Sendable {
+    let exitCode: Int32
+    let diagnostics: String
+
+    var succeeded: Bool { exitCode == 0 }
+}
+
+enum NativeToolchainError: LocalizedError {
+    case unavailable
+    case io(String)
+    case compile(String)
+    case link(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable:
+            return "The native LLVM/Clang/LLD backend is not linked into this XForge build."
+        case .io(let message):
+            return message
+        case .compile(let message):
+            return "Native compilation failed: \(message)"
+        case .link(let message):
+            return "Native linking failed: \(message)"
+        }
+    }
+}
+
+/// Thin Swift wrapper around the in-process C++ compiler/linker bridge.
+///
+/// There are deliberately no Process/posix_spawn calls here. Once LLVM is linked,
+/// compilation and Mach-O linking happen in XForge's own process on the iPhone.
+enum NativeToolchain {
+    static var isAvailable: Bool { xf_native_toolchain_available() }
+
+    static var version: String {
+        String(cString: xf_native_toolchain_version())
+    }
+
+    static var isSwiftAvailable: Bool {
+        xf_native_swift_available()
+    }
+
+    static func compileC(
+        source: URL,
+        object: URL,
+        sdk: URL,
+        target: String = "arm64-apple-ios17.0.0",
+        language: String = "c"
+    ) throws -> NativeToolchainResult {
+        guard isAvailable else { throw NativeToolchainError.unavailable }
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw NativeToolchainError.io("Source file does not exist: \(source.path)")
+        }
+        guard FileManager.default.fileExists(atPath: sdk.path) else {
+            throw NativeToolchainError.io("iPhoneOS SDK does not exist: \(sdk.path)")
+        }
+
+        var diagnostics = [CChar](repeating: 0, count: 64 * 1024)
+        let diagnosticsCapacity = diagnostics.count
+        let code: Int32 = source.path.withCString { sourcePath in
+            object.path.withCString { objectPath in
+                sdk.path.withCString { sdkPath in
+                    target.withCString { targetTriple in
+                        language.withCString { lang in
+                            Int32(xf_native_clang_compile(
+                                sourcePath,
+                                objectPath,
+                                sdkPath,
+                                targetTriple,
+                                lang,
+                                &diagnostics,
+                                diagnosticsCapacity
+                            ))
+                        }
+                    }
+                }
+            }
+        }
+        return NativeToolchainResult(
+            exitCode: code,
+            diagnostics: String(cString: diagnostics)
+        )
+    }
+
+    static func compileSwift(
+        source: URL,
+        object: URL,
+        sdk: NativeSDKLayout,
+        target: String = "arm64-apple-ios17.0.0",
+        moduleName: String = "XForgeModule"
+    ) throws -> NativeToolchainResult {
+        guard isSwiftAvailable else { throw NativeToolchainError.unavailable }
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw NativeToolchainError.io("Swift source file does not exist: \(source.path)")
+        }
+        guard let swiftResources = sdk.swiftResources else {
+            throw NativeToolchainError.io("Darwin SDK does not define swiftResourcesPath.")
+        }
+
+        let arguments = [
+            "-c",
+            source.path,
+            "-target", target,
+            "-sdk", sdk.sdkRoot.path,
+            "-resource-dir", swiftResources.path,
+            "-module-name", moduleName,
+            "-o", object.path
+        ]
+
+        let duplicated: [UnsafeMutablePointer<CChar>] = arguments.compactMap { strdup($0) }
+        defer { duplicated.forEach { free($0) } }
+        guard duplicated.count == arguments.count else {
+            throw NativeToolchainError.io("Could not allocate Swift frontend arguments.")
+        }
+
+        let argv: [UnsafePointer<CChar>?] = duplicated.map { UnsafePointer($0) }
+        var diagnostics = [CChar](repeating: 0, count: 64 * 1024)
+        let diagnosticsCapacity = diagnostics.count
+        let code = argv.withUnsafeBufferPointer { buffer -> Int32 in
+            Int32(xf_native_swift_frontend(
+                Int32(arguments.count),
+                buffer.baseAddress,
+                &diagnostics,
+                diagnosticsCapacity
+            ))
+        }
+        return NativeToolchainResult(
+            exitCode: code,
+            diagnostics: String(cString: diagnostics)
+        )
+    }
+
+    static func linkMachO(arguments: [String]) throws -> NativeToolchainResult {
+        guard isAvailable else { throw NativeToolchainError.unavailable }
+        guard !arguments.isEmpty else {
+            throw NativeToolchainError.link("No LLD arguments were supplied.")
+        }
+
+        return try marshal(arguments, tool: "ld64.lld", failure: {
+            NativeToolchainError.link($0)
+        }) { argc, argv, diagnostics, capacity in
+            xf_native_lld_link(argc, argv, diagnostics, capacity)
+        }
+    }
+
+    /// Compile through `swift::performFrontend` with a caller-supplied argument
+    /// list.
+    ///
+    /// The argument list is built by `NativeToolchainInvocation`, not here: it is
+    /// pure, so it can be unit-tested on a simulator, where this call cannot even
+    /// be linked. The convention `performFrontend` expects is documented there.
+    static func runSwiftFrontend(arguments: [String]) throws -> NativeToolchainResult {
+        guard isAvailable, isSwiftAvailable else {
+            throw NativeToolchainError.unavailable
+        }
+        guard !arguments.isEmpty else {
+            throw NativeToolchainError.compile("No swift-frontend arguments were supplied.")
+        }
+        return try marshal(arguments, tool: "swift-frontend", failure: {
+            NativeToolchainError.compile($0)
+        }) { argc, argv, diagnostics, capacity in
+            xf_native_swift_frontend(argc, argv, diagnostics, capacity)
+        }
+    }
+
+    /// Marshal a Swift `[String]` into the C ABI's `char *const *` and collect the
+    /// diagnostics buffer both entry points share.
+    private static func marshal(
+        _ arguments: [String],
+        tool: String,
+        failure: (String) -> Error,
+        body: (Int32, UnsafePointer<UnsafePointer<CChar>?>?, UnsafeMutablePointer<CChar>, Int) -> Int32
+    ) throws -> NativeToolchainResult {
+        let duplicated: [UnsafeMutablePointer<CChar>] = arguments.compactMap { strdup($0) }
+        defer { duplicated.forEach { free($0) } }
+        guard duplicated.count == arguments.count else {
+            throw failure("Could not allocate \(tool) arguments.")
+        }
+
+        let argv: [UnsafePointer<CChar>?] = duplicated.map { UnsafePointer($0) }
+        var diagnostics = [CChar](repeating: 0, count: 64 * 1024)
+        let diagnosticsCapacity = diagnostics.count
+        let code = argv.withUnsafeBufferPointer { buffer -> Int32 in
+            diagnostics.withUnsafeMutableBufferPointer { storage in
+                body(
+                    Int32(arguments.count),
+                    buffer.baseAddress,
+                    storage.baseAddress!,
+                    diagnosticsCapacity
+                )
+            }
+        }
+        return NativeToolchainResult(
+            exitCode: code,
+            diagnostics: String(cString: diagnostics)
+        )
+    }
+
+    /// End-to-end C smoke test used before wiring the native backend into normal projects.
+    /// Produces an arm64 iOS object file entirely in-process.
+    static func smokeCompile(sdk: URL) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xforge-native-smoke-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let source = dir.appendingPathComponent("main.c")
+        let object = dir.appendingPathComponent("main.o")
+        // A real entry point, so the object can also be *linked*: a smoke test
+        // that only compiles cannot tell a working toolchain from one that can
+        // produce an object the linker rejects.
+        try "int main(void) { return 0; }\nint xforge_native_smoke(void) { return 42; }\n"
+            .write(to: source, atomically: true, encoding: .utf8)
+
+        let result = try compileC(source: source, object: object, sdk: sdk)
+        guard result.succeeded else {
+            throw NativeToolchainError.compile(result.diagnostics)
+        }
+        guard FileManager.default.fileExists(atPath: object.path) else {
+            throw NativeToolchainError.compile("Clang returned success but produced no object file.")
+        }
+        return object
+    }
+
+    static func smokeCompileSwift(sdk: NativeSDKLayout) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xforge-native-swift-smoke-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let source = dir.appendingPathComponent("Smoke.swift")
+        let object = dir.appendingPathComponent("Smoke.o")
+        try """
+        public func xforgeNativeSwiftSmoke() -> Int {
+            42
+        }
+        """
+        .write(to: source, atomically: true, encoding: .utf8)
+
+        let result = try compileSwift(source: source, object: object, sdk: sdk, moduleName: "XForgeSmoke")
+        guard result.succeeded else {
+            throw NativeToolchainError.compile(result.diagnostics)
+        }
+        guard FileManager.default.fileExists(atPath: object.path) else {
+            throw NativeToolchainError.compile("Swift frontend returned success but produced no object file.")
+        }
+        return object
+    }
+}

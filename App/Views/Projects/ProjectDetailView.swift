@@ -39,7 +39,6 @@ private struct OverviewSection: View {
     let project: Project
     @State private var showingFiles = false
     @State private var showingInfo = false
-    @State private var showingDeps = false
     @State private var exporting = false
     @State private var exportedArchive: URL?
     @State private var exportError: String?
@@ -74,16 +73,12 @@ private struct OverviewSection: View {
                 store.update(p)
             }
         }
-        .sheet(isPresented: $showingDeps) {
-            NavigationStack { DependenciesView(project: project) }
-        }
     }
 
     private var toolsRow: some View {
         HStack(spacing: 12) {
             toolButton("Files", icon: "folder", action: { showingFiles = true })
             toolButton("App Info", icon: "doc.badge.gearshape", action: { showingInfo = true })
-            toolButton("Dependencies", icon: "shippingbox", action: { showingDeps = true })
             Spacer()
         }
         .padding(.horizontal).padding(.bottom, 10)
@@ -187,7 +182,7 @@ private struct OverviewSection: View {
                 .buttonStyle(.bordered)
             } else {
                 Button {
-                    Task { await exportProject() }
+                    exportProject()
                 } label: {
                     Label(exporting ? "Exporting…" : "Export project",
                           systemImage: "archivebox")
@@ -207,14 +202,12 @@ private struct OverviewSection: View {
         }
     }
 
-    /// Archive the project inside the guest and stage it for sharing.
-    private func exportProject() async {
+    /// Archive the project's directory and stage it for sharing.
+    private func exportProject() {
         exporting = true
         defer { exporting = false }
         do {
-            let vm = XForgeEnvironment.makeVM()
-            await vm.prepareRootfs()
-            exportedArchive = try await ProjectExporter.export(project, via: vm)
+            exportedArchive = try ProjectExporter.export(project)
         } catch {
             exportError = error.localizedDescription
         }
