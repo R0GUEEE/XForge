@@ -573,12 +573,16 @@ enum XipArchive {
     static func inflate(_ data: Data, to size: Int, what: String) throws -> Data {
         guard size > 0 else { throw Error.unsupportedPayload("\(what) declares no size") }
 
-        if let output = inflateRawDeflate(data, to: size) { return output }
-
+        // A zlib-wrapped stream can also look like a valid *raw* DEFLATE stream
+        // to permissive decoders and yield the right byte count but corrupt bytes.
+        // Prefer the RFC 1950 interpretation when the wrapper is valid, then try
+        // raw DEFLATE for re-packaged archives that omit it.
         if let deflate = zlibDeflatePayload(in: data),
            let output = inflateRawDeflate(deflate, to: size) {
             return output
         }
+
+        if let output = inflateRawDeflate(data, to: size) { return output }
 
         // Stored rather than compressed: a TOC is XML, and it starts with '<'.
         if data.count == size, data.first == UInt8(ascii: "<") { return data }
