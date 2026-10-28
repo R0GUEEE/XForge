@@ -96,7 +96,7 @@ struct XcodeProjectDetailView: View {
         } else if let summary, !summary.targets.isEmpty {
             List {
                 Section {
-                    ForEach(summary.targets) { target in
+                    ForEach(summary.targets, id: \.id) { target in
                         targetRow(target)
                     }
                 } header: {
