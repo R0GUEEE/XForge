@@ -143,6 +143,25 @@ final class NativeBuildTests: XCTestCase {
         }
     }
 
+    func testSupportedDependencyRequiresFetchedSnapshot() throws {
+        let manifest = """
+        // swift-tools-version: 6.0
+        import PackageDescription
+        let package = Package(name: "Demo", dependencies: [.package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.19")], targets: [.executableTarget(name: "Demo")])
+        """
+        let project = try writePackage(packageSwift: manifest)
+        let revision = NativeBuildPlanFactory.zipFoundationSupportedRevision
+        let lock = """
+        {"version":3,"pins":[{"identity":"zipfoundation","kind":"remoteSourceControl","location":"https://github.com/weichsel/ZIPFoundation","state":{"revision":"\(revision)","version":"0.9.19"}}]}
+        """
+        try Data(lock.utf8).write(to: project.appendingPathComponent("Package.resolved"))
+        XCTAssertThrowsError(try NativeBuildPlanFactory.makePlan(root: project, appInfo: appInfo(), configuration: .debug, sdk: sdkFixture())) { error in
+            guard case NativeBuildPlanError.dependencySourceMissing = error else {
+                return XCTFail("expected source cache missing, got \(error)")
+            }
+        }
+    }
+
     func testPlanStillRejectsDifferentOrMismatchedDependencyPins() throws {
         let manifest = """
         // swift-tools-version: 6.0

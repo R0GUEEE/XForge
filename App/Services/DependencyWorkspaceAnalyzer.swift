@@ -5,6 +5,7 @@ import Foundation
 enum DependencyCapability: String, Codable, Sendable {
     case ready
     case fetchable
+    case partial
     case unsupported
     case unknown
 }
