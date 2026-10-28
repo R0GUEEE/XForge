@@ -215,10 +215,7 @@ make icon        # rewrites Support/Assets.xcassets
 
 ## Continuous integration
 
-- **`build-ipa.yml`** — runs the unit tests, archives the app unsigned
-  (`CODE_SIGNING_ALLOWED=NO`), verifies the built app and the final IPA, and
-  publishes the unsigned IPA for sideloading. It runs `prepare-xcode.sh` too, so CI
-  never depends on a toolchain bundle being installed in the checkout.
+- **`build-ipa.yml`** — reuses checksum/tag-keyed caches for the native toolchain, optional pinned Darwin SDK archive, Swift package clones, and Xcode DerivedData; it lets `xcodebuild test` / `archive` perform normal package resolution instead of launching a separate resolver invocation. Simulator tests are still opt-in, release publishing remains separately gated, and the build verifies the final unsigned IPA.
 - **`native-toolchain.yml`** — cross-builds LLVM's Clang and Mach-O LLD for
   iPhoneOS (and, with `with_swift=true`, Swift's frontend libraries) on a macOS
   runner, merges the static archives into one, compile-checks and link-checks
