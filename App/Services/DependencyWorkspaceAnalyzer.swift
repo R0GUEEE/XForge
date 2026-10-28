@@ -41,7 +41,6 @@ struct DependencyWorkspaceReport: Sendable {
                 && !installedIdentities.contains(pin.identity)
         }
     }
-    var buildSupported: Bool { false }
 }
 
 /// A bounded, read-only analyzer. It never interprets Package.swift or runs a
