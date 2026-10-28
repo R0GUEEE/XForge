@@ -166,9 +166,11 @@ enum XcodeProjectReader {
             guard visited.insert(id).inserted,
                   let element = objects[id]?.dictionaryValue else { return }
             let component = element["path"]?.stringValue ?? element["name"]?.stringValue ?? ""
+            let sourceTree = element["sourceTree"]?.stringValue ?? "<group>"
+            let parent = sourceTree == "<group>" ? prefix : ""
             let full = component.isEmpty
-                ? prefix
-                : (prefix.isEmpty ? component : prefix + "/" + component)
+                ? parent
+                : (parent.isEmpty ? component : parent + "/" + component)
             paths[id] = full
             for child in element["children"]?.arrayValue ?? [] {
                 if let childID = child.stringValue { walk(childID, prefix: full) }
