@@ -147,7 +147,20 @@ final class XipArchiveTests: XCTestCase {
     /// The `<archived-checksum>` is not decoration: it carries an `<offset>` of its
     /// own, and a reader that takes the last offset it sees points the payload at the
     /// checksum. A real xip's TOC has one, so this fixture does too.
-    private static func xar(content: Data) -> Data {
+    ///
+    /// The TOC is a **zlib stream** by default, because that is the only thing
+    /// libxar writes: `deflateInit(&zs, Z_BEST_COMPRESSION)` produces RFC 1950, not
+    /// raw DEFLATE, and a fixture that skips the container is not a fixture of a
+    /// real xip. `toc:` exists so the two shapes a reader may also meet — raw
+    /// DEFLATE from a repackager, and a TOC that was never compressed — can be
+    /// built and refused or accepted deliberately.
+    private enum TOCCompression {
+        case zlib
+        case rawDeflate
+        case stored
+    }
+
+    private static func xar(content: Data, toc compression: TOCCompression = .zlib) -> Data {
         let toc = """
         <?xml version="1.0" encoding="UTF-8"?>
         <xar><toc><creation-time>0</creation-time><file><name>Content</name><type>file</type>\
@@ -156,16 +169,48 @@ final class XipArchiveTests: XCTestCase {
         <size>20</size></archived-checksum></file></toc></xar>
         """
         let tocData = Data(toc.utf8)
-        let compressed = zlibEncode(tocData) ?? tocData
+        let deflate = zlibEncode(tocData) ?? tocData
+        let packed: Data
+        switch compression {
+        case .zlib: packed = zlibWrapped(deflate, of: tocData)
+        case .rawDeflate: packed = deflate
+        case .stored: packed = tocData
+        }
         var out = Data("xar!".utf8)
         out += bigEndian(UInt16(28), 2)
         out += bigEndian(UInt16(1), 2)
-        out += bigEndian(UInt64(compressed.count), 8)
+        out += bigEndian(UInt64(packed.count), 8)
         out += bigEndian(UInt64(tocData.count), 8)
         out += bigEndian(UInt32(0), 4)
-        out += compressed
+        out += packed
         out += content
         return out
+    }
+
+    /// Put raw DEFLATE inside the RFC 1950 container `deflateInit` writes: the
+    /// two-byte CMF/FLG header (`0x78 0xDA` — DEFLATE, 32 KB window, level 9, and
+    /// `0x78DA % 31 == 0` as zlib requires) and the Adler-32 trailer.
+    ///
+    /// Apple's encoder produces only the DEFLATE half — `COMPRESSION_ZLIB` is raw
+    /// DEFLATE — so the container has to be built here. That asymmetry is the bug:
+    /// the old reader asked `COMPRESSION_ZLIB` to decode a container it cannot read.
+    private static func zlibWrapped(_ deflate: Data, of original: Data) -> Data {
+        var out = Data([0x78, 0xDA])
+        out += deflate
+        let checksum = adler32(original)
+        out += Data([UInt8((checksum >> 24) & 0xFF), UInt8((checksum >> 16) & 0xFF),
+                     UInt8((checksum >> 8) & 0xFF), UInt8(checksum & 0xFF)])
+        return out
+    }
+
+    private static func adler32(_ data: Data) -> UInt32 {
+        var a: UInt32 = 1
+        var b: UInt32 = 0
+        for byte in data {
+            a = (a + UInt32(byte)) % 65521
+            b = (b + a) % 65521
+        }
+        return (b << 16) | a
     }
 
     private static func bigEndian<T: FixedWidthInteger>(_ value: T, _ width: Int) -> Data {
@@ -240,6 +285,125 @@ final class XipArchiveTests: XCTestCase {
                 return XCTFail("expected notAXip, got \(error)")
             }
         }
+    }
+
+    /// A .zip handed to the importer says it is a .zip. The toolchain picker accepts
+    /// `.zip` as a type, and "not an Apple .xip" is the wrong sentence for a file
+    /// whose first bytes say exactly what it is.
+    func testRejectsAZipArchiveWithItsOwnMessage() throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Xcode.zip-\(UUID().uuidString)")
+        var data = Data([0x50, 0x4B, 0x03, 0x04])
+        data += Data(repeating: 0, count: 64)
+        try data.write(to: url)
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertThrowsError(try XipArchive.content(of: url)) { error in
+            guard let xipError = error as? XipArchive.Error,
+                  case .isAZipArchive = xipError else {
+                return XCTFail("expected isAZipArchive, got \(error)")
+            }
+        }
+    }
+
+    // MARK: - The table of contents
+
+    /// The regression: every real `.xip` has a TOC that is a **zlib stream**, and the
+    /// reader used to hand it to `COMPRESSION_ZLIB`, which is raw DEFLATE and reads
+    /// the two-byte container header as a DEFLATE block header. The decode wrote
+    /// nothing and the whole archive was reported as
+    /// "Unsupported .xip structure: could not inflate the table of contents".
+    ///
+    /// `makeXip()` builds that shape now, so this test states the property directly
+    /// as well: the TOC bytes after the 28-byte header are an RFC 1950 stream, the
+    /// payload `zlibDeflatePayload` extracts is what decodes, and the `Content` member
+    /// is found where the heap says it is.
+    func testLocatesContentInAXipWhoseTableOfContentsIsAZlibStream() throws {
+        let payload = Self.pbzx(Self.cpio(Self.fakeXcode()))
+        let archive = Self.xar(content: payload, toc: .zlib)
+        let url = try writeXip(archive)
+
+        // Byte-for-byte, the shape libxar writes.
+        let tocCompressed = 28 + Int(Self.bigEndianRead(archive, at: 8, width: 8))
+        let toc = archive.subdata(in: 28..<tocCompressed)
+        XCTAssertEqual(Array(toc.prefix(2)), [0x78, 0xDA],
+                       "a xar TOC is a zlib stream, not raw DEFLATE")
+        XCTAssertEqual((Int(toc[0]) << 8 | Int(toc[1])) % 31, 0,
+                       "the zlib header must satisfy zlib's own check")
+        XCTAssertEqual(Array(toc.prefix(6)).prefix(2), [0x78, 0xDA].prefix(2))
+
+        // The reader's own split of the container: header and Adler-32 dropped.
+        let deflate = try XCTUnwrap(XipArchive.zlibDeflatePayload(in: toc))
+        XCTAssertEqual(deflate.count, toc.count - 6)
+
+        let content = try XipArchive.content(of: url)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(content.offset))
+        XCTAssertEqual(try handle.read(upToCount: 4), Data("pbzx".utf8))
+
+        // And the TOC really parses: the member is the one the heap points at.
+        XCTAssertEqual(content.length, Int64(payload.count))
+    }
+
+    /// The two shapes a reader may also meet, kept working:
+    ///
+    ///  - raw DEFLATE, which is what a fixture built with Apple's encoder holds and
+    ///    what some repackagers write; and
+    ///  - a TOC that was never compressed, where `toc_length_compressed` equals
+    ///    `toc_length_uncompressed` and the XML is stored as it stands.
+    func testAcceptsRawDeflateAndStoredTableOfContents() throws {
+        for compression in [Self.TOCCompression.rawDeflate, .stored] {
+            let url = try writeXip(Self.xar(content: Self.pbzx(Self.cpio(Self.fakeXcode())),
+                                            toc: compression))
+            let content = try XipArchive.content(of: url)
+            var count = 0
+            try XipArchive.forEachEntry(in: url, content: content) { _, _ in count += 1 }
+            XCTAssertGreaterThan(count, 10, "the \(compression) TOC should still parse")
+        }
+    }
+
+    /// Bytes that are not a xip at all still fail, and fail as a *structure* problem
+    /// rather than silently pointing the payload at nothing.
+    func testRejectsATableOfContentsItCannotInflate() throws {
+        var archive = Data("xar!".utf8)
+        let junk = Data([0x78, 0xDA, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05])
+        archive += Self.bigEndian(UInt16(28), 2)
+        archive += Self.bigEndian(UInt16(1), 2)
+        archive += Self.bigEndian(UInt64(junk.count), 8)
+        archive += Self.bigEndian(UInt64(4_096), 8)   // a lie about the size
+        archive += Self.bigEndian(UInt32(1), 4)
+        archive += junk
+        let url = try writeXip(archive)
+
+        XCTAssertThrowsError(try XipArchive.content(of: url)) { error in
+            guard let xipError = error as? XipArchive.Error,
+                  case .unsupportedArchive(let detail) = xipError else {
+                return XCTFail("expected unsupportedArchive, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("could not inflate the table of contents"), detail)
+        }
+    }
+
+    /// `zlibDeflatePayload` is a two-byte judgement, so the two ways to be wrong are
+    /// worth pinning: a pair of bytes that is not a zlib header is not one, and a
+    /// stream with FDICT set has four more bytes of header to skip.
+    func testZlibDeflatePayloadRecognisesOnlyZlibStreams() {
+        XCTAssertNil(XipArchive.zlibDeflatePayload(in: Data([0x1F, 0x8B, 0x08, 0x00])))
+        XCTAssertNil(XipArchive.zlibDeflatePayload(in: Data([0x78, 0xDA])), "no payload")
+        XCTAssertNil(XipArchive.zlibDeflatePayload(in: Data()), "empty")
+
+        // CMF 0x78, FLG 0x20 | 0x20? — build one by hand: CM=8, CINFO=7, FDICT set,
+        // and a header that passes the %31 check.
+        var dictionary: [UInt8] = [0x78, 0x00]
+        // (0x78 << 8 | 0x20) = 0x7820, 0x7820 % 31 = 4, so FLG needs 0x27 for 0x7827.
+        dictionary[1] = (0x78 << 8 % 0x100) == 0 ? 0x27 : 0x27
+        var stream = Data(dictionary)
+        stream += Data(repeating: 0, count: 4)     // dictionary id
+        stream += Data([0x03, 0x00])               // a stored, empty DEFLATE block
+        stream += Data(repeating: 0, count: 4)     // Adler-32
+        let payload = XipArchive.zlibDeflatePayload(in: stream)
+        XCTAssertEqual(payload?.count, 2, "FDICT moves the payload start by four bytes")
     }
 
     // MARK: - The pbzx and cpio layers

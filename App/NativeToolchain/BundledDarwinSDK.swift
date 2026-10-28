@@ -134,6 +134,9 @@ enum BundledDarwinSDK {
         case integrity(String)
         case notEnoughSpace(needed: Int64, available: Int64)
         case noBundleInsideArchive(String)
+        /// The archive holds an entry or a symlink that would land outside the
+        /// staging directory. Refused before anything is extracted.
+        case unsafeContent(String)
         case installFailed(String)
 
         var errorDescription: String? {
@@ -155,6 +158,9 @@ enum BundledDarwinSDK {
             case .noBundleInsideArchive(let name):
                 return "\(name) does not contain a darwin.artifactbundle "
                     + "(no swift-sdk.json inside)."
+            case .unsafeContent(let detail):
+                return "The bundled Darwin SDK cannot be unpacked safely: \(detail). "
+                    + "Nothing was installed; reinstall XForge from a fresh download."
             case .installFailed(let message):
                 return "The bundled Darwin SDK could not be installed: \(message)"
             }
@@ -552,12 +558,12 @@ enum BundledDarwinSDK {
     /// root, and a single wrapper directory. Anything else is refused rather than
     /// guessed at.
     ///
-    /// `ZIPFoundation` normalises entry paths and refuses traversal outside the
-    /// destination, so nothing here has to re-implement that.
+    /// Unpacking goes through `extract(_:into:)` rather than
+    /// `FileManager.unzipItem(at:to:)`, because the published archive carries
+    /// symlinks that `unzipItem` refuses — see that function for which and why.
     static func unpack(_ archive: URL, into root: URL) throws -> URL {
         let fm = FileManager.default
-        try fm.createDirectory(at: root, withIntermediateDirectories: true)
-        try fm.unzipItem(at: archive, to: root)
+        try extract(archive, into: root)
 
         let direct = root.appendingPathComponent(bundleDirectoryName, isDirectory: true)
         if fm.fileExists(atPath: direct.appendingPathComponent("swift-sdk.json").path) {
@@ -572,6 +578,111 @@ enum BundledDarwinSDK {
         }.map { root.appendingPathComponent($0).deletingLastPathComponent() }
         if candidates.count == 1 { return candidates[0] }
         throw Error.noBundleInsideArchive(archive.lastPathComponent)
+    }
+
+    // MARK: - Unpacking
+
+    /// Unpack every entry of `archiveURL` into `root`, holding symlinks back until
+    /// the rest of the tree is on disk.
+    ///
+    /// **Why not `FileManager.unzipItem(at:to:)`.** Since 0.9.x, ZIPFoundation
+    /// refuses any symbolic link whose target resolves outside the link's *own
+    /// directory* (`Archive.ArchiveError.uncontainedSymlink` — the last case of that
+    /// enum, which is why an unhandled failure surfaces as "ArchiveError error 14").
+    /// The pinned `darwin.artifactbundle.zip` is a Finder/`ditto` archive of a real
+    /// Xcode SDK, and 26 of its 93 symlinks are relative links that step up out of
+    /// their directory and back in:
+    ///
+    ///     usr/include/libxml2/libxml       -> ../libxml
+    ///     usr/include/arpa/nameser.h       -> ../nameser.h
+    ///     usr/lib/libextension.tbd         -> ../../System/Library/…/Foundation.tbd
+    ///     …/Frameworks/XCTest.framework    -> ../../../../../Library/Frameworks/XCTest.framework
+    ///
+    /// Every one of them stays inside `darwin.artifactbundle`, but entry 1 256 of
+    /// 13 240 (`…/usr/include/libxml2/libxml`) is one of the 26, so `unzipItem`
+    /// stops there and the install fails with nothing written.
+    ///
+    /// `allowUncontainedSymlinks: true` would accept the archive, but it also accepts
+    /// links pointing anywhere — and `unzipItem` creates them while the remaining
+    /// ~12 000 entries are still being written, so a link to `/` plus a later
+    /// `link/path` entry writes outside the destination. Here the links are merely
+    /// *recorded* while entries are read, each target is checked against `root`, and
+    /// the links are created last, after every file and directory exists. Nothing can
+    /// be written through a link that does not exist yet.
+    private static func extract(_ archiveURL: URL, into root: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        guard let archive = try? Archive(url: archiveURL, accessMode: .read) else {
+            throw Error.installFailed("\(archiveURL.lastPathComponent) is not a readable zip archive")
+        }
+
+        var links: [(url: URL, target: String)] = []
+        for entry in archive {
+            // Absolute and `..`-bearing entry names are the traversal case
+            // ZIPFoundation's own `unzipItem` already guards; keep the guard, since
+            // extraction no longer goes through it.
+            let path = entry.path.hasPrefix("/") ? String(entry.path.drop(while: { $0 == "/" })) : entry.path
+            let destination = root.appendingPathComponent(path)
+            guard isContained(destination, in: root) else {
+                throw Error.unsafeContent("an entry is named \(entry.path), which would be "
+                                          + "written outside the SDK")
+            }
+
+            switch entry.type {
+            case .symlink:
+                var raw = Data()
+                _ = try archive.extract(entry, bufferSize: 64 * 1024, skipCRC32: false) { raw.append($0) }
+                guard let target = String(data: raw, encoding: .utf8) else {
+                    throw Error.unsafeContent("the symbolic link at \(relative(destination, to: root)) "
+                                              + "does not name a UTF-8 target")
+                }
+                guard isContained(resolving: target, at: destination, in: root) else {
+                    throw Error.unsafeContent("the symbolic link at \(relative(destination, to: root)) "
+                                              + "points to \(target), which is outside the SDK")
+                }
+                links.append((destination, target))
+            case .file, .directory:
+                _ = try archive.extract(entry, to: destination)
+            }
+        }
+
+        for link in links {
+            try fm.createDirectory(at: link.url.deletingLastPathComponent(),
+                                   withIntermediateDirectories: true)
+            try fm.createSymbolicLink(atPath: link.url.path, withDestinationPath: link.target)
+        }
+    }
+
+    /// Lexical containment: `candidate` is `base` or lives inside it.
+    ///
+    /// Standardising removes `.`/`..` without touching the filesystem, which is the
+    /// point: the tree is only half-written when entries are checked, and on iOS the
+    /// staging directory's own path runs through `/var`, a symlink to `/private/var`
+    /// — resolving links here would compare two spellings of the same directory.
+    static func isContained(_ candidate: URL, in base: URL) -> Bool {
+        let basePath = base.standardizedFileURL.path
+        let candidatePath = candidate.standardizedFileURL.path
+        let prefix = basePath.hasSuffix("/") ? basePath : basePath + "/"
+        return candidatePath == basePath || candidatePath.hasPrefix(prefix)
+    }
+
+    /// Whether a link at `url` whose target is `target` stays inside `root`.
+    ///
+    /// Absolute targets are refused outright: the staging directory is temporary and
+    /// `NativeSDK.commit` *moves* the tree, so a link into the staging path would
+    /// dangle once the SDK is in place.
+    static func isContained(resolving target: String, at url: URL, in root: URL) -> Bool {
+        guard !target.isEmpty, !(target as NSString).isAbsolutePath else { return false }
+        let resolved = URL(fileURLWithPath: target, relativeTo: url.deletingLastPathComponent())
+        return isContained(resolved.standardizedFileURL, in: root)
+    }
+
+    /// `url` relative to `base`, for messages.
+    static func relative(_ url: URL, to base: URL) -> String {
+        let basePath = base.standardizedFileURL.path
+        let prefix = basePath.hasSuffix("/") ? basePath : basePath + "/"
+        let path = url.standardizedFileURL.path
+        return path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
     }
 
     /// Free space on the volume `url` lives on (0 when it cannot be read).

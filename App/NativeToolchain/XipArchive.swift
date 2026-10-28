@@ -62,6 +62,7 @@ enum XipArchive {
 
     enum Error: LocalizedError {
         case notAXip
+        case isAZipArchive
         case unsupportedArchive(String)
         case noContentMember
         case unsupportedPayload(String)
@@ -72,6 +73,9 @@ enum XipArchive {
             switch self {
             case .notAXip:
                 return "That file is not an Apple .xip: it does not start with 'xar!'."
+            case .isAZipArchive:
+                return "That file is a .zip archive, not an Apple .xip. Xcode is distributed "
+                    + "as a .xip (a xar archive); a .zip of it has to be unzipped first."
             case .unsupportedArchive(let detail):
                 return "Unsupported .xip structure: \(detail)."
             case .noContentMember:
@@ -108,7 +112,15 @@ enum XipArchive {
             return data
         }
 
-        guard try read(4).elementsEqual(Array("xar!".utf8)) else { throw Error.notAXip }
+        let magic = try read(4)
+        // A .zip is the mistake that actually happens: Xcode is a .xip, but the
+        // toolchain picker accepts `.zip` too, and a zip of Xcode is a ZIP of
+        // Xcode.app, not a xar. Saying so beats "not an Apple .xip".
+        guard !magic.elementsEqual([0x50, 0x4B, 0x03, 0x04]),
+              !magic.elementsEqual([0x50, 0x4B, 0x05, 0x06]) else {
+            throw Error.isAZipArchive
+        }
+        guard magic.elementsEqual(Array("xar!".utf8)) else { throw Error.notAXip }
 
         let headerSize = Int(try read(2).bigEndian(as: UInt16.self))
         let version = try read(2).bigEndian(as: UInt16.self)
@@ -540,16 +552,83 @@ enum XipArchive {
 
     // MARK: - Decompression
 
-    /// zlib inflate into a buffer of the declared size.
+    /// Inflate a xar table of contents into a buffer of the declared size.
+    ///
+    /// The TOC is not raw DEFLATE. libxar writes it with
+    /// `deflateInit(&zs, Z_BEST_COMPRESSION)`, so what sits after the 28-byte header
+    /// is a **zlib stream (RFC 1950)**: a two-byte CMF/FLG header, the DEFLATE data,
+    /// and an Adler-32 of the uncompressed bytes. Apple's `COMPRESSION_ZLIB` is the
+    /// *raw* DEFLATE format (RFC 1951) — its documentation says so — so it does not
+    /// read the container at all: the first two bytes are taken as a DEFLATE block
+    /// header, decoding dies with "invalid stored block lengths", nothing is written,
+    /// and a perfectly good Xcode xip is reported as having an unsupported structure.
+    ///
+    /// So three shapes are tried, in the order that costs least:
+    ///
+    ///  1. the bytes as they are — raw DEFLATE, which is what a fixture built with
+    ///     `compression_encode_buffer` holds and what some repackagers write;
+    ///  2. the bytes with the RFC 1950 wrapper removed — what libxar writes;
+    ///  3. the bytes untouched, when they are the XML itself (`toc_length_compressed`
+    ///     then equals `toc_length_uncompressed`).
     static func inflate(_ data: Data, to size: Int, what: String) throws -> Data {
         guard size > 0 else { throw Error.unsupportedPayload("\(what) declares no size") }
+
+        if let output = inflateRawDeflate(data, to: size) { return output }
+
+        if let deflate = zlibDeflatePayload(in: data),
+           let output = inflateRawDeflate(deflate, to: size) {
+            return output
+        }
+
+        // Stored rather than compressed: a TOC is XML, and it starts with '<'.
+        if data.count == size, data.first == UInt8(ascii: "<") { return data }
+
+        throw Error.unsupportedArchive(
+            "could not inflate \(what) (\(data.count) bytes, expected \(size) bytes back)")
+    }
+
+    /// One `compression_decode_buffer` call, or `nil` when it did not produce exactly
+    /// `size` bytes. The declared size is the only useful check: a TOC is small
+    /// enough to decode whole, and both a truncated buffer and a failed decode end up
+    /// short.
+    private static func inflateRawDeflate(_ data: Data, to size: Int) -> Data? {
+        guard !data.isEmpty, size > 0 else { return nil }
         var output = [UInt8](repeating: 0, count: size)
         let written = decode(data, into: &output, algorithm: COMPRESSION_ZLIB)
-        guard written == size else { throw Error.unsupportedArchive("could not inflate \(what)") }
+        guard written == size else { return nil }
         return Data(output)
     }
 
-    /// An xz stream as pbzx stores it, decoded by Apple's own implementation.
+    /// The DEFLATE payload inside an RFC 1950 zlib stream, or `nil` when `data` is
+    /// not one.
+    ///
+    /// The header is CMF (low nibble 8 for DEFLATE, high nibble the window size
+    /// exponent, at most 7) and FLG (bit 5 set means a four-byte dictionary id
+    /// follows). `(CMF << 8 | FLG) % 31 == 0` is the check zlib itself performs, and
+    /// it is what tells a wrapper from the first two bytes of something else. The
+    /// four-byte Adler-32 trailer is dropped: the DEFLATE decoder stops at the
+    /// end-of-block marker and does not want it.
+    ///
+    /// `internal` rather than `private` so the tests can assert on the ranges.
+    static func zlibDeflatePayload(in data: Data) -> Data? {
+        let head = [UInt8](data.prefix(2))
+        guard head.count == 2 else { return nil }
+        let cmf = head[0]
+        let flg = head[1]
+        guard cmf & 0x0F == 8, cmf >> 4 <= 7,
+              (Int(cmf) << 8 | Int(flg)) % 31 == 0 else { return nil }
+        let start = 2 + (flg & 0x20 != 0 ? 4 : 0)   // FDICT: a dictionary id follows
+        guard data.count > start + 4 else { return nil }
+        return Data(data.dropFirst(start).dropLast(4))
+    }
+
+    /// One xz block, which is what a pbzx block holds.
+    ///
+    /// `limit` is the most the block can decompress to: the chunk size from the
+    /// stream header. A shorter result is not a failure — the **last** block of an
+    /// Xcode xip is short, because the cpio stream ends wherever it ends and not on a
+    /// 16 MB boundary. Nothing downstream depends on a block being full: entry sizes
+    /// come from the cpio headers, and reads span blocks.
     static func inflateLZMA(_ data: Data, to size: Int) throws -> [UInt8] {
         var output = [UInt8](repeating: 0, count: size)
         let written = decode(data, into: &output, algorithm: COMPRESSION_LZMA)
