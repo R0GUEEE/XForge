@@ -570,6 +570,19 @@ enum BundledDarwinSDK {
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles])) ?? []
+        let wrappers = children.filter { child in
+            let values = try? child.resourceValues(forKeys: [.isDirectoryKey])
+            guard values?.isDirectory == true else { return false }
+            return fm.fileExists(atPath: child.appendingPathComponent(bundleDirectoryName)
+                .appendingPathComponent("swift-sdk.json").path)
+                || fm.fileExists(atPath: child.appendingPathComponent("swift-sdk.json").path)
+        }
+        if wrappers.count == 1 {
+            let child = wrappers[0]
+            let nested = child.appendingPathComponent(bundleDirectoryName, isDirectory: true)
+            return fm.fileExists(atPath: nested.appendingPathComponent("swift-sdk.json").path)
+                ? nested : child
+        }
         let candidates = children.filter {
             let metadata = $0.appendingPathComponent("swift-sdk.json")
             return fm.fileExists(atPath: metadata.path)
