@@ -62,7 +62,7 @@ enum ProjectExporter {
     private static func copyContents(of source: URL, to destination: URL,
                                      includeHidden: Bool) throws {
         let fileManager = FileManager.default
-        let excluded: Set<String> = [".xforge-build", ".build", ".swiftpm", ".git"]
+        let excluded: Set<String> = [".xforge-build", ".build", ".swiftpm", ".git", ".xforge-dependencies"]
 
         let entries = try fileManager.contentsOfDirectory(
             at: source,

@@ -20,7 +20,7 @@ struct SnapshotInventory: Codable, Equatable, Sendable {
 
     static func scan(root: URL, extraction: SnapshotExtractionStats? = nil) -> SnapshotInventory {
         let fm = FileManager.default
-        let ignored: Set<String> = [".git", ".build", ".swiftpm", ".xforge-generated", "Pods", "Carthage", "DerivedData", "node_modules"]
+        let ignored: Set<String> = [".git", ".build", ".swiftpm", ".xforge-generated", ".xforge-dependencies", "Pods", "Carthage", "DerivedData", "node_modules"]
         var files = 0, directories = 0
         var bytes: Int64 = 0
         var projects: [String] = [], workspaces: [String] = [], manifests: [String] = []
@@ -46,7 +46,7 @@ struct SnapshotInventory: Codable, Equatable, Sendable {
                 let leaf = url.lastPathComponent
                 if leaf == "Package.swift" {
                     manifests.append(rel)
-                    if let text = try? String(contentsOf: url, encoding: .utf8), text.contains(".package(") {
+                    if let text = boundedText(url, maximumBytes: 512 * 1024), text.contains(".package(") {
                         deps.insert("SwiftPM dependency declarations found; XForge does not evaluate Package.swift")
                     } else {
                         deps.insert("Swift package manifest found; XForge supports only a restricted dependency-free subset")
@@ -56,11 +56,15 @@ struct SnapshotInventory: Codable, Equatable, Sendable {
                 if leaf == ".gitmodules" { deps.insert("Git submodules declared (.gitmodules); GitHub ZIPs omit their contents") }
                 if leaf == "Podfile" { deps.insert("CocoaPods declared; XForge does not run pod install") }
                 if leaf == "Cartfile" { deps.insert("Carthage declared; no Carthage build is available on-device") }
-                if leaf == ".gitattributes", let text = try? String(contentsOf: url, encoding: .utf8), text.localizedCaseInsensitiveContains("filter=lfs") {
+                if leaf == ".gitattributes", let text = boundedText(url, maximumBytes: 256 * 1024), text.localizedCaseInsensitiveContains("filter=lfs") {
                     deps.insert("Git LFS attributes found; pointer files may not be materialized")
                 }
-                if isLFSPointer(url) { lfs.append(rel) }
-                if leaf == "project.pbxproj", let text = try? String(contentsOf: url, encoding: .utf8), text.contains("PBXShellScriptBuildPhase") { scripts.append(rel) }
+                if leaf == "project.pbxproj", let text = boundedText(url, maximumBytes: 8 * 1024 * 1024) {
+                    if text.contains("XCRemoteSwiftPackageReference") || text.contains("XCSwiftPackageProductDependency") {
+                        deps.insert("Xcode project references Swift package products; lockfile pins can be reviewed but the graph is not built")
+                    }
+                    if text.contains("PBXShellScriptBuildPhase") { scripts.append(rel) }
+                }
             }
         }
         if projects.count > 1 {
@@ -75,6 +79,14 @@ struct SnapshotInventory: Codable, Equatable, Sendable {
             packageManifests: manifests.sorted(), lockfiles: locks.sorted(),
             dependencyIndicators: deps.sorted(), lfsPointerFiles: lfs.sorted(),
             scriptPhaseProjects: scripts.sorted(), caseCollisionPaths: collisions.sorted(), generatedAt: Date())
+    }
+
+    private static func boundedText(_ url: URL, maximumBytes: Int) -> String? {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? NSNumber,
+              size.intValue <= maximumBytes,
+              let data = try? Data(contentsOf: url, options: [.mappedIfSafe]) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     private static func relative(_ url: URL, _ root: URL) -> String {

@@ -50,6 +50,7 @@ private struct OverviewSection: View {
     let project: Project
     @State private var showingFiles = false
     @State private var showingInfo = false
+    @State private var showingDependencies = false
     @State private var exporting = false
     @State private var exportedArchive: URL?
     @State private var exportError: String?
@@ -84,12 +85,16 @@ private struct OverviewSection: View {
                 store.update(p)
             }
         }
+        .sheet(isPresented: $showingDependencies) {
+            NavigationStack { DependencyManagerView(project: project) }
+        }
     }
 
     private var toolsRow: some View {
         HStack(spacing: 12) {
             toolButton("Files", icon: "folder", action: { showingFiles = true })
             toolButton("App Info", icon: "doc.badge.gearshape", action: { showingInfo = true })
+            toolButton("Dependencies", icon: "shippingbox", action: { showingDependencies = true })
             Spacer()
         }
         .padding(.horizontal).padding(.bottom, 10)
