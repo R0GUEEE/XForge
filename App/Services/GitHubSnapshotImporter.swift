@@ -417,6 +417,16 @@ enum GitHubSnapshotDetector {
 // MARK: - Errors
 
 enum GitHubImportError: LocalizedError, Equatable {
+    case invalidRepositoryURL
+    case insecureRepositoryURL
+    case unsupportedHost(String)
+    case unsupportedLink
+    case missingRepositoryName
+    case missingRef
+    case invalidOwner(String)
+    case invalidRepositoryName(String)
+    case invalidRef(String)
+    case conflictingRef(String, String)
     case cancelled
     case downloadFailed(String)
     case httpStatus(Int, String)
@@ -431,6 +441,26 @@ enum GitHubImportError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
+        case .invalidRepositoryURL:
+            return "Enter a GitHub repository as https://github.com/owner/repository."
+        case .insecureRepositoryURL:
+            return "GitHub repository links must use HTTPS."
+        case .unsupportedHost(let host):
+            return "Only github.com repositories are supported (not \(host))."
+        case .unsupportedLink:
+            return "Enter a repository or a /tree/<ref> link, not an issue, pull request, or file link."
+        case .missingRepositoryName:
+            return "The GitHub link must include an owner and repository name."
+        case .missingRef:
+            return "The /tree link does not include a branch, tag, or commit."
+        case .invalidOwner(let owner):
+            return "Invalid GitHub owner name: \(owner)"
+        case .invalidRepositoryName(let repository):
+            return "Invalid GitHub repository name: \(repository)"
+        case .invalidRef(let ref):
+            return "Invalid Git reference: \(ref)"
+        case .conflictingRef(let first, let second):
+            return "The URL ref (\(first)) conflicts with the entered ref (\(second))."
         case .cancelled:
             return "The import was cancelled."
         case .downloadFailed(let reason):

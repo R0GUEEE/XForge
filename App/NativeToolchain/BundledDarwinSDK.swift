@@ -587,6 +587,14 @@ enum BundledDarwinSDK {
 
 // MARK: - First-run install
 
+/// An immutable, Sendable capture for progress callbacks that hop back to the
+/// main actor. Capturing a weak local `self` variable directly in the nested
+/// @Sendable callback is diagnosed as a mutable capture under Swift 6.
+private struct WeakBundledSDKMonitor: @unchecked Sendable {
+    weak var value: BundledSDKMonitor?
+    init(_ value: BundledSDKMonitor) { self.value = value }
+}
+
 /// Runs the bundled-SDK install once, in the background, and lets the Toolchain
 /// screen show what it is doing.
 ///
@@ -635,18 +643,16 @@ final class BundledSDKMonitor: ObservableObject {
         isInstalling = true
         fraction = 0
         status = "Installing the bundled Darwin SDK (\(manifest.releaseTag))…"
-        let assertion = InstallAssertion.begin(reason: "sdk-bundled")
-        XForgeLog.note("sdk bundle: first-run install of \(manifest.releaseTag) started")
-
-        task = Task { [weak self] in
+        let owner = WeakBundledSDKMonitor(self)
+        task = Task { [weak self, owner] in
             defer { assertion.end() }
             do {
                 let report = try await BundledDarwinSDK.install(
                     discovery: discovery,
                     progress: { update in
-                        Task { @MainActor [weak self] in
-                            self?.fraction = update.fraction
-                            self?.status = update.message
+                        Task { @MainActor in
+                            owner.value?.fraction = update.fraction
+                            owner.value?.status = update.message
                         }
                     })
                 self?.fraction = 1
@@ -676,17 +682,17 @@ final class BundledSDKMonitor: ObservableObject {
         fraction = 0
         status = "Installing the bundled Darwin SDK…"
         outcome = nil
-        let assertion = InstallAssertion.begin(reason: "sdk-bundled-manual")
-        task = Task { [weak self] in
+        let owner = WeakBundledSDKMonitor(self)
+        task = Task { [weak self, owner] in
             defer { assertion.end() }
             do {
                 let report = try await BundledDarwinSDK.install(
                     discovery: discovery,
                     replacing: replacing,
                     progress: { update in
-                        Task { @MainActor [weak self] in
-                            self?.fraction = update.fraction
-                            self?.status = update.message
+                        Task { @MainActor in
+                            owner.value?.fraction = update.fraction
+                            owner.value?.status = update.message
                         }
                     })
                 self?.fraction = 1
