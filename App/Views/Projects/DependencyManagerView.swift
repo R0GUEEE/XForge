@@ -19,9 +19,13 @@ struct DependencyManagerView: View {
             Section {
                 Label {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Dependency sources are not buildable yet")
+                        Text(report?.buildSupported == true
+                             ? "Pinned ZIPFoundation profile is buildable"
+                             : "Dependency sources are not buildable yet")
                             .font(.headline)
-                        Text("XForge does not execute Package.swift or package plugins. Pinned public GitHub sources can be downloaded for inspection, but the current compiler cannot build dependency modules or link package products.")
+                        Text(report?.buildSupported == true
+                             ? "The exact supported ZIPFoundation 0.9.19 pin can be compiled as a separate in-process module when its verified source snapshot, Swift frontend, and Darwin SDK are present. Other dependency shapes remain unsupported."
+                             : "XForge does not execute Package.swift or package plugins. The current build driver supports only one audited ZIPFoundation 0.9.19 module profile; other pinned public GitHub sources can be downloaded for inspection, but are not compiled or linked.")
                             .font(.footnote)
                     }
                 } icon: {
@@ -128,13 +132,14 @@ struct DependencyManagerView: View {
             && (try? GitHubRepository.parse(pin.location, explicitRef: pin.revision)) != nil
         let conflict = report.conflictingIdentities.contains(pin.identity)
         let installed = report.installedIdentities.contains(pin.identity)
+        let buildable = report.buildableIdentities.contains(pin.identity)
         VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(pin.identity).font(.subheadline.weight(.semibold))
                 Spacer()
-                Text(conflict ? "Conflict" : (installed ? "Fetched" : (supported ? "Pinned" : "Unsupported")))
+                Text(conflict ? "Conflict" : (buildable ? "Buildable" : (installed ? "Fetched" : (supported ? "Pinned" : "Unsupported"))))
                     .font(.caption2)
-                    .foregroundColor(conflict || !supported ? .orange : (installed ? .green : .secondary))
+                    .foregroundColor(conflict || !supported ? .orange : (buildable ? .green : (installed ? .blue : .secondary)))
             }
             Text(pin.location).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             HStack {

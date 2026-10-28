@@ -21,4 +21,6 @@ The goal of this analysis is to make imports and handoffs more truthful and repr
 
 ## Pinned dependency source cache
 
-The Dependency Manager uses `Package.resolved` only. It can fetch immutable public GitHub source snapshots for parsed pins into `.xforge-dependencies/` without executing the package manifest. This is source acquisition for inspection/reproducibility only: it does not claim package build support. XForge still refuses dependency builds because it cannot yet emit modules or link products.
+The dependency manager fetches source snapshots for eligible pins, and the native builder currently supports exactly one audited compile profile: the public ZIPFoundation `0.9.19` pin at commit `02b6abe5f6eef7e3cbd5f247c5cc24e246efcfe0`, one Swift target/module, and its `PrivacyInfo.xcprivacy` resource. XForge emits the dependency module first, compiles its source files in module context, gives the app the module search path, links its object files, and includes the package resource bundle. The build checks the lockfile, installer marker, source layout/count/size, and archive root revision before accepting the profile.
+
+Everything else remains fetch/inspect-only or unsupported: version solving, transitive manifest execution, package plugins, local/registry/private/non-GitHub pins, multiple dependencies/products, target graphs, binary targets, arbitrary resources, CocoaPods/Carthage, and build scripts. No project manifest is executed, and no subprocess is launched. See the build compatibility report before relying on an IPA.

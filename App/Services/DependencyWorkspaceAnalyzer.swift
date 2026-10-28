@@ -20,9 +20,11 @@ struct DependencyWorkspaceReport: Sendable {
     let packagePins: [ResolvedPackagePin]
     let lockfilePaths: [String]
     let installedIdentities: Set<String>
+    let buildableIdentities: Set<String>
     let findings: [DependencyCompatibilityFinding]
     let truncatedLockfileScan: Bool
 
+    var buildSupported: Bool { !buildableIdentities.isEmpty }
     var conflictingIdentities: Set<String> {
         Set(findings.compactMap { finding in
             guard finding.id.hasPrefix("pin-conflict-") else { return nil }
@@ -95,6 +97,20 @@ enum DependencyWorkspaceAnalyzer {
             }
         }
 
+        var verifiedModules: [NativeSwiftDependencyPlan] = []
+        if !project.isXcodeProject {
+            let manifestURL = root.appendingPathComponent("Package.swift")
+            if FileManager.default.fileExists(atPath: manifestURL.path),
+               let names = try? NativeBuildPlanFactory.swiftPackageDependencies(manifestURL: manifestURL) {
+                verifiedModules = (try? NativeBuildPlanFactory.swiftDependencyModules(
+                    root: root, declaredNames: names
+                )) ?? []
+            }
+        }
+        let native = NativeToolchainCapabilities.current
+        let canCompileModule = native.hasSwiftFrontend && NativeSDK.isInstalled
+        let buildable = canCompileModule ? Set(verifiedModules.map(\.identity)) : []
+
         let manifestMentions = manifestFiles.filter { url in
             guard let text = boundedText(url, maximumBytes: maximumManifestBytes) else { return false }
             // Heuristic evidence only: Package.swift is never evaluated, so text
@@ -117,9 +133,27 @@ enum DependencyWorkspaceAnalyzer {
             findings.append(.init(id: "source-fetch", capability: .fetchable,
                                   summary: "Pinned source snapshots can be downloaded",
                                   detail: "Only immutable public GitHub revisions are supported. This fetches source snapshots, not Git history."))
-            findings.append(.init(id: "module-build", capability: .unsupported,
-                                  summary: "Dependencies are not yet buildable by XForge",
-                                  detail: "The native compiler does not yet build dependency modules, honor product graphs, compile resources, or link package products. Fetched sources remain available for inspection/export."))
+            let allPinsHaveSupportedBuildProfile = pins.count == 1
+                && pins.allSatisfy { buildable.contains($0.identity) }
+            if allPinsHaveSupportedBuildProfile {
+                findings.append(.init(id: "module-build", capability: .ready,
+                                      summary: "The pinned ZIPFoundation module profile is buildable",
+                                      detail: "For this exact allowlisted source revision and layout, XForge emits the Swift module, compiles its sources, makes the module available to the app, links its objects, and bundles the privacy resource. This is not general SwiftPM dependency support."))
+            } else {
+                let detail: String
+                if verifiedModules.isEmpty {
+                    detail = "Only the exact ZIPFoundation 0.9.19 pinned source profile is supported today. Other packages, versions, multi-pin graphs, products, plugins, binaries, and resources remain unsupported."
+                } else if !native.hasSwiftFrontend {
+                    detail = "The pinned ZIPFoundation source profile is present, but this XForge build has no linked Swift frontend."
+                } else if !NativeSDK.isInstalled {
+                    detail = "The pinned ZIPFoundation source profile is present, but the Darwin SDK is not installed."
+                } else {
+                    detail = "All dependencies in this lockfile must match the same validated build profile; conflicting or additional pins are not guessed."
+                }
+                findings.append(.init(id: "module-build", capability: .unsupported,
+                                      summary: "Some dependency modules are not buildable by XForge",
+                                      detail: detail))
+            }
         }
         if lockfiles.truncated {
             findings.append(.init(id: "lock-limit", capability: .unsupported,
@@ -128,6 +162,7 @@ enum DependencyWorkspaceAnalyzer {
         }
         return DependencyWorkspaceReport(packagePins: pins, lockfilePaths: paths,
                                          installedIdentities: installed,
+                                         buildableIdentities: buildable,
                                          findings: findings,
                                          truncatedLockfileScan: lockfiles.truncated)
     }

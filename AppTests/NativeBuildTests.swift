@@ -80,6 +80,80 @@ final class NativeBuildTests: XCTestCase {
         return project
     }
 
+    private func writePinnedZIPFoundation(for project: URL, revision: String = NativeBuildPlanFactory.zipFoundationSupportedRevision) throws {
+        let pin = ResolvedPackagePin(identity: "zipfoundation", location: "https://github.com/weichsel/ZIPFoundation",
+                                    revision: revision, version: "0.9.19", kind: .remoteSourceControl)
+        let lock = ResolvedPackageLockfile(schemaVersion: 3, pins: [pin], originHash: nil, layout: .root)
+        try JSONEncoder().encode(lock).write(to: project.appendingPathComponent("Package.resolved"))
+        let dependencyRoot = PinnedDependencySourceInstaller.dependencyDirectory(for: pin, root: project)
+        let sourceRoot = dependencyRoot.appendingPathComponent("Sources/ZIPFoundation", isDirectory: true)
+        let resources = sourceRoot.appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        for index in 0..<21 {
+            try "// fixture source \(index)\n".write(to: sourceRoot.appendingPathComponent("File\(index).swift"), atomically: true, encoding: .utf8)
+        }
+        try "{}".write(to: resources.appendingPathComponent("PrivacyInfo.xcprivacy"), atomically: true, encoding: .utf8)
+        let repository = try GitHubRepository.parse(pin.location)
+        let marker = PinnedDependencySourceInstaller.Marker(
+            identity: pin.identity, repository: repository.slug, revision: pin.revision,
+            archiveSHA256: String(repeating: "c", count: 64), archiveBytes: 1000,
+            extractedBytes: 2000, fetchedAt: Date(timeIntervalSince1970: 1)
+        )
+        try JSONEncoder().encode(marker).write(to: dependencyRoot.appendingPathComponent(".xforge-dependency.json"))
+    }
+
+    func testPlanBuildsTheAuditedZIPFoundationDependencyProfile() throws {
+        let manifest = """
+        // swift-tools-version: 6.0
+        import PackageDescription
+        let package = Package(name: "Demo", dependencies: [.package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.19")], targets: [.executableTarget(name: "Demo")])
+        """
+        let project = try writePackage(packageSwift: manifest)
+        try writePinnedZIPFoundation(for: project)
+        let plan = try NativeBuildPlanFactory.makePlan(root: project, appInfo: appInfo(), configuration: .debug, sdk: sdkFixture())
+        XCTAssertEqual(plan.swiftDependencies.map(\.moduleName), ["ZIPFoundation"])
+        XCTAssertEqual(plan.swiftDependencies.first?.sources.count, 21)
+        XCTAssertEqual(plan.swiftDependencies.first?.resources.map(\.lastPathComponent), ["PrivacyInfo.xcprivacy"])
+        XCTAssertTrue(plan.frameworks.contains("Compression"))
+        let linker = NativeToolchainInvocation.linkerArguments(
+            objects: [root.appendingPathComponent("dependency.o")], plan: plan,
+            sdk: sdkFixture(), executable: root.appendingPathComponent("App"),
+            fileExists: { _ in true }
+        )
+        let compressionIndex = try XCTUnwrap(linker.firstIndex(of: "Compression"))
+        XCTAssertEqual(linker[compressionIndex - 1], "-framework")
+        XCTAssertTrue(plan.hasSwift)
+    }
+
+    func testSupportedDependencyRequiresLockfileAndFetchedSource() throws {
+        let manifest = """
+        // swift-tools-version: 6.0
+        import PackageDescription
+        let package = Package(name: "Demo", dependencies: [.package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.19")], targets: [.executableTarget(name: "Demo")])
+        """
+        let project = try writePackage(packageSwift: manifest)
+        XCTAssertThrowsError(try NativeBuildPlanFactory.makePlan(root: project, appInfo: appInfo(), configuration: .debug, sdk: sdkFixture())) { error in
+            guard case NativeBuildPlanError.dependencyLockfileMissing = error else {
+                return XCTFail("expected lockfile missing error, got \(error)")
+            }
+        }
+    }
+
+    func testPlanStillRejectsDifferentOrMismatchedDependencyPins() throws {
+        let manifest = """
+        // swift-tools-version: 6.0
+        import PackageDescription
+        let package = Package(name: "Demo", dependencies: [.package(url: "https://github.com/weichsel/ZIPFoundation.git", exact: "0.9.19")], targets: [.executableTarget(name: "Demo")])
+        """
+        let project = try writePackage(packageSwift: manifest)
+        try writePinnedZIPFoundation(for: project, revision: String(repeating: "d", count: 40))
+        XCTAssertThrowsError(try NativeBuildPlanFactory.makePlan(root: project, appInfo: appInfo(), configuration: .debug, sdk: sdkFixture())) { error in
+            guard case NativeBuildPlanError.unsupportedSwiftPackageDependencies = error else {
+                return XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
     // MARK: - Plan factory
 
     func testPlanFindsSourcesAndModule() throws {
@@ -229,6 +303,39 @@ final class NativeBuildTests: XCTestCase {
         XCTAssertEqual(arguments.first, "-parse-as-library")
         XCTAssertFalse(arguments.contains("-frontend"))
         XCTAssertTrue(arguments.contains("-Onone"))
+    }
+
+    func testSwiftModuleEmissionArgumentsCarrySourcesAndVersion() throws {
+        let sources = [URL(fileURLWithPath: "/deps/ZIPFoundation/A.swift"),
+                       URL(fileURLWithPath: "/deps/ZIPFoundation/B.swift")]
+        let sdk = sdkFixture()
+        let module = root.appendingPathComponent("ZIPFoundation.swiftmodule")
+        let args = try NativeToolchainInvocation.swiftModuleArguments(
+            moduleName: "ZIPFoundation", sources: sources, moduleOutput: module,
+            minimumIOSVersion: "17.0", sdk: sdk
+        )
+        XCTAssertTrue(args.contains("-emit-module"))
+        XCTAssertTrue(args.contains("-module-name"))
+        XCTAssertTrue(args.contains("ZIPFoundation"))
+        XCTAssertTrue(args.contains("-swift-version"))
+        XCTAssertTrue(args.contains("5"))
+        XCTAssertTrue(args.contains(module.path))
+        XCTAssertTrue(args.contains(sources[0].path))
+        XCTAssertTrue(args.contains(sources[1].path))
+    }
+
+    func testAppFrontendArgumentsCanImportDependencyModule() throws {
+        let project = try writePackage()
+        let sdk = sdkFixture()
+        let plan = try NativeBuildPlanFactory.makePlan(root: project, appInfo: appInfo(), configuration: .debug, sdk: sdk)
+        let search = root.appendingPathComponent("deps/ZIPFoundation", isDirectory: true)
+        let args = try NativeToolchainInvocation.swiftFrontendArguments(
+            source: try XCTUnwrap(plan.swiftSources.first), object: root.appendingPathComponent("app.o"),
+            plan: plan, sdk: sdk, compilationUnitSources: plan.swiftSources,
+            additionalImportPaths: [search]
+        )
+        let index = try XCTUnwrap(args.firstIndex(of: "-I"))
+        XCTAssertEqual(args[index + 1], search.path)
     }
 
     func testMainSwiftDoesNotGetParseAsLibrary() throws {
