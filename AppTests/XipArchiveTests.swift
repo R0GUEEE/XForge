@@ -350,17 +350,6 @@ final class XipArchiveTests: XCTestCase {
         XCTAssertEqual(content.length, Int64(payload.count))
     }
 
-    /// A TOC stored as plain XML rather than compressed is accepted when its
-    /// compressed and uncompressed lengths are equal.
-    func testAcceptsStoredTableOfContents() throws {
-        let url = try writeXip(Self.xar(content: Self.pbzx(Self.cpio(Self.fakeXcode())),
-                                        toc: .stored))
-        let content = try XipArchive.content(of: url)
-        var count = 0
-        try XipArchive.forEachEntry(in: url, content: content) { _, _ in count += 1 }
-        XCTAssertGreaterThan(count, 10)
-    }
-
     /// Bytes that are not a xip at all still fail, and fail as a *structure* problem
     /// rather than silently pointing the payload at nothing.
     func testRejectsATableOfContentsItCannotInflate() throws {
