@@ -48,6 +48,7 @@ enum PinnedDependencySourceInstaller {
         case aggregateLimitExceeded
         case destinationCollision(String)
         case unexpectedArchiveRoot(String)
+        case archiveRevisionMismatch(identity: String, expected: String, actualRoot: String)
         case invalidPin(String)
 
         var errorDescription: String? {
@@ -56,6 +57,7 @@ enum PinnedDependencySourceInstaller {
             case .aggregateLimitExceeded: return "Dependency source snapshots exceed the 512 MiB per-run extraction budget."
             case .destinationCollision(let name): return "Dependency destination \(name) already contains different source data; it was left untouched."
             case .unexpectedArchiveRoot(let name): return "The archive for \(name) did not contain a single repository root."
+            case .archiveRevisionMismatch(let identity, let expected, let root): return "The GitHub archive for \(identity) did not identify the pinned commit \(expected.prefix(12)); archive root was \(root). Refusing to store it as a pinned source."
             case .invalidPin(let name): return "The pin for \(name) is not an immutable supported public GitHub commit."
             }
         }
@@ -121,6 +123,11 @@ enum PinnedDependencySourceInstaller {
             guard aggregate <= maximumAggregateExtractedBytes else { throw InstallError.aggregateLimitExceeded }
             let sourceRoot = SnapshotArchiveExtractor.unwrappedRoot(of: raw)
             guard sourceRoot != raw else { throw InstallError.unexpectedArchiveRoot(pin.identity) }
+            guard Self.archiveRootMatches(revision: revision, rootName: sourceRoot.lastPathComponent) else {
+                throw InstallError.archiveRevisionMismatch(identity: pin.identity,
+                                                           expected: revision,
+                                                           actualRoot: sourceRoot.lastPathComponent)
+            }
             let marker = Marker(identity: pin.identity, repository: repo.slug, revision: revision,
                                 archiveSHA256: archiveHash, archiveBytes: archiveBytes,
                                 extractedBytes: stats.bytes, fetchedAt: Date())
@@ -130,6 +137,10 @@ enum PinnedDependencySourceInstaller {
             progress(.completed(index + 1, pins.count, pin.identity))
         }
         return Result(installed: installed, alreadyPresent: existing, extractedBytes: aggregate, notes: notes)
+    }
+
+    static func archiveRootMatches(revision: String, rootName: String) -> Bool {
+        rootName.lowercased().hasSuffix(revision.lowercased())
     }
 
     static func readMarker(_ directory: URL) -> Marker? {

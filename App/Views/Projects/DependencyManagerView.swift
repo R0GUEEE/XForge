@@ -11,6 +11,8 @@ struct DependencyManagerView: View {
     @StateObject private var progressModel = DependencyProgressModel()
     @State private var error: String?
     @State private var resultMessage: String?
+    @State private var isRemovingCache = false
+    @State private var showingRemoveCacheConfirmation = false
 
     var body: some View {
         List {
@@ -90,6 +92,18 @@ struct DependencyManagerView: View {
                         .padding(.vertical, 3)
                     }
                 }
+
+                Section {
+                    Button(role: .destructive) {
+                        showingRemoveCacheConfirmation = true
+                    } label: {
+                        Label(isRemovingCache ? "Removing…" : "Remove fetched source cache",
+                              systemImage: "trash")
+                    }
+                    .disabled(isRemovingCache || report.installedIdentities.isEmpty)
+                } footer: {
+                    Text("This removes only XForge-downloaded .xforge-dependencies sources from this project. Original repository files and lockfiles remain untouched.")
+                }
             }
         }
         .navigationTitle("Dependencies")
@@ -100,20 +114,27 @@ struct DependencyManagerView: View {
             }
         }
         .task { await reload() }
+        .confirmationDialog("Remove fetched dependency sources?", isPresented: $showingRemoveCacheConfirmation, titleVisibility: .visible) {
+            Button("Remove source cache", role: .destructive) { Task { await removeCache() } }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Only the generated .xforge-dependencies directory will be deleted. This cannot remove your original project files.")
+        }
     }
 
     @ViewBuilder
     private func pinRow(_ pin: ResolvedPackagePin, report: DependencyWorkspaceReport) -> some View {
         let supported = pin.kind == .remoteSourceControl
             && (try? GitHubRepository.parse(pin.location, explicitRef: pin.revision)) != nil
+        let conflict = report.conflictingIdentities.contains(pin.identity)
         let installed = report.installedIdentities.contains(pin.identity)
         VStack(alignment: .leading, spacing: 3) {
             HStack {
                 Text(pin.identity).font(.subheadline.weight(.semibold))
                 Spacer()
-                Text(installed ? "Fetched" : (supported ? "Pinned" : "Unsupported"))
+                Text(conflict ? "Conflict" : (installed ? "Fetched" : (supported ? "Pinned" : "Unsupported")))
                     .font(.caption2)
-                    .foregroundColor(installed ? .green : (supported ? .secondary : .orange))
+                    .foregroundColor(conflict || !supported ? .orange : (installed ? .green : .secondary))
             }
             Text(pin.location).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             HStack {
@@ -155,16 +176,43 @@ struct DependencyManagerView: View {
         defer { isInstalling = false; progressModel.message = "" }
         let owner = WeakDependencyProgressModel(progressModel)
         do {
+            let fetchable = report.fetchablePins
+            let batch = Array(fetchable.prefix(PinnedDependencySourceInstaller.maximumPackagesPerRun))
             let result = try await PinnedDependencySourceInstaller.installPinnedSources(
                 for: project,
-                pins: report.packagePins,
+                pins: batch,
                 progress: { update in
                     Task { @MainActor in owner.value?.message = update.message }
                 })
+            let remaining = max(0, fetchable.count - batch.count)
             resultMessage = "Fetched \(result.installed.count), already present \(result.alreadyPresent.count), expanded \(ByteCountFormatter.string(fromByteCount: result.extractedBytes, countStyle: .file))."
+            if remaining > 0 {
+                resultMessage = (resultMessage ?? "") + " \(remaining) package(s) remain; tap Fetch again to continue in bounded batches."
+            }
             if !result.notes.isEmpty {
                 resultMessage = (resultMessage ?? "") + " Skipped: " + result.notes.joined(separator: "; ")
             }
+            await reload()
+        } catch {
+            self.error = error.localizedDescription
+            await reload()
+        }
+    }
+
+    @MainActor
+    private func removeCache() async {
+        guard !isRemovingCache else { return }
+        isRemovingCache = true
+        defer { isRemovingCache = false }
+        let root = (project.isXcodeProject ? project.snapshotRootURL : project.rootURL)
+            .appendingPathComponent(".xforge-dependencies", isDirectory: true)
+        do {
+            try await Task.detached(priority: .utility) {
+                if FileManager.default.fileExists(atPath: root.path) {
+                    try FileManager.default.removeItem(at: root)
+                }
+            }.value
+            resultMessage = "Fetched dependency source cache removed."
             await reload()
         } catch {
             self.error = error.localizedDescription

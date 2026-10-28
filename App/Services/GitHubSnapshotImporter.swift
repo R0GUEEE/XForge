@@ -218,6 +218,13 @@ enum GitHubSnapshotImporter {
         let temporaryURL = downloaded.0
         let response = downloaded.1
 
+        guard let responseURL = response.url,
+              responseURL.scheme?.lowercased() == "https",
+              ["github.com", "www.github.com", "codeload.github.com"].contains(responseURL.host?.lowercased() ?? "") else {
+            try? fileManager.removeItem(at: temporaryURL)
+            throw GitHubImportError.downloadFailed("the final download host was not an approved HTTPS GitHub host")
+        }
+
         guard let http = response as? HTTPURLResponse else {
             throw GitHubImportError.downloadFailed("the server did not return HTTP")
         }

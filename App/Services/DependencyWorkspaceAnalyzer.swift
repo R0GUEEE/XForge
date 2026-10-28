@@ -23,9 +23,18 @@ struct DependencyWorkspaceReport: Sendable {
     let findings: [DependencyCompatibilityFinding]
     let truncatedLockfileScan: Bool
 
+    var conflictingIdentities: Set<String> {
+        Set(findings.compactMap { finding in
+            guard finding.id.hasPrefix("pin-conflict-") else { return nil }
+            return String(finding.id.dropFirst("pin-conflict-".count))
+        })
+    }
+
     var fetchablePins: [ResolvedPackagePin] {
-        packagePins.filter { pin in
-            pin.kind == .remoteSourceControl
+        let conflicts = conflictingIdentities
+        return packagePins.filter { pin in
+            !conflicts.contains(pin.identity)
+                && pin.kind == .remoteSourceControl
                 && (try? GitHubRepository.parse(pin.location, explicitRef: pin.revision)) != nil
                 && !installedIdentities.contains(pin.identity)
         }
@@ -56,7 +65,19 @@ enum DependencyWorkspaceAnalyzer {
                 guard size <= maximumLockfileBytes else { throw ResolvedPackageError.tooLarge(actual: size, limit: maximumLockfileBytes) }
                 let data = try Data(contentsOf: url, options: [.mappedIfSafe])
                 let lock = try ResolvedPackageLockfile.read(data: data)
-                pins.append(contentsOf: lock.pins)
+                for pin in lock.pins {
+                    if let prior = pins.first(where: { $0.identity == pin.identity }) {
+                        let same = prior.revision == pin.revision
+                            && prior.location.caseInsensitiveCompare(pin.location) == .orderedSame
+                        if !same {
+                            findings.append(.init(id: "pin-conflict-\(pin.identity)", capability: .unsupported,
+                                                  summary: "Conflicting lockfile pins for \(pin.identity)",
+                                                  detail: "Different lockfiles resolve this identity to different sources or revisions. The source fetcher will not guess which target's pin to use."))
+                        }
+                        continue
+                    }
+                    pins.append(pin)
+                }
             } catch {
                 findings.append(.init(id: "lock:\(path)", capability: .unsupported,
                                       summary: "Could not analyze \(path)",

@@ -28,6 +28,54 @@ final class DependencyWorkspaceTests: XCTestCase {
         XCTAssertTrue(report.findings.contains { $0.id == "module-build" && $0.capability == .unsupported })
     }
 
+    func testArchiveRootMustNamePinnedRevision() {
+        let revision = String(repeating: "d", count: 40)
+        XCTAssertTrue(PinnedDependencySourceInstaller.archiveRootMatches(
+            revision: revision, rootName: "ZIPFoundation-\(revision)"
+        ))
+        XCTAssertFalse(PinnedDependencySourceInstaller.archiveRootMatches(
+            revision: revision, rootName: "ZIPFoundation-main"
+        ))
+    }
+
+    func testInstallerSkipsNonImmutablePinsWithoutStartingNetworkRequest() async throws {
+        let pin = ResolvedPackagePin(identity: "not-pinned", location: "https://github.com/owner/repo",
+                                     revision: "main", version: nil, kind: .remoteSourceControl)
+        let result = try await PinnedDependencySourceInstaller.installPinnedSources(for: project, pins: [pin])
+        XCTAssertTrue(result.installed.isEmpty)
+        XCTAssertTrue(result.notes.contains { $0.contains("immutable") })
+    }
+
+    func testInstallerRefusesOversizedBatchBeforeNetwork() async throws {
+        let pins = (0..<(PinnedDependencySourceInstaller.maximumPackagesPerRun + 1)).map { index in
+            ResolvedPackagePin(identity: "package-\(index)", location: "https://github.com/owner/repo-\(index)",
+                               revision: String(repeating: "a", count: 40), version: "1.0.0", kind: .remoteSourceControl)
+        }
+        do {
+            _ = try await PinnedDependencySourceInstaller.installPinnedSources(for: project, pins: pins)
+            XCTFail("oversized batch must stop before network access")
+        } catch let error as PinnedDependencySourceInstaller.InstallError {
+            guard case .tooManyPackages = error else { return XCTFail("unexpected error: \(error)") }
+        }
+    }
+
+    func testAnalyzerDoesNotFlattenConflictingPinsAcrossLockfiles() throws {
+        let first = project.rootURL.appendingPathComponent("App/Package.resolved")
+        let second = project.rootURL.appendingPathComponent("Widget/Package.resolved")
+        try FileManager.default.createDirectory(at: first.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: second.deletingLastPathComponent(), withIntermediateDirectories: true)
+        func lock(_ revision: String) -> Data {
+            Data("""
+            {"version":2,"pins":[{"identity":"zipfoundation","kind":"remoteSourceControl","location":"https://github.com/weichsel/ZIPFoundation","state":{"revision":"\(revision)"}}]}
+            """.utf8)
+        }
+        try lock(String(repeating: "a", count: 40)).write(to: first)
+        try lock(String(repeating: "b", count: 40)).write(to: second)
+        let report = DependencyWorkspaceAnalyzer.analyze(project: project)
+        XCTAssertEqual(report.packagePins.count, 1)
+        XCTAssertTrue(report.findings.contains { $0.id == "pin-conflict-zipfoundation" })
+    }
+
     func testAnalyzerReportsNoLockfileAsUnknownNotResolved() {
         let report = DependencyWorkspaceAnalyzer.analyze(project: project)
         XCTAssertTrue(report.packagePins.isEmpty)
