@@ -8,7 +8,7 @@ struct DependencyManagerView: View {
     @State private var report: DependencyWorkspaceReport?
     @State private var isLoading = true
     @State private var isInstalling = false
-    @State private var progress = ""
+    @StateObject private var progressModel = DependencyProgressModel()
     @State private var error: String?
     @State private var resultMessage: String?
 
@@ -53,8 +53,8 @@ struct DependencyManagerView: View {
                 }
 
                 Section {
-                    if !progress.isEmpty {
-                        HStack { ProgressView(); Text(progress).font(.footnote) }
+                    if !progressModel.message.isEmpty {
+                        HStack { ProgressView(); Text(progressModel.message).font(.footnote) }
                     }
                     if let resultMessage {
                         Label(resultMessage, systemImage: "checkmark.circle")
@@ -139,6 +139,7 @@ struct DependencyManagerView: View {
             }.value
             error = nil
         } catch {
+            report = nil
             self.error = error.localizedDescription
         }
         isLoading = false
@@ -150,14 +151,15 @@ struct DependencyManagerView: View {
         isInstalling = true
         resultMessage = nil
         error = nil
-        progress = "Preparing pinned source downloads…"
-        defer { isInstalling = false; progress = "" }
+        progressModel.message = "Preparing pinned source downloads…"
+        defer { isInstalling = false; progressModel.message = "" }
+        let owner = WeakDependencyProgressModel(progressModel)
         do {
             let result = try await PinnedDependencySourceInstaller.installPinnedSources(
                 for: project,
                 pins: report.packagePins,
                 progress: { update in
-                    Task { @MainActor in self.progress = update.message }
+                    Task { @MainActor in owner.value?.message = update.message }
                 })
             resultMessage = "Fetched \(result.installed.count), already present \(result.alreadyPresent.count), expanded \(ByteCountFormatter.string(fromByteCount: result.extractedBytes, countStyle: .file))."
             if !result.notes.isEmpty {
@@ -168,4 +170,16 @@ struct DependencyManagerView: View {
             self.error = error.localizedDescription
         }
     }
+}
+
+@MainActor
+private final class DependencyProgressModel: ObservableObject {
+    @Published var message = ""
+}
+
+/// The progress callback is @Sendable and runs after network awaits. This weak
+/// box avoids capturing the SwiftUI view across the callback's actor hop.
+private final class WeakDependencyProgressModel: @unchecked Sendable {
+    weak var value: DependencyProgressModel?
+    init(_ value: DependencyProgressModel) { self.value = value }
 }
