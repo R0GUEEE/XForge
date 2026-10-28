@@ -56,7 +56,7 @@ permissions:
 jobs:
   ipa:
     name: Build the IPA
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 120
     # Keep only the newest build for each ref. A queued run for an obsolete
     # commit should not block the latest main IPA; PR validation stays isolated.
@@ -313,9 +313,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/DerivedData
-          key: ${{ runner.os }}-xforge-derived-${{ hashFiles('project.yml') }}-${{ steps.toolchain-release.outputs.cache_tag || 'no-toolchain' }}-${{ inputs.bundle_darwin_sdk && (inputs.darwin_sdk_sha256 || env.DARWIN_SDK_SHA256) || 'no-sdk' }}-${{ steps.toolchain-versions.outputs.cache_key }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ runner.arch }}-xforge-derived-${{ hashFiles('project.yml') }}-${{ steps.toolchain-release.outputs.cache_tag || 'no-toolchain' }}-${{ inputs.bundle_darwin_sdk && (inputs.darwin_sdk_sha256 || env.DARWIN_SDK_SHA256) || 'no-sdk' }}-${{ steps.toolchain-versions.outputs.cache_key }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-xforge-derived-${{ hashFiles('project.yml') }}-${{ steps.toolchain-release.outputs.cache_tag || 'no-toolchain' }}-${{ inputs.bundle_darwin_sdk && (inputs.darwin_sdk_sha256 || env.DARWIN_SDK_SHA256) || 'no-sdk' }}-${{ steps.toolchain-versions.outputs.cache_key }}-
+            ${{ runner.os }}-${{ runner.arch }}-xforge-derived-${{ hashFiles('project.yml') }}-${{ steps.toolchain-release.outputs.cache_tag || 'no-toolchain' }}-${{ inputs.bundle_darwin_sdk && (inputs.darwin_sdk_sha256 || env.DARWIN_SDK_SHA256) || 'no-sdk' }}-${{ steps.toolchain-versions.outputs.cache_key }}-
 
       - name: Run the unit tests
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_tests }}
