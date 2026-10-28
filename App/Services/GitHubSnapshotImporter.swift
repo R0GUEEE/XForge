@@ -203,6 +203,7 @@ enum GitHubSnapshotImporter {
         _ repository: GitHubRepository,
         session: URLSession = .shared
     ) async throws -> URL {
+        let fileManager = FileManager.default
         var request = URLRequest(url: repository.archiveURL)
         request.timeoutInterval = 60
         request.setValue("XForge", forHTTPHeaderField: "User-Agent")
@@ -237,7 +238,6 @@ enum GitHubSnapshotImporter {
             throw GitHubImportError.httpStatus(http.statusCode, repository.slug)
         }
 
-        let fileManager = FileManager.default
         let owned = fileManager.temporaryDirectory.appendingPathComponent(
             "xforge-github-\(UUID().uuidString).zip"
         )
