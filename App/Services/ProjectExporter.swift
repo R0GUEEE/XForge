@@ -72,6 +72,12 @@ enum ProjectExporter {
         for entry in entries {
             let name = entry.lastPathComponent
             guard !excluded.contains(name) else { continue }
+            if includeHidden && isSensitive(name) { continue }
+            // Imported trees may contain links from Files-origin projects. Never
+            // follow a link while creating a shareable archive: a repo could point
+            // at unrelated data outside its snapshot.
+            let attributes = try? fileManager.attributesOfItem(atPath: entry.path)
+            if attributes?[.type] as? FileAttributeType == .typeSymbolicLink { continue }
             let values = try entry.resourceValues(forKeys: [.isDirectoryKey])
             let target = destination.appendingPathComponent(name)
             if values.isDirectory == true {
@@ -81,6 +87,13 @@ enum ProjectExporter {
                 try fileManager.copyItem(at: entry, to: target)
             }
         }
+    }
+
+    private static func isSensitive(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        return lower == ".env" || lower.hasPrefix(".env.")
+            || [".netrc", ".npmrc", ".pypirc", ".ssh", ".aws", ".gnupg", ".kube"]
+                .contains(lower)
     }
 
     enum ExportError: LocalizedError {
