@@ -33,10 +33,8 @@ project (a directory)  →  build plan  →  compile + link in-process  →  <Na
    clone is not something XForge can do.
 2. **Build plan.** `NativeBuildPlanFactory` turns that directory into a fully
    resolved `NativeBuildPlan` — module, sources, resources, frameworks, search
-   paths. It is deliberately conservative: it refuses, *by name*, the one thing an
-   in-process driver cannot resolve (SwiftPM dependencies, which need a package
-   manager that fetches and runs manifests) instead of failing halfway through a
-   build.
+   paths. It never runs Package.swift; dependency support is a fixed, audited profile
+   (currently one exact ZIPFoundation pin), not general SwiftPM resolution.
 3. **Compile and link.** `NativeBuildExecutor` turns the plan into argument lists
    (`NativeToolchainInvocation`, pure functions, so they can be unit-tested on a
    simulator where no compiler exists) and calls the entry points behind the
@@ -73,8 +71,11 @@ in-process toolchain and the SDK in the container.
 - **Pinned dependency source management.** The Dependencies tool analyzes supported
   `Package.resolved` lockfiles and can fetch exact public GitHub source snapshots
   without running package manifests. Downloads are bounded and checksum-recorded.
-  This does **not** make dependencies buildable: the current toolchain still has no
-  multi-module dependency compiler/linker or resource-product integration.
+  XForge has one deliberately narrow build profile for the exact ZIPFoundation
+  0.9.19 commit: when its verified source cache, compiler and SDK are present, the
+  module is emitted and linked. This does **not** enable general SwiftPM dependency
+  resolution or arbitrary package builds; transitive graphs, plugins, binary
+  products and unsupported sources remain rejected.
 - **Building and testing XForge itself without any toolchain bundle.** A plain clone compiles the bridge to a "not available" stub; `make test` runs on the simulator.
 
 ## What does not work (yet)
@@ -86,10 +87,12 @@ in-process toolchain and the SDK in the container.
   not happened is a Swift *build* on a device: every part of the path is exercised
   except that one, and a bundle without the frontend still refuses a Swift plan at
   the compile stage with `swiftFrontendMissing` and the file count.
-- **SwiftPM dependencies.** Refused by name at plan time. Fetching and resolving
-  packages means running a package manager, which cannot happen here — and a
-  dependency editor that could only produce unbuildable projects was removed
-  rather than kept as a trap.
+- **SwiftPM dependencies beyond the audited ZIPFoundation profile.** XForge does not
+  execute manifests or solve versions. One exact public `ZIPFoundation` 0.9.19
+  lock pin is supported as a separately emitted module when its verified source
+  snapshot, Swift frontend, and SDK are installed. Other packages and versions are
+  refused by name; registry/local/private pins, package plugins, dependency graphs,
+  arbitrary products/resources, and general version solving are not supported.
 - **Asset catalogs.** `.xcassets` are copied into the bundle uncompiled, with a
   warning: `actool` is a macOS-only tool and there is no open-source replacement
   to point at, so an app whose icon lives in a catalog ships without it.

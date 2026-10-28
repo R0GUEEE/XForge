@@ -21,4 +21,4 @@ The goal of this analysis is to make imports and handoffs more truthful and repr
 
 ## Pinned dependency source cache
 
-The Dependency Manager uses `Package.resolved` only. It can fetch immutable public GitHub source snapshots for parsed pins into `.xforge-dependencies/` without executing the package manifest. This is source acquisition for inspection/reproducibility only: it does not claim package build support. XForge still refuses dependency builds because it cannot yet emit modules or link products.
+Only that exact `ZIPFoundation` 0.9.19 pin is currently recognized by the in-process dependency module path. It verifies the lockfile revision, fetched-source marker and source-tree digest, then attempts to emit the dependency module, compile its sources, give the app the module search path, link its objects, and include the package privacy resource. **This is experimental and has not been validated on a physical device.** It is not general dependency-build support: other packages, versions, multi-package graphs, local/registry/private/non-GitHub pins, plugins, binaries, and arbitrary resources remain unsupported.

@@ -26,7 +26,9 @@ enum NativeToolchainInvocation {
         source: URL,
         object: URL,
         plan: NativeBuildPlan,
-        sdk: NativeSDKLayout
+        sdk: NativeSDKLayout,
+        compilationUnitSources: [URL] = [],
+        additionalImportPaths: [URL] = []
     ) throws -> [String] {
         guard let swiftResources = sdk.swiftResources else {
             throw NativeToolchainError.io(
@@ -34,18 +36,20 @@ enum NativeToolchainInvocation {
             )
         }
 
+        let allSources = compilationUnitSources.isEmpty ? [source] : compilationUnitSources
         var arguments = [
-            // `-parse-as-library` unless the file *is* main.swift: an app's entry
-            // point is `@main`, and without this the frontend treats top-level
-            // code as the entry point and rejects the attribute.
             "-parse-as-library",
-            "-c", source.path,
+            "-c", "-primary-file", source.path,
             "-target", targetTriple(minimumIOSVersion: plan.minimumIOSVersion),
             "-sdk", sdk.sdkRoot.path,
             "-resource-dir", swiftResources.path,
             "-module-name", plan.moduleName,
             "-o", object.path,
         ]
+        arguments.append(contentsOf: allSources.filter { $0.standardizedFileURL != source.standardizedFileURL }.map(\.path))
+        for searchPath in additionalImportPaths {
+            arguments.append(contentsOf: ["-I", searchPath.path])
+        }
         if source.lastPathComponent == "main.swift" {
             arguments.removeFirst()
         }
@@ -54,6 +58,32 @@ enum NativeToolchainInvocation {
         // only, and the linker strips what the app does not use.
         arguments.append(contentsOf: ["-g", "-debug-info-format=dwarf"])
         return arguments
+    }
+
+    /// Emit a named Swift module interface from a bounded list of dependency
+    /// sources. This is deliberately separate from per-file object compilation so
+    /// the app can import the resulting `.swiftmodule` without running SwiftPM.
+    static func swiftModuleArguments(
+        moduleName: String,
+        sources: [URL],
+        moduleOutput: URL,
+        minimumIOSVersion: String,
+        sdk: NativeSDKLayout,
+        swiftVersion: String = "5"
+    ) throws -> [String] {
+        guard let swiftResources = sdk.swiftResources else {
+            throw NativeToolchainError.io("The Darwin SDK does not declare swiftResourcesPath, so the Swift standard library cannot be found.")
+        }
+        guard !sources.isEmpty else { throw NativeToolchainError.io("A Swift dependency module has no source files.") }
+        return [
+            "-parse-as-library", "-emit-module", "-module-name", moduleName,
+            "-target", targetTriple(minimumIOSVersion: minimumIOSVersion),
+            "-sdk", sdk.sdkRoot.path,
+            "-resource-dir", swiftResources.path,
+            "-swift-version", swiftVersion,
+            "-emit-module-path", moduleOutput.path,
+            "-Onone",
+        ] + sources.map(\.path)
     }
 
     /// `ld64.lld` arguments for an arm64 iOS executable.

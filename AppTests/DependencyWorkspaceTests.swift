@@ -24,7 +24,7 @@ final class DependencyWorkspaceTests: XCTestCase {
         let report = DependencyWorkspaceAnalyzer.analyze(project: project)
         XCTAssertEqual(report.packagePins.map(\.identity), ["zipfoundation"])
         XCTAssertEqual(report.fetchablePins.map(\.revision), [sha])
-        XCTAssertFalse(report.buildSupported)
+        XCTAssertFalse(report.hasEligibleBuildProfile)
         XCTAssertTrue(report.findings.contains { $0.id == "module-build" && $0.capability == .unsupported })
     }
 
@@ -76,6 +76,28 @@ final class DependencyWorkspaceTests: XCTestCase {
         XCTAssertTrue(report.findings.contains { $0.id == "pin-conflict-zipfoundation" })
     }
 
+    func testSourceTreeDigestChangesWhenAFileChanges() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("xforge-source-digest-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("Sources/File.swift")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "let value = 1".write(to: file, atomically: true, encoding: .utf8)
+        let first = try PinnedDependencySourceInstaller.sourceTreeSHA256(at: root)
+        try "let value = 2".write(to: file, atomically: true, encoding: .utf8)
+        let second = try PinnedDependencySourceInstaller.sourceTreeSHA256(at: root)
+        XCTAssertNotEqual(first, second)
+    }
+
+    func testSourceTreeDigestRejectsSymlinkEntries() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("xforge-source-link-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("escape").path,
+                                                   withDestinationPath: "/tmp")
+        XCTAssertThrowsError(try PinnedDependencySourceInstaller.sourceTreeSHA256(at: root))
+    }
+
     func testAnalyzerReportsNoLockfileAsUnknownNotResolved() {
         let report = DependencyWorkspaceAnalyzer.analyze(project: project)
         XCTAssertTrue(report.packagePins.isEmpty)
@@ -95,7 +117,9 @@ final class DependencyWorkspaceTests: XCTestCase {
         let dir = DependencyWorkspaceAnalyzer.dependencyDirectory(for: pin, root: project.rootURL)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let marker = PinnedDependencySourceInstaller.Marker(identity: pin.identity, repository: repo.slug,
-            revision: sha, archiveSHA256: String(repeating: "c", count: 64), archiveBytes: 123,
+            revision: sha, archiveSHA256: String(repeating: "c", count: 64),
+            sourceTreeSHA256: try PinnedDependencySourceInstaller.sourceTreeSHA256(at: dir),
+            archiveBytes: 123,
             extractedBytes: 456, fetchedAt: Date(timeIntervalSince1970: 1))
         try JSONEncoder().encode(marker).write(to: dir.appendingPathComponent(".xforge-dependency.json"))
         XCTAssertEqual(PinnedDependencySourceInstaller.readMarker(dir), marker)

@@ -5,6 +5,7 @@ import Foundation
 enum DependencyCapability: String, Codable, Sendable {
     case ready
     case fetchable
+    case partial
     case unsupported
     case unknown
 }
@@ -20,9 +21,11 @@ struct DependencyWorkspaceReport: Sendable {
     let packagePins: [ResolvedPackagePin]
     let lockfilePaths: [String]
     let installedIdentities: Set<String>
+    let profileEligibleIdentities: Set<String>
     let findings: [DependencyCompatibilityFinding]
     let truncatedLockfileScan: Bool
 
+    var hasEligibleBuildProfile: Bool { !profileEligibleIdentities.isEmpty }
     var conflictingIdentities: Set<String> {
         Set(findings.compactMap { finding in
             guard finding.id.hasPrefix("pin-conflict-") else { return nil }
@@ -39,7 +42,6 @@ struct DependencyWorkspaceReport: Sendable {
                 && !installedIdentities.contains(pin.identity)
         }
     }
-    var buildSupported: Bool { false }
 }
 
 /// A bounded, read-only analyzer. It never interprets Package.swift or runs a
@@ -90,10 +92,26 @@ enum DependencyWorkspaceAnalyzer {
             let dir = dependencyDirectory(for: pin, root: root)
             if let marker = PinnedDependencySourceInstaller.readMarker(dir),
                marker.revision.caseInsensitiveCompare(pin.revision) == .orderedSame,
-               marker.repository.lowercased() == ((try? GitHubRepository.parse(pin.location))?.slug.lowercased() ?? "") {
+               marker.repository.lowercased() == ((try? GitHubRepository.parse(pin.location))?.slug.lowercased() ?? ""),
+               let recordedTreeHash = marker.sourceTreeSHA256,
+               (try? PinnedDependencySourceInstaller.sourceTreeSHA256(at: dir)) == recordedTreeHash {
                 installed.insert(pin.identity)
             }
         }
+
+        var verifiedModules: [NativeSwiftDependencyPlan] = []
+        if !project.isXcodeProject {
+            let manifestURL = root.appendingPathComponent("Package.swift")
+            if FileManager.default.fileExists(atPath: manifestURL.path),
+               let names = try? NativeBuildPlanFactory.swiftPackageDependencies(manifestURL: manifestURL) {
+                verifiedModules = (try? NativeBuildPlanFactory.swiftDependencyModules(
+                    root: root, declaredNames: names
+                )) ?? []
+            }
+        }
+        let native = NativeToolchainCapabilities.current
+        let canCompileModule = native.hasSwiftFrontend && NativeSDK.isInstalled
+        let profileEligible = canCompileModule ? Set(verifiedModules.map(\.identity)) : []
 
         let manifestMentions = manifestFiles.filter { url in
             guard let text = boundedText(url, maximumBytes: maximumManifestBytes) else { return false }
@@ -117,9 +135,27 @@ enum DependencyWorkspaceAnalyzer {
             findings.append(.init(id: "source-fetch", capability: .fetchable,
                                   summary: "Pinned source snapshots can be downloaded",
                                   detail: "Only immutable public GitHub revisions are supported. This fetches source snapshots, not Git history."))
-            findings.append(.init(id: "module-build", capability: .unsupported,
-                                  summary: "Dependencies are not yet buildable by XForge",
-                                  detail: "The native compiler does not yet build dependency modules, honor product graphs, compile resources, or link package products. Fetched sources remain available for inspection/export."))
+            let allPinsHaveSupportedBuildProfile = pins.count == 1
+                && pins.allSatisfy { profileEligible.contains($0.identity) }
+            if allPinsHaveSupportedBuildProfile {
+                findings.append(.init(id: "module-build", capability: .partial,
+                                      summary: "Experimental ZIPFoundation module profile is eligible",
+                                      detail: "The exact allowlisted revision and source layout match the in-process module build path. XForge will attempt to emit, compile and link it, but this native Swift dependency path has not yet been validated on a physical device. Other dependency shapes are unsupported."))
+            } else {
+                let detail: String
+                if verifiedModules.isEmpty {
+                    detail = "Only the exact ZIPFoundation 0.9.19 pinned source profile is supported today. Other packages, versions, multi-pin graphs, products, plugins, binaries, and resources remain unsupported."
+                } else if !native.hasSwiftFrontend {
+                    detail = "The pinned ZIPFoundation source profile is present, but this XForge build has no linked Swift frontend."
+                } else if !NativeSDK.isInstalled {
+                    detail = "The pinned ZIPFoundation source profile is present, but the Darwin SDK is not installed."
+                } else {
+                    detail = "All dependencies in this lockfile must match the same validated build profile; conflicting or additional pins are not guessed."
+                }
+                findings.append(.init(id: "module-build", capability: .unsupported,
+                                      summary: "Some dependency modules are not buildable by XForge",
+                                      detail: detail))
+            }
         }
         if lockfiles.truncated {
             findings.append(.init(id: "lock-limit", capability: .unsupported,
@@ -128,6 +164,7 @@ enum DependencyWorkspaceAnalyzer {
         }
         return DependencyWorkspaceReport(packagePins: pins, lockfilePaths: paths,
                                          installedIdentities: installed,
+                                         profileEligibleIdentities: profileEligible,
                                          findings: findings,
                                          truncatedLockfileScan: lockfiles.truncated)
     }

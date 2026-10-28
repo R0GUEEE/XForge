@@ -178,15 +178,32 @@ final class NativeBuildExecutor: BuildExecutor {
             Task { @MainActor in
                 do {
                     let manifest = project.rootURL.appendingPathComponent("Package.swift")
-                    let dependencies = try NativeBuildPlanFactory.swiftPackageDependencies(
-                        manifestURL: manifest
-                    )
-                    guard dependencies.isEmpty else {
-                        continuation.yield(.plan("Resolving dependencies…"))
-                        throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(dependencies)
+                    let dependencies = try NativeBuildPlanFactory.swiftPackageDependencies(manifestURL: manifest)
+                    let modules: [NativeSwiftDependencyPlan]
+                    do {
+                        modules = try NativeBuildPlanFactory.swiftDependencyModules(
+                            root: project.rootURL, declaredNames: dependencies
+                        )
+                    } catch let planError as NativeBuildPlanError {
+                        guard case .dependencySourceMissing = planError else { throw planError }
+                        continuation.yield(.plan("Fetching verified pinned dependency sources…"))
+                        let lockURL = project.rootURL.appendingPathComponent("Package.resolved")
+                        let lock = try ResolvedPackageLockfile.read(contentsOf: lockURL)
+                        _ = try await PinnedDependencySourceInstaller.installPinnedSources(
+                            for: project, pins: lock.pins
+                        )
+                        modules = try NativeBuildPlanFactory.swiftDependencyModules(
+                            root: project.rootURL, declaredNames: dependencies
+                        )
                     }
-                    continuation.yield(.plan("Resolving dependencies…"))
-                    continuation.yield(.output("No package dependencies: nothing to resolve."))
+                    continuation.yield(.plan("Preparing dependency modules…"))
+                    if modules.isEmpty {
+                        continuation.yield(.output("No package dependencies: nothing to resolve."))
+                    } else {
+                        for module in modules {
+                            continuation.yield(.output("verified \(module.identity) @ \(module.revision.prefix(12)); module will be built in-process"))
+                        }
+                    }
                     continuation.yield(.finished)
                     continuation.finish()
                 } catch {
@@ -242,8 +259,8 @@ final class NativeBuildExecutor: BuildExecutor {
         emit(.plan("Compiling \(plan.moduleName) for arm64-apple-ios\(plan.minimumIOSVersion)…"))
         emit(.output("\(plan.swiftSources.count) Swift, \(plan.clangSources.count) C, \(plan.resources.count) resource files"))
 
-        if !plan.swiftSources.isEmpty, !capabilities.hasSwiftFrontend {
-            throw NativeBuildError.swiftFrontendMissing(plan.swiftSources.count)
+        if plan.hasSwift, !capabilities.hasSwiftFrontend {
+            throw NativeBuildError.swiftFrontendMissing(plan.swiftSources.count + plan.swiftDependencies.reduce(0) { $0 + $1.sources.count })
         }
 
         let buildDirectory = project.rootURL.appendingPathComponent(".xforge-build", isDirectory: true)
@@ -251,6 +268,56 @@ final class NativeBuildExecutor: BuildExecutor {
         try fileManager.createDirectory(at: buildDirectory, withIntermediateDirectories: true)
 
         var objects: [URL] = []
+        let dependencyModuleDirectories = plan.swiftDependencies.map { dependency in
+            buildDirectory.appendingPathComponent("Dependencies/\(dependency.moduleName)", isDirectory: true)
+        }
+
+        // Build each audited dependency as a real Swift module before compiling
+        // the app. No package manifest is evaluated here: the plan carries a
+        // fixed source list derived from a verified lock pin/profile.
+        for (index, dependency) in plan.swiftDependencies.enumerated() {
+            let moduleDirectory = dependencyModuleDirectories[index]
+            try fileManager.createDirectory(at: moduleDirectory, withIntermediateDirectories: true)
+            let moduleFile = moduleDirectory.appendingPathComponent("\(dependency.moduleName).swiftmodule")
+            let moduleArguments = try NativeToolchainInvocation.swiftModuleArguments(
+                moduleName: dependency.moduleName,
+                sources: dependency.sources,
+                moduleOutput: moduleFile,
+                minimumIOSVersion: plan.minimumIOSVersion,
+                sdk: sdk,
+                swiftVersion: "5"
+            )
+            emit(.output("swift-frontend emit-module \(dependency.moduleName) (\(dependency.sources.count) files)"))
+            let moduleResult = try await runDetached {
+                try NativeToolchain.runSwiftFrontend(arguments: moduleArguments)
+            }
+            try check(moduleResult, tool: "swift-frontend module \(dependency.moduleName)", source: dependency.sources[0])
+            guard fileManager.fileExists(atPath: moduleFile.path) else {
+                throw NativeBuildError.dependencyModuleMissing(dependency.moduleName)
+            }
+
+            var dependencyPlan = plan
+            dependencyPlan.moduleName = dependency.moduleName
+            dependencyPlan.swiftSources = dependency.sources
+            dependencyPlan.swiftDependencies = []
+            for source in dependency.sources {
+                let object = moduleDirectory.appendingPathComponent(objectName(for: source))
+                let arguments = try NativeToolchainInvocation.swiftFrontendArguments(
+                    source: source,
+                    object: object,
+                    plan: dependencyPlan,
+                    sdk: sdk,
+                    compilationUnitSources: dependency.sources,
+                    additionalImportPaths: [moduleDirectory]
+                )
+                emit(.output("swift-frontend \(dependency.moduleName)/\(source.lastPathComponent)"))
+                let result = try await runDetached {
+                    try NativeToolchain.runSwiftFrontend(arguments: arguments)
+                }
+                try check(result, tool: "swift-frontend \(dependency.moduleName)", source: source)
+                objects.append(object)
+            }
+        }
 
         for source in plan.swiftSources {
             let object = buildDirectory
@@ -259,7 +326,9 @@ final class NativeBuildExecutor: BuildExecutor {
                 source: source,
                 object: object,
                 plan: plan,
-                sdk: sdk
+                sdk: sdk,
+                compilationUnitSources: plan.swiftSources,
+                additionalImportPaths: dependencyModuleDirectories
             )
             emit(.output("swift-frontend \(source.lastPathComponent)"))
             let result = try await runDetached {
@@ -371,6 +440,24 @@ final class NativeBuildExecutor: BuildExecutor {
         )
         try plist.write(to: bundle.appendingPathComponent("Info.plist"), options: .atomic)
 
+        for dependency in plan.swiftDependencies where !dependency.resources.isEmpty {
+            let resourceBundle = bundle.appendingPathComponent(dependency.resourceBundleName, isDirectory: true)
+            try fileManager.createDirectory(at: resourceBundle, withIntermediateDirectories: true)
+            let resourceInfo: [String: Any] = [
+                "CFBundleIdentifier": "\(plan.bundleIdentifier).\(dependency.identity).resources",
+                "CFBundleName": dependency.moduleName,
+                "CFBundlePackageType": "BNDL"
+            ]
+            let resourcePlist = try PropertyListSerialization.data(fromPropertyList: resourceInfo,
+                                                                  format: .xml, options: 0)
+            try resourcePlist.write(to: resourceBundle.appendingPathComponent("Info.plist"), options: .atomic)
+            for resource in dependency.resources {
+                try fileManager.copyItem(at: resource,
+                    to: resourceBundle.appendingPathComponent(resource.lastPathComponent))
+            }
+            emit(.output("Bundled resources for \(dependency.moduleName) (\(dependency.resources.count) files)."))
+        }
+
         for resource in plan.resources {
             if resource.pathExtension.lowercased() == "xcassets" {
                 // There is no actool on iOS: asset catalogs are compiled by a
@@ -422,6 +509,7 @@ final class NativeBuildExecutor: BuildExecutor {
 enum NativeBuildError: LocalizedError {
     case toolchainUnavailable(String?)
     case swiftFrontendMissing(Int)
+    case dependencyModuleMissing(String)
     case projectAlreadyExists(URL)
     case missingProjectDirectory(URL)
     case compileFailed(tool: String, source: URL, diagnostics: String)
@@ -437,6 +525,8 @@ enum NativeBuildError: LocalizedError {
             is not linked into this build of XForge. Only the C/C++/Objective-C \
             half of the toolchain is present.
             """
+        case .dependencyModuleMissing(let name):
+            return "The Swift frontend did not emit the expected \(name).swiftmodule; refusing to compile the app against a missing dependency module."
         case .projectAlreadyExists(let url):
             return "A project already exists at \(url.path)."
         case .missingProjectDirectory(let url):

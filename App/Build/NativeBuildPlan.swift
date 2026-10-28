@@ -25,6 +25,8 @@ struct NativeBuildPlan: Sendable, Equatable {
 
     /// Swift translation units, in a stable order.
     var swiftSources: [URL]
+    /// Swift source modules built from verified, allowlisted pinned dependencies.
+    var swiftDependencies: [NativeSwiftDependencyPlan]
     /// C / Objective-C / Objective-C++ translation units.
     var clangSources: [NativeClangSource]
     /// Files copied into the bundle unchanged.
@@ -39,10 +41,19 @@ struct NativeBuildPlan: Sendable, Equatable {
     var frameworkSearchPaths: [URL]
 
     var isEmpty: Bool {
-        swiftSources.isEmpty && clangSources.isEmpty
+        swiftSources.isEmpty && swiftDependencies.isEmpty && clangSources.isEmpty
     }
 
-    var hasSwift: Bool { !swiftSources.isEmpty }
+    var hasSwift: Bool { !swiftSources.isEmpty || !swiftDependencies.isEmpty }
+}
+
+struct NativeSwiftDependencyPlan: Sendable, Equatable {
+    let identity: String
+    let moduleName: String
+    let revision: String
+    let sources: [URL]
+    let resources: [URL]
+    let resourceBundleName: String
 }
 
 /// One non-Swift translation unit plus the language clang must be told to use.
@@ -66,6 +77,8 @@ enum NativeBuildPlanError: LocalizedError {
     case noSources(URL)
     case missingTargetsDirectory(URL)
     case unsupportedSwiftPackageDependencies([String])
+    case dependencyLockfileMissing(URL)
+    case dependencySourceMissing(String)
     case missingPackageManifest(URL)
 
     var errorDescription: String? {
@@ -77,14 +90,11 @@ enum NativeBuildPlanError: LocalizedError {
         case .unsupportedSwiftPackageDependencies(let names):
             let list = names.prefix(5).joined(separator: ", ")
             let more = names.count > 5 ? " and \(names.count - 5) more" : ""
-            return """
-            This project declares SwiftPM dependencies (\(list)\(more)). XForge does not
-            execute Package.swift or run SwiftPM. Open Project → Dependencies to inspect
-            Package.resolved and, for supported public GitHub pins, fetch immutable
-            source snapshots. The current compiler still cannot build dependency modules
-            or link their products, so downloading sources alone will not produce an IPA.
-            For a build today, use a dependency-free project or build with Xcode on a Mac.
-            """
+            return "Only the exact pinned ZIPFoundation 0.9.19 profile is currently compiled in-process. Unsupported dependencies: \(list)\(more). XForge does not execute Package.swift, plugins, or build scripts."
+        case .dependencyLockfileMissing(let url):
+            return "This package declares a dependency but has no Package.resolved at \(url.path). Commit a lockfile, then use Project → Dependencies to fetch a supported pinned source. XForge will not resolve floating versions."
+        case .dependencySourceMissing(let identity):
+            return "The verified source snapshot for \(identity) is not installed. Building will fetch this supported pin automatically; you can also prefetch it from Project → Dependencies."
         case .missingPackageManifest(let root):
             return "No Package.swift was found at \(root.path)."
         }
@@ -109,13 +119,12 @@ enum NativeBuildPlanFactory {
             throw NativeBuildPlanError.missingPackageManifest(root)
         }
 
-        // Dependencies are the one thing an in-process driver cannot resolve:
-        // SwiftPM resolves them by fetching and *running* package manifests.
-        // Refuse them by name instead of failing somewhere further down.
+        // Build only dependency shapes that have a verified, audited native module
+        // profile. No manifest evaluation or general SwiftPM resolution happens here.
         let dependencies = try swiftPackageDependencies(manifestURL: manifest)
-        if !dependencies.isEmpty {
-            throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(dependencies)
-        }
+        let swiftDependencies = try swiftDependencyModules(
+            root: root, declaredNames: dependencies, fileManager: fileManager
+        )
 
         let sourcesRoot = root.appendingPathComponent("Sources", isDirectory: true)
         var isDirectory: ObjCBool = false
@@ -150,12 +159,15 @@ enum NativeBuildPlanFactory {
         var searchPaths: [URL] = []
         var frameworkSearchPaths: [URL] = []
         var frameworks = ["Foundation"]
-        if !swiftSources.isEmpty {
+        if !swiftSources.isEmpty || !swiftDependencies.isEmpty {
             // A Swift executable links the Swift runtime statically: the Darwin
             // SDK bundle carries it, and there is no dyld-shared runtime on a
             // sideloaded device build.
             searchPaths.append(contentsOf: sdk.swiftRuntimeLibraryPaths)
             frameworks.append("UIKit")
+        }
+        if swiftDependencies.contains(where: { $0.moduleName == "ZIPFoundation" }) {
+            frameworks.append("Compression")
         }
 
         let template = root.appendingPathComponent("Support/Info.plist")
@@ -172,6 +184,7 @@ enum NativeBuildPlanFactory {
             buildNumber: appInfo.buildNumber,
             configuration: configuration,
             swiftSources: swiftSources,
+            swiftDependencies: swiftDependencies,
             clangSources: clangSources,
             resources: resources,
             infoPlistTemplate: hasTemplate ? template : nil,
@@ -179,6 +192,75 @@ enum NativeBuildPlanFactory {
             librarySearchPaths: searchPaths,
             frameworkSearchPaths: frameworkSearchPaths
         )
+    }
+
+    /// First audited in-process dependency module profile. The exact commit is tied
+    /// to ZIPFoundation 0.9.19; a different pin is never guessed compatible.
+    static let zipFoundationSupportedRevision = "02b6abe5f6eef7e3cbd5f247c5cc24e246efcfe0"
+
+    static func swiftDependencyModules(
+        root: URL,
+        declaredNames: [String],
+        fileManager: FileManager = .default
+    ) throws -> [NativeSwiftDependencyPlan] {
+        guard !declaredNames.isEmpty else { return [] }
+        guard declaredNames.count == 1,
+              declaredNames[0].caseInsensitiveCompare("ZIPFoundation") == .orderedSame else {
+            throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(declaredNames)
+        }
+        let lockURL = root.appendingPathComponent("Package.resolved")
+        guard fileManager.fileExists(atPath: lockURL.path) else {
+            throw NativeBuildPlanError.dependencyLockfileMissing(lockURL)
+        }
+        guard let lock = try? ResolvedPackageLockfile.read(contentsOf: lockURL),
+              lock.pins.count == 1,
+              let pin = lock.pins.first,
+              pin.identity == "zipfoundation",
+              pin.kind == .remoteSourceControl,
+              pin.revision == zipFoundationSupportedRevision,
+              pin.version == "0.9.19",
+              let repository = try? GitHubRepository.parse(pin.location),
+              repository.owner.lowercased() == "weichsel",
+              repository.name.lowercased() == "zipfoundation" else {
+            throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(declaredNames)
+        }
+
+        let snapshot = DependencyWorkspaceAnalyzer.dependencyDirectory(for: pin, root: root)
+        guard fileManager.fileExists(atPath: snapshot.path) else {
+            throw NativeBuildPlanError.dependencySourceMissing("ZIPFoundation 0.9.19")
+        }
+        guard let marker = PinnedDependencySourceInstaller.readMarker(snapshot),
+              marker.identity == pin.identity,
+              marker.repository.lowercased() == "weichsel/zipfoundation",
+              marker.revision == pin.revision,
+              marker.archiveSHA256.count == 64,
+              let recordedTreeHash = marker.sourceTreeSHA256,
+              (try? PinnedDependencySourceInstaller.sourceTreeSHA256(at: snapshot)) == recordedTreeHash else {
+            throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(declaredNames)
+        }
+
+        let sourceRoot = snapshot.appendingPathComponent("Sources/ZIPFoundation", isDirectory: true)
+        let sources = try files(in: sourceRoot, extensions: ["swift"], fileManager: fileManager)
+        let sourceBytes = sources.reduce(Int64(0)) { total, url in
+            let attrs = try? fileManager.attributesOfItem(atPath: url.path)
+            let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
+            return total + size
+        }
+        guard (16...32).contains(sources.count), sourceBytes <= 1024 * 1024 else {
+            throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(declaredNames)
+        }
+        let resourceDirectory = sourceRoot.appendingPathComponent("Resources", isDirectory: true)
+        let resourceEntries = (try? fileManager.contentsOfDirectory(
+            at: resourceDirectory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
+        )) ?? []
+        guard resourceEntries.count == 1,
+              resourceEntries.first?.lastPathComponent == "PrivacyInfo.xcprivacy" else {
+            throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(declaredNames)
+        }
+        return [NativeSwiftDependencyPlan(identity: pin.identity, moduleName: "ZIPFoundation",
+                                          revision: pin.revision, sources: sources,
+                                          resources: resourceEntries,
+                                          resourceBundleName: "ZIPFoundation_ZIPFoundation.bundle")]
     }
 
     /// The package's declared `.package(url: "…")` dependencies, by name.
@@ -191,15 +273,21 @@ enum NativeBuildPlanFactory {
         guard let text = try? String(contentsOf: manifestURL, encoding: .utf8) else {
             return []
         }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         var names: [String] = []
-        for line in text.split(separator: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix(".package(") else { continue }
-            if let name = quotedName(in: trimmed) {
+        for line in lines {
+            guard let invocation = line.range(of: ".package(") else { continue }
+            let arguments = String(line[invocation.upperBound...])
+            if let name = quotedName(in: arguments) {
                 names.append(name)
             } else {
-                names.append("an unnamed package")
+                names.append("an unresolved package dependency")
             }
+        }
+        // Multi-line/dynamic declarations that the small scanner cannot classify
+        // must be refused, never mistaken for a dependency-free package.
+        if names.isEmpty, text.contains(".package") {
+            return ["an unresolved package declaration"]
         }
         return names
     }

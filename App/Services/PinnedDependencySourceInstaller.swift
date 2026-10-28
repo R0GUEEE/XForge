@@ -38,6 +38,7 @@ enum PinnedDependencySourceInstaller {
         let repository: String
         let revision: String
         let archiveSHA256: String
+        let sourceTreeSHA256: String?
         let archiveBytes: Int64
         let extractedBytes: Int64
         let fetchedAt: Date
@@ -50,6 +51,8 @@ enum PinnedDependencySourceInstaller {
         case unexpectedArchiveRoot(String)
         case archiveRevisionMismatch(identity: String, expected: String, actualRoot: String)
         case invalidPin(String)
+        case unsafeCachedFile(String)
+        case cachedTreeTooLarge
 
         var errorDescription: String? {
             switch self {
@@ -59,6 +62,8 @@ enum PinnedDependencySourceInstaller {
             case .unexpectedArchiveRoot(let name): return "The archive for \(name) did not contain a single repository root."
             case .archiveRevisionMismatch(let identity, let expected, let root): return "The GitHub archive for \(identity) did not identify the pinned commit \(expected.prefix(12)); archive root was \(root). Refusing to store it as a pinned source."
             case .invalidPin(let name): return "The pin for \(name) is not an immutable supported public GitHub commit."
+            case .unsafeCachedFile(let path): return "The fetched dependency cache contains a symbolic link or unsafe file path (\(path)); it was not built. Remove and fetch the source again."
+            case .cachedTreeTooLarge: return "The cached dependency source exceeds the source verification size limit."
             }
         }
     }
@@ -93,6 +98,10 @@ enum PinnedDependencySourceInstaller {
             let destination = root.appendingPathComponent(slug, isDirectory: true)
             if let marker = readMarker(destination), marker.revision == revision,
                marker.repository == repo.slug {
+                guard let treeHash = marker.sourceTreeSHA256,
+                      (try? sourceTreeSHA256(at: destination)) == treeHash else {
+                    throw InstallError.destinationCollision(slug)
+                }
                 existing.append(pin.identity)
                 continue
             }
@@ -121,9 +130,10 @@ enum PinnedDependencySourceInstaller {
                                                            expected: revision,
                                                            actualRoot: sourceRoot.lastPathComponent)
             }
+            let sourceTreeHash = try sourceTreeSHA256(at: sourceRoot)
             let marker = Marker(identity: pin.identity, repository: repo.slug, revision: revision,
-                                archiveSHA256: archiveHash, archiveBytes: archiveBytes,
-                                extractedBytes: stats.bytes, fetchedAt: Date())
+                                archiveSHA256: archiveHash, sourceTreeSHA256: sourceTreeHash,
+                                archiveBytes: archiveBytes, extractedBytes: stats.bytes, fetchedAt: Date())
             try JSONEncoder().encode(marker).write(to: sourceRoot.appendingPathComponent(".xforge-dependency.json"), options: .atomic)
             try FileManager.default.moveItem(at: sourceRoot, to: destination)
             installed.append(pin.identity)
@@ -134,6 +144,55 @@ enum PinnedDependencySourceInstaller {
 
     static func archiveRootMatches(revision: String, rootName: String) -> Bool {
         rootName.lowercased().hasSuffix(revision.lowercased())
+    }
+
+    /// Re-hash the extracted files at install and plan time. The archive digest is
+    /// provenance; this tree digest detects edits after fetch before compiler input
+    /// is trusted. File paths are ordered and included in the digest as well.
+    static func sourceTreeSHA256(at root: URL) throws -> String {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: root, includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey], options: []
+        ) else { throw InstallError.unsafeCachedFile(root.lastPathComponent) }
+        var files: [(String, URL, Int64)] = []
+        var bytes: Int64 = 0
+        for case let url as URL in enumerator {
+            if url.lastPathComponent == ".xforge-dependency.json" { continue }
+            let relative = GitHubSnapshotDetector.relativePath(of: url, in: root) ?? url.lastPathComponent
+            guard (try? SnapshotArchiveExtractor.validatedRelativePath(relative)) != nil else {
+                throw InstallError.unsafeCachedFile(relative)
+            }
+            let attrs = try fm.attributesOfItem(atPath: url.path)
+            if attrs[.type] as? FileAttributeType == .typeSymbolicLink {
+                throw InstallError.unsafeCachedFile(relative)
+            }
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { continue }
+            let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+            bytes += size
+            guard bytes <= limits.maxTotalBytes, files.count < limits.maxEntries else {
+                throw InstallError.cachedTreeTooLarge
+            }
+            files.append((relative, url, size))
+        }
+        files.sort { $0.0 < $1.0 }
+        var digest = SHA256()
+        for (relative, url, _) in files {
+            digest.update(data: Data(relative.utf8))
+            digest.update(data: Data([0]))
+            let handle = try FileHandle(forReadingFrom: url)
+            do {
+                while true {
+                    let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+                    if chunk.isEmpty { break }
+                    digest.update(data: chunk)
+                }
+            } catch {
+                try? handle.close()
+                throw error
+            }
+            try handle.close()
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     static func readMarker(_ directory: URL) -> Marker? {
