@@ -75,7 +75,9 @@ final class GitHubSnapshotImportTests: XCTestCase {
     func testAcceptsOrdinaryArchivePaths() throws {
         XCTAssertEqual(try GitHubRepository.parse("https://github.com/apple/swift-argument-parser").slug,
                        "apple/swift-argument-parser")
-        XCTAssertEqual(try GitHubRepository.parse("owner/repo@release/2.0").ref,
+        XCTAssertEqual(try GitHubRepository.parse("https://github.com/owner/repo/tree/main").ref,
+                       "main")
+        XCTAssertEqual(try GitHubRepository.parse("https://github.com/owner/repo", explicitRef: "release/2.0").ref,
                        "release/2.0")
         let limits = SnapshotExtractionLimits.default
         XCTAssertEqual(try SnapshotArchiveExtractor.validatedRelativePath(
