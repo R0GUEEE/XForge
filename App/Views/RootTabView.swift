@@ -42,6 +42,12 @@ struct RootTabView: View {
             // user data and are backed up.
             XForgeEnvironment.prepareStorage()
             XForgeLog.prepare()
+
+            // A release build carries the Darwin SDK inside the .app. Installing it
+            // once, in the background, is what makes "install XForge and compile"
+            // true without a 456 MB download first. A no-op for builds that do not
+            // bundle one, and it never replaces an SDK that is already installed.
+            BundledSDKMonitor.shared.startAutomaticInstallIfNeeded()
         }
     }
 }

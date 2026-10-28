@@ -23,6 +23,12 @@ Vendor/NativeToolchain/*
 # Where build-ipa.yml unpacks a fetched toolchain bundle.
 .toolchain-artifact/
 
+# The Darwin SDK bundled *inside* the IPA (Docs/BUNDLED-SDK.md). ~456 MB of
+# Apple SDK content: fetched by Tools/fetch-bundled-sdk.sh or by build-ipa.yml,
+# verified against a pinned SHA-256, and never committed. `project.yml` marks the
+# folder reference optional, so a clone without it still generates and builds.
+BundledSDK/
+
 # macOS
 .DS_Store
 

@@ -1,4 +1,4 @@
-.PHONY: toolchain toolchain-release icon gen build test ipa clean
+.PHONY: toolchain toolchain-release sdk-bundle icon gen build test ipa clean
 
 XCODE := xcodebuild
 SCHEME := XForge
@@ -25,12 +25,26 @@ toolchain:
 toolchain-release:
 	@bash NativeToolchain/install-bundle.sh --release $(TAG)
 
+## Put the Darwin SDK that ships inside the IPA into BundledSDK/.
+##
+## Fetched from the pinned `darwin-sdk-7` release and checked against its byte
+## count and SHA-256 (see Docs/BUNDLED-SDK.md), so the archive a build carries is
+## a named, verified artifact rather than "whatever was newest". The directory is
+## gitignored; `project.yml` picks it up as a folder-reference resource, and a
+## checkout without it still builds (the app reports no bundled SDK).
+##
+##   make sdk-bundle                    # the pinned release
+##   make sdk-bundle TAG=darwin-sdk-8   # needs DARWIN_SDK_SHA256 in the environment
+sdk-bundle:
+	@bash Tools/fetch-bundled-sdk.sh $(TAG)
+
 ## Regenerate the app icon + accent colour asset catalog (needs Pillow)
 icon:
 	python3 Tools/gen-appicon.py
 
 ## Generate the Xcode project from project.yml
 gen:
+	mkdir -p BundledSDK
 	xcodegen generate --spec project.yml
 
 ## Resolve SPM deps and build for the simulator

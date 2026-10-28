@@ -91,9 +91,22 @@ final class BuildManager: ObservableObject {
                 return
             }
 
-            let url = try await XForgeReleases.darwinSDKURL()
-            appendConsole("▸ darwin SDK: \(url.lastPathComponent)")
-            try await executor.installSDK(from: .hostedRemote(url))
+            // A build that carries its own SDK installs that one, offline. It is
+            // not a fallback for a download: if the bundled SDK is present but
+            // cannot be installed, the stage fails and says why, rather than
+            // silently resolving a different artifact from GitHub.
+            switch BundledDarwinSDK.currentDiscovery() {
+            case .bundled(_, let manifest):
+                appendConsole("▸ darwin SDK: bundled with this app (\(manifest.releaseTag))")
+                try await executor.installSDK(from: .bundled)
+            case .unverified:
+                throw BundledDarwinSDK.Error.unverified(
+                    "bundled-sdk.json is missing or unreadable")
+            case .notBundled:
+                let url = try await XForgeReleases.darwinSDKURL()
+                appendConsole("▸ darwin SDK: \(url.lastPathComponent)")
+                try await executor.installSDK(from: .hostedRemote(url))
+            }
             guard NativeSDK.isInstalled else {
                 throw NativeSDKError.missingBundle
             }

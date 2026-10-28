@@ -160,13 +160,17 @@ enum XcodeProjectReader {
     /// phase records.
     private static func groupPaths(root: [String: PbxValue], objects: [String: PbxValue]) -> [String: String] {
         var paths: [String: String] = [:]
+        var visited = Set<String>()
 
         func walk(_ id: String, prefix: String) {
-            guard let element = objects[id]?.dictionaryValue else { return }
+            guard visited.insert(id).inserted,
+                  let element = objects[id]?.dictionaryValue else { return }
             let component = element["path"]?.stringValue ?? element["name"]?.stringValue ?? ""
+            let sourceTree = element["sourceTree"]?.stringValue ?? "<group>"
+            let parent = sourceTree == "<group>" ? prefix : ""
             let full = component.isEmpty
-                ? prefix
-                : (prefix.isEmpty ? component : prefix + "/" + component)
+                ? parent
+                : (parent.isEmpty ? component : parent + "/" + component)
             paths[id] = full
             for child in element["children"]?.arrayValue ?? [] {
                 if let childID = child.stringValue { walk(childID, prefix: full) }
@@ -267,8 +271,14 @@ enum XcodeProjectReader {
         }
 
         paths.append(relative)
-        let url = sourceDirectory.appendingPathComponent(relative)
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return (settings, paths) }
+        let url = sourceDirectory.appendingPathComponent(relative).standardizedFileURL
+        let root = sourceDirectory.standardizedFileURL
+        let resolved = url.resolvingSymlinksInPath()
+        let resolvedRoot = root.resolvingSymlinksInPath()
+        guard resolved.path == resolvedRoot.path || resolved.path.hasPrefix(resolvedRoot.path + "/") else {
+            return (settings, paths)
+        }
+        guard let text = try? String(contentsOf: resolved, encoding: .utf8) else { return (settings, paths) }
 
         // The xcconfig is the base of its layer: settings written in the project
         // file itself win over it.
@@ -342,12 +352,14 @@ enum PbxParseError: LocalizedError {
     case unexpectedEnd
     case unexpectedCharacter(Character)
     case unterminated(String)
+    case excessiveNesting(Int)
 
     var errorDescription: String? {
         switch self {
         case .unexpectedEnd: return "the project file ends in the middle of a value."
         case .unexpectedCharacter(let character): return "unexpected '\(character)' in the project file."
         case .unterminated(let what): return "the project file has an unterminated \(what)."
+        case .excessiveNesting(let depth): return "the project file is nested too deeply (maximum \(depth) levels)."
         }
     }
 }
@@ -363,19 +375,24 @@ private struct PbxScanner {
         characters = Array(text)
     }
 
-    mutating func value() throws -> PbxValue {
+    private static let maximumNestingDepth = 256
+
+    mutating func value(depth: Int = 0) throws -> PbxValue {
+        guard depth <= Self.maximumNestingDepth else {
+            throw PbxParseError.excessiveNesting(Self.maximumNestingDepth)
+        }
         skipTrivia()
         guard index < characters.count else { throw PbxParseError.unexpectedEnd }
         switch characters[index] {
-        case "{": return try dictionary()
-        case "(": return try array()
+        case "{": return try dictionary(depth: depth)
+        case "(": return try array(depth: depth)
         case "\"": return .string(try quotedString())
         case "<": return .data(try hexData())
         default: return .string(try bareString())
         }
     }
 
-    private mutating func dictionary() throws -> PbxValue {
+    private mutating func dictionary(depth: Int) throws -> PbxValue {
         index += 1  // "{"
         var result: [String: PbxValue] = [:]
         while true {
@@ -385,19 +402,19 @@ private struct PbxScanner {
                 index += 1
                 return .dictionary(result)
             }
-            let key = try value().stringValue ?? ""
+            let key = try value(depth: depth + 1).stringValue ?? ""
             skipTrivia()
             guard index < characters.count, characters[index] == "=" else {
                 throw PbxParseError.unterminated("dictionary entry")
             }
             index += 1
-            result[key] = try value()
+            result[key] = try value(depth: depth + 1)
             skipTrivia()
             if index < characters.count, characters[index] == ";" { index += 1 }
         }
     }
 
-    private mutating func array() throws -> PbxValue {
+    private mutating func array(depth: Int) throws -> PbxValue {
         index += 1  // "("
         var result: [PbxValue] = []
         while true {
@@ -407,7 +424,7 @@ private struct PbxScanner {
                 index += 1
                 return .array(result)
             }
-            result.append(try value())
+            result.append(try value(depth: depth + 1))
             skipTrivia()
             if index < characters.count, characters[index] == "," { index += 1 }
         }

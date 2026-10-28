@@ -23,7 +23,9 @@ struct ToolchainView: View {
     @State private var message: String?
     @State private var smokeResult: String?
     @State private var confirmingDownload = false
+    @State private var confirmingBundledInstall = false
     @StateObject private var importState = SDKImportState()
+    @StateObject private var bundled = BundledSDKMonitor.shared
 
     /// What the picker offers. Deliberately permissive.
     ///
@@ -43,6 +45,11 @@ struct ToolchainView: View {
     }
 
     private var capabilities: NativeToolchainCapabilities { .current }
+
+    /// What this build carries inside the .app, if anything.
+    private var bundledDiscovery: BundledDarwinSDK.Discovery {
+        BundledDarwinSDK.currentDiscovery()
+    }
 
     var body: some View {
         Form {
@@ -67,6 +74,22 @@ struct ToolchainView: View {
                     Text("Not installed. A build cannot compile anything without it.")
                         .foregroundStyle(.secondary)
                 }
+                switch bundledDiscovery {
+                case .bundled(_, let manifest):
+                    LabeledContent("Bundled", value: manifest.releaseTag)
+                    LabeledContent("Archive",
+                                   value: ByteCountFormatter.string(fromByteCount: manifest.byteCount,
+                                                                   countStyle: .file))
+                    if let version = manifest.sdkVersion {
+                        LabeledContent("iPhoneOS", value: version)
+                    }
+                case .unverified(_, let reason):
+                    Text("A bundled SDK is present but cannot be verified: \(reason)")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                case .notBundled:
+                    EmptyView()
+                }
                 if let sdkError {
                     Text(sdkError).font(.footnote).foregroundStyle(.red)
                 }
@@ -78,7 +101,10 @@ struct ToolchainView: View {
                      + "app's container. About 460 MB downloaded, or built here from an "
                      + "Xcode.xip — which the picker copies into the container first, so "
                      + "an 11 GB xip needs roughly 12 GB free, plus about 1.5 GB for the "
-                     + "bundle. Extraction takes a few minutes.")
+                     + "bundle. Extraction takes a few minutes. "
+                     + "A release IPA carries this SDK inside the app; it is verified "
+                     + "against the manifest's SHA-256 before it is unpacked, and it is "
+                     + "never used to replace an SDK you installed yourself.")
             }
 
             Section {
@@ -89,12 +115,40 @@ struct ToolchainView: View {
                 }
                 .disabled(working)
 
+                if case .bundled(_, let manifest) = bundledDiscovery {
+                    Button {
+                        if sdkPath == nil {
+                            bundled.installExplicitly()
+                        } else {
+                            // Replacing an installed SDK is destructive, so it is a
+                            // question — never a silent side effect of a tap.
+                            confirmingBundledInstall = true
+                        }
+                        refresh()
+                    } label: {
+                        Label(sdkPath == nil
+                              ? "Install the bundled SDK (\(manifest.releaseTag))"
+                              : "Reinstall the bundled SDK (\(manifest.releaseTag))…",
+                              systemImage: "shippingbox")
+                    }
+                    .disabled(working || bundled.isInstalling)
+                }
+
                 Button {
                     importing = true
                 } label: {
                     Label("Install from an Xcode.xip or a bundle…", systemImage: "doc.badge.plus")
                 }
                 .disabled(working)
+
+                if bundled.isInstalling {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: bundled.fraction)
+                        Text(bundled.status ?? "Installing…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 if importState.isRunning {
                     VStack(alignment: .leading, spacing: 4) {
@@ -145,9 +199,22 @@ struct ToolchainView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            if let outcome = bundled.outcome {
+                Section {
+                    Label(outcome, systemImage: "shippingbox")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .navigationTitle("Toolchain")
         .task { refresh() }
+        // A first-run install finishes in the background; re-read the SDK the
+        // moment it does, so the screen stops saying "not installed".
+        .onChange(of: bundled.isInstalling) { _, installing in
+            if !installing { refresh() }
+        }
         .fileImporter(
             isPresented: $importing,
             allowedContentTypes: Self.importableTypes,
@@ -165,6 +232,20 @@ struct ToolchainView: View {
                 XForgeLog.note("sdk import: the picker failed: \(error)")
                 Task { @MainActor in sdkError = error.localizedDescription }
             }
+        }
+        .confirmationDialog(
+            "Replace the installed Darwin SDK?",
+            isPresented: $confirmingBundledInstall
+        ) {
+            Button("Replace it", role: .destructive) {
+                bundled.installExplicitly(replacing: true)
+                refresh()
+            }
+            Button("Keep the installed SDK", role: .cancel) {}
+        } message: {
+            Text("The SDK you have installed now — imported, downloaded, or built from an "
+                 + "Xcode.xip — is removed and replaced with the one bundled in this app. "
+                 + "Projects are not affected.")
         }
         .confirmationDialog(
             "Download the Darwin SDK?",
@@ -304,6 +385,12 @@ struct ToolchainView: View {
     }
 
     private func removeSDK() {
+        // Remember *which* bundled release the user removed, so a relaunch does not
+        // quietly put it back. The bundled archive itself is inside the read-only
+        // app bundle and is never touched.
+        if case .bundled(_, let manifest) = bundledDiscovery {
+            BundledDarwinSDK.recordUserRemoval(tag: manifest.releaseTag)
+        }
         do {
             try NativeSDK.remove()
             refresh()

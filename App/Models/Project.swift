@@ -1,7 +1,7 @@
 import Foundation
 
 /// A SwiftPM package that can be built into an iOS app.
-struct Project: Identifiable, Hashable, Codable {
+struct Project: Identifiable, Hashable, Codable, Sendable {
     /// Project directories live under `<Documents>/projects`; this is the stored
     /// prefix a project's `rootPath` is built from, kept so a project record and
     /// its directory can be checked against each other.
@@ -14,6 +14,16 @@ struct Project: Identifiable, Hashable, Codable {
     var createdAt: Date = Date()
     /// Configured Info.plist settings for the produced app (editable in the GUI).
     var appInfo: AppInfo?
+    /// What this record points at. Decoded as `.swiftPackage` when absent, which is
+    /// what every record written before Xcode-project import existed was.
+    var kind: ProjectKind = .swiftPackage
+    /// How the project got here. `nil` for records from before import metadata.
+    var origin: ProjectOrigin?
+    /// For an imported snapshot whose project lives in a subdirectory of the
+    /// repository (a common Xcode layout), the project-relative path of that
+    /// subdirectory. The whole snapshot is preserved on disk; only the root used
+    /// for browsing/building is narrowed. `nil` means the repository root.
+    var snapshotSubpath: String?
 
     var packageManifestPath: String { "\(rootPath)/Package.swift" }
     var ipaOutputPath: String { "\(rootPath)/.build/xforge-\(name).ipa" }
@@ -23,9 +33,41 @@ struct Project: Identifiable, Hashable, Codable {
     /// Derived from `name` rather than stored: `rootPath` is the string this model
     /// carries around for display and for the safety check, and two stored
     /// locations for one project is how a build ends up reading a directory nobody
-    /// created.
+    /// created. `snapshotSubpath` is validated before use; an unsafe value falls
+    /// back to the repository root rather than escaping it.
     var rootURL: URL {
+        let base = XForgeEnvironment.projectsDirectory.appendingPathComponent(name, isDirectory: true)
+        guard let snapshotSubpath,
+              let safe = try? Self.validatedSubpath(snapshotSubpath) else { return base }
+        return base.appendingPathComponent(safe, isDirectory: true)
+    }
+
+    /// The imported snapshot's root, ignoring `snapshotSubpath`.
+    var snapshotRootURL: URL {
         XForgeEnvironment.projectsDirectory.appendingPathComponent(name, isDirectory: true)
+    }
+
+    var isXcodeProject: Bool { kind == .xcodeProject }
+
+    /// A repository-relative subdirectory: no absolute paths, no `..`, no empty
+    /// components and no backslashes.
+    static func validatedSubpath(_ value: String) throws -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = trimmed.split(separator: "/", omittingEmptySubsequences: false)
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.+ @()[]"))
+        guard !trimmed.isEmpty, trimmed.count <= 200,
+              !trimmed.hasPrefix("/"),
+              !trimmed.contains("\\"),
+              !trimmed.contains("\u{0}"),
+              components.allSatisfy({ component in
+                  !component.isEmpty
+                      && component != "."
+                      && component != ".."
+                      && component.unicodeScalars.allSatisfy(allowed.contains)
+              }) else {
+            throw ProjectValidationError.unsafePath
+        }
+        return trimmed
     }
 
     static func validatedName(_ value: String) throws -> String {
@@ -61,6 +103,45 @@ enum ProjectValidationError: LocalizedError {
     }
 }
 
+extension Project {
+    /// Explicit keys: the synthesized `CodingKeys` is private and this decoding lives
+    /// in an extension. Naming them also documents that these are the stored fields.
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case organizationIdentifier
+        case rootPath
+        case createdAt
+        case appInfo
+        case kind
+        case origin
+        case snapshotSubpath
+    }
+
+    /// Decode a record written by any version of the app.
+    ///
+    /// Synthesized `Codable` does *not* apply a property's default when the key is
+    /// missing, so a stored project from before `kind`/`origin` existed would fail
+    /// to decode and vanish from the list. Everything added after the first release
+    /// is therefore `decodeIfPresent`, and the initial fields keep their old
+    /// meaning.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        organizationIdentifier = try container.decodeIfPresent(
+            String.self, forKey: .organizationIdentifier
+        ) ?? "com.example"
+        rootPath = try container.decode(String.self, forKey: .rootPath)
+        createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
+        appInfo = try container.decodeIfPresent(AppInfo.self, forKey: .appInfo)
+        kind = try container.decodeIfPresent(ProjectKind.self, forKey: .kind) ?? .swiftPackage
+        origin = try container.decodeIfPresent(ProjectOrigin.self, forKey: .origin)
+        snapshotSubpath = try container.decodeIfPresent(String.self, forKey: .snapshotSubpath)
+    }
+}
+
+
 enum BuildConfiguration: String, Codable, CaseIterable, Identifiable {
     case debug
     case release
@@ -95,8 +176,12 @@ protocol BuildExecutor {
 
 enum SDKSource {
     /// A prebuilt `darwin.artifactbundle` we host (built in CI from Xcode).
-    ///
-    /// It used to have a `.bundled` case for an SDK already inside the guest
-    /// filesystem. There is no guest, so there is one way to get an SDK: fetch it.
     case hostedRemote(URL)
+
+    /// The SDK that shipped inside this app bundle (`BundledDarwinSDK`).
+    ///
+    /// Not a network fetch and deliberately not a *fallback* for one: when a build
+    /// carries an SDK, that SDK is what gets installed, and a failure to install it
+    /// fails the stage instead of quietly downloading a different artifact.
+    case bundled
 }

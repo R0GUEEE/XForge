@@ -77,6 +77,8 @@ final class NativeBuildExecutor: BuildExecutor {
         switch source {
         case .hostedRemote(let url):
             try await NativeSDK.install(fromRemote: url)
+        case .bundled:
+            _ = try await BundledDarwinSDK.installBundled()
         }
     }
 

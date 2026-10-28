@@ -15,20 +15,38 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      # Off by default, and gated again by a repository variable: the IPA now
+      # carries Apple SDK content (see Docs/BUNDLED-SDK.md), so publishing it is a
+      # redistribution decision, not a side effect of clicking Run. A build still
+      # uploads its IPA as a workflow artifact, which is what "prepare it" means.
       release:
-        description: Publish the IPA as a GitHub release
+        description: Publish the IPA as a GitHub release (needs the XFORGE_PUBLISH_RELEASES repository variable)
         type: boolean
-        default: true
+        default: false
       run_tests:
         description: Run simulator unit tests before archiving
         type: boolean
         default: false
       with_toolchain:
-        description: Install the published native toolchain bundle and link it into the app
+        description: Install the published native toolchain bundle and link it into the app (push builds always do)
         type: boolean
-        default: false
+        default: true
       toolchain_tag:
         description: Toolchain release tag to install (default - the newest toolchain-* release, or "artifact" for the newest workflow artifact)
+        type: string
+        default: ""
+      # Default true, and push builds always bundle (see the step's `if:`): the
+      # delivered IPA is supposed to work without a 456 MB download first.
+      bundle_darwin_sdk:
+        description: Bundle the Darwin SDK inside the IPA (push builds always do)
+        type: boolean
+        default: true
+      darwin_sdk_tag:
+        description: darwin-sdk-* release tag to bundle (default the pinned one)
+        type: string
+        default: ""
+      darwin_sdk_sha256:
+        description: SHA-256 of that tag's asset (required when the tag is not the pinned one)
         type: string
         default: ""
 
@@ -52,6 +70,14 @@ jobs:
       # version bump cannot silently produce a mislabelled release.
       EXPECTED_VERSION: "0.5.0"
       SPM_CLONES_DIR: .spm
+      # The Darwin SDK this IPA carries. Pinned three ways — tag, byte count and
+      # SHA-256 — so a re-uploaded or truncated asset fails the build instead of
+      # shipping something nobody verified. Bump all three together; the numbers
+      # live in Docs/BUNDLED-SDK.md as well.
+      DARWIN_SDK_TAG: darwin-sdk-7
+      DARWIN_SDK_ASSET: darwin.artifactbundle.zip
+      DARWIN_SDK_BYTES: "456769875"
+      DARWIN_SDK_SHA256: b44165c16a5cebf13ae85af4d630f49b863e342b84f864b4dc1bbba5789d4d9b
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
@@ -86,7 +112,7 @@ jobs:
       # on every app build for no reason. The tag names its contents, so "the newest
       # `toolchain-*` release" is a well-defined thing to ask for.
       - name: Install the native toolchain bundle
-        if: ${{ inputs.with_toolchain }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.with_toolchain) }}
         env:
           GH_TOKEN: ${{ github.token }}
           REQUESTED_TAG: ${{ inputs.toolchain_tag }}
@@ -128,7 +154,7 @@ jobs:
       # with what the app will actually compile against on a device — the Darwin SDK
       # it installs at runtime — and neither is visible anywhere else in this log.
       - name: Check the toolchain bundle against this Xcode
-        if: ${{ inputs.with_toolchain }}
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.with_toolchain) }}
         run: |
           set -euo pipefail
           MANIFEST="Vendor/NativeToolchain/manifest.txt"
@@ -158,6 +184,23 @@ jobs:
           echo "  Swift frontend built from $(get swift_ref)"
           echo "  this runner's Swift (used to bootstrap it): $(xcrun swift --version 2>/dev/null | head -n 1)"
 
+      # Both halves have to be present for the delivered IPA to be able to compile:
+      # the compiler is linked in at build time (above), the SDK ships inside the
+      # .app (below). This asserts the first, because a toolchain step that quietly
+      # installed nothing would otherwise produce a "working" IPA that reports
+      # "clang: missing" on the device.
+      - name: Verify the compiler is linked in
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.with_toolchain) }}
+        run: |
+          set -euo pipefail
+          test -f Vendor/NativeToolchain/manifest.txt \
+            || { echo "::error::no toolchain bundle was installed; the IPA would ship without a compiler"; exit 1; }
+          grep -q '^XFORGE_NATIVE_TOOLCHAIN_AVAILABLE = 1' Support/NativeToolchain.generated.xcconfig \
+            || { echo "::error::the generated xcconfig does not enable the toolchain"; cat Support/NativeToolchain.generated.xcconfig; exit 1; }
+          grep -q 'XFORGE_HAS_LLVM=1' Support/NativeToolchain.generated.xcconfig \
+            || { echo "::error::XFORGE_HAS_LLVM is not defined; the bridge would compile to the stub"; exit 1; }
+          echo "compiler linked: $(sed -n 's/^bundle_tag=//p' Vendor/NativeToolchain/manifest.txt)"
+
       - name: Prepare the native toolchain configuration
         run: |
           set -euo pipefail
@@ -166,8 +209,74 @@ jobs:
           fi
           cat Support/NativeToolchain.generated.xcconfig 2>/dev/null || true
 
+      # ---------------------------------------------------------------------
+      # The Darwin SDK inside the IPA.
+      #
+      # A sideloaded XForge that must download an SDK before it can compile is not
+      # "install and use it", so the release build carries one: the pinned
+      # `darwin-sdk-*` release asset is copied into `BundledSDK/`, which project.yml
+      # turns into a folder-reference resource, and the app installs it on first
+      # run (`BundledDarwinSDK`).
+      #
+      # There is no newest-tag lookup, no `continue-on-error`, and no fallback: the
+      # IPA either contains the exact artifact named in the job env or the build
+      # fails. `pull_request` builds skip it on purpose — they are not delivered.
+      - name: Bundle the Darwin SDK
+        # Even a private workflow artifact distributes Xcode SDK content to its
+        # authorised artifact downloaders. Until redistribution permission is
+        # established, opt-in is limited to an explicit dispatch by the owner.
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.bundle_darwin_sdk }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.darwin_sdk_tag }}
+          REQUESTED_SHA: ${{ inputs.darwin_sdk_sha256 }}
+        run: |
+          set -euo pipefail
+          bash Tools/fetch-bundled-sdk.sh "${REQUESTED_TAG}" \
+            --sha256 "${REQUESTED_SHA}" --repo "${GITHUB_REPOSITORY}"
+
+          # Export what was actually bundled, so the *final* IPA can be checked
+          # against the same numbers the download was checked against.
+          python3 - <<'PY'
+          import json, os
+          with open("BundledSDK/bundled-sdk.json") as handle:
+              manifest = json.load(handle)
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write(f"BUNDLED_SDK_TAG={manifest['releaseTag']}\n")
+              env.write(f"BUNDLED_SDK_SHA={manifest['sha256']}\n")
+              env.write(f"BUNDLED_SDK_BYTES={manifest['byteCount']}\n")
+          print(f"bundled {manifest['releaseTag']}: {manifest['byteCount']:,} bytes, "
+                f"sha256 {manifest['sha256']}")
+          PY
+
+          # The step summary is written from the manifest, not from the shell
+          # variables above: GITHUB_ENV does not reach the step that wrote it.
+          python3 - <<'PY'
+          import json, os
+          manifest = json.load(open("BundledSDK/bundled-sdk.json"))
+          mib = manifest["byteCount"] / 1048576
+          lines = [
+              "### Bundled Darwin SDK",
+              "",
+              f"- release: {manifest['releaseTag']}",
+              f"- asset: {manifest['assetName']} ({mib:.1f} MiB, {manifest['byteCount']:,} bytes)",
+              f"- sha256: `{manifest['sha256']}`",
+              f"- sdk version: {manifest.get('sdkVersion') or 'unknown'}",
+              "- licensing: Apple SDK content; redistribution not verified (Docs/BUNDLED-SDK.md)",
+          ]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("\n".join(lines) + "\n")
+          PY
+
+      - name: Note the missing SDK
+        if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !inputs.bundle_darwin_sdk) }}
+        run: |
+          echo "::notice::This build does not bundle the Darwin SDK. Release builds (push) always do."
+
       - name: Generate the Xcode project
-        run: xcodegen generate --spec project.yml
+        run: |
+          mkdir -p BundledSDK
+          xcodegen generate --spec project.yml
 
       - name: Cache Swift package clones
         uses: actions/cache@v4
@@ -273,6 +382,70 @@ jobs:
             echo "- version: $(get CFBundleShortVersionString)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify the bundled SDK in the app
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.bundle_darwin_sdk }}
+        run: |
+          set -euo pipefail
+          # A folder reference normally copies to the bundle root; Xcode also emits
+          # <App>.app/Resources/<folder> for some targets. The app searches both
+          # (BundledDarwinSDK.folder(in:)), so this check does too.
+          FOLDER=""
+          for candidate in "$APP_PATH/BundledSDK" "$APP_PATH/Resources/BundledSDK"; do
+            if [ -d "$candidate" ]; then FOLDER="$candidate"; break; fi
+          done
+          test -n "$FOLDER" \
+            || { echo "::error::the built app has no BundledSDK/ folder"; find "$APP_PATH" -maxdepth 2 -name 'BundledSDK' -print; exit 1; }
+          test -f "$FOLDER/$DARWIN_SDK_ASSET" \
+            || { echo "::error::$DARWIN_SDK_ASSET did not make it into the app bundle"; exit 1; }
+          test -f "$FOLDER/bundled-sdk.json" \
+            || { echo "::error::bundled-sdk.json did not make it into the app bundle"; exit 1; }
+
+          # Three independent facts, checked against each other: the file the app
+          # will install, the manifest the app will read, and the pin in this file.
+          python3 - "$FOLDER" "$DARWIN_SDK_ASSET" "$DARWIN_SDK_SHA256" "$DARWIN_SDK_BYTES" <<'PY'
+          import hashlib, json, os, sys, zipfile
+
+          folder, asset, expected_sha, expected_bytes = sys.argv[1:5]
+          archive = os.path.join(folder, asset)
+
+          with open(os.path.join(folder, "bundled-sdk.json")) as handle:
+              manifest = json.load(handle)
+
+          size = os.path.getsize(archive)
+          digest = hashlib.sha256()
+          with open(archive, "rb") as handle:
+              for chunk in iter(lambda: handle.read(4 * 1024 * 1024), b""):
+                  digest.update(chunk)
+          digest = digest.hexdigest()
+
+          problems = []
+          if digest != expected_sha:
+              problems.append(f"sha256 {digest} != pinned {expected_sha}")
+          if str(size) != expected_bytes:
+              problems.append(f"{size} bytes != pinned {expected_bytes}")
+          if manifest.get("sha256") != digest:
+              problems.append("bundled-sdk.json does not describe this archive")
+          if manifest.get("byteCount") != size:
+              problems.append("bundled-sdk.json records a different size")
+          if manifest.get("schemaVersion") != 1:
+              problems.append(f"unexpected manifest schema {manifest.get('schemaVersion')}")
+
+          with zipfile.ZipFile(archive) as zf:
+              metadata = next((n for n in zf.namelist() if n.endswith("swift-sdk.json")), None)
+              if metadata is None:
+                  problems.append("the archive has no swift-sdk.json")
+              else:
+                  definition = json.loads(zf.read(metadata))
+                  if "arm64-apple-ios" not in definition.get("targetTriples", {}):
+                      problems.append("the SDK defines no arm64-apple-ios target")
+
+          if problems:
+              for problem in problems:
+                  print(f"::error::{problem}")
+              sys.exit(1)
+          print(f"app bundle carries {manifest['releaseTag']}: {size:,} bytes, sha256 {digest}")
+          PY
+
       - name: Package the unsigned IPA
         run: |
           set -euo pipefail
@@ -358,6 +531,33 @@ jobs:
           [ ! -d "$VERIFY_DIR/Payload/Payload" ]             || { echo '::error::IPA contains a nested Payload/Payload directory'; exit 1; }
           ! find "$VERIFY_DIR" -name '__MACOSX' -print -quit | grep -q .             || { echo '::error::IPA contains __MACOSX metadata'; exit 1; }
 
+          # The delivered IPA must carry the SDK, byte for byte. `if` rather than a
+          # separate step so a non-bundled build (PR) still runs the rest of these
+          # checks; BUNDLED_SDK_SHA is only set when the bundle step ran.
+          if [ "${{ github.event_name }}" = workflow_dispatch ] && [ "${{ inputs.bundle_darwin_sdk }}" = true ]; then
+            [ -n "${BUNDLED_SDK_SHA:-}" ] || { echo '::error::SDK dispatch requested but the archive was not fetched'; exit 1; }
+          fi
+          if [ -n "${BUNDLED_SDK_SHA:-}" ]; then
+            FINAL_FOLDER=""
+            for candidate in "$FINAL_APP/BundledSDK" "$FINAL_APP/Resources/BundledSDK"; do
+              if [ -d "$candidate" ]; then FINAL_FOLDER="$candidate"; break; fi
+            done
+            [ -n "$FINAL_FOLDER" ] \
+              || { echo "::error::the delivered IPA does not contain the bundled Darwin SDK"; exit 1; }
+            FINAL_SDK="$FINAL_FOLDER/$DARWIN_SDK_ASSET"
+            test -f "$FINAL_SDK" \
+              || { echo "::error::the delivered IPA has a BundledSDK folder without $DARWIN_SDK_ASSET"; exit 1; }
+            final_sdk_sha="$(shasum -a 256 "$FINAL_SDK" | awk '{print $1}')"
+            [ "$final_sdk_sha" = "$BUNDLED_SDK_SHA" ] \
+              || { echo "::error::the bundled SDK changed while packaging the IPA ($final_sdk_sha)"; exit 1; }
+            final_sdk_bytes="$(stat -f%z "$FINAL_SDK")"
+            [ "$final_sdk_bytes" = "$BUNDLED_SDK_BYTES" ] \
+              || { echo "::error::the bundled SDK is $final_sdk_bytes bytes, expected $BUNDLED_SDK_BYTES"; exit 1; }
+            test -f "$FINAL_FOLDER/bundled-sdk.json" \
+              || { echo "::error::the IPA lost bundled-sdk.json"; exit 1; }
+            echo "  bundled SDK: $BUNDLED_SDK_TAG, $((final_sdk_bytes / 1048576)) MB, sha256 ${final_sdk_sha:0:16}…"
+          fi
+
           echo "Final IPA verified: $(basename "$IPA")"
           echo "  app: $(basename "$FINAL_APP")"
           echo "  architecture: ${final_arch#*: }"
@@ -372,7 +572,11 @@ jobs:
           retention-days: 14
 
       - name: Publish the release
-        if: ${{ github.event_name == 'push' || inputs.release }}
+        # Explicit authorization, twice: the dispatcher ticks "release" *and* the
+        # repository sets XFORGE_PUBLISH_RELEASES=true. The IPA carries Apple's SDK
+        # content, so whether it may be redistributed is a question for whoever
+        # owns the rights — not something a push should decide on its own.
+        if: ${{ inputs.release && vars.XFORGE_PUBLISH_RELEASES == 'true' }}
         uses: softprops/action-gh-release@v2
         with:
           # Not `xforge-<run_number>`. `run_number` restarts at 1 whenever a

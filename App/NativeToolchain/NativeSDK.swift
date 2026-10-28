@@ -39,6 +39,9 @@ enum NativeSDKError: LocalizedError {
     case invalidMetadata
     case missingTarget
     case missingSDK(String)
+    /// Something is already at the destination and the caller did not ask to
+    /// replace it.
+    case destinationOccupied(String)
 
     var errorDescription: String? {
         switch self {
@@ -54,6 +57,8 @@ enum NativeSDKError: LocalizedError {
             return "The Darwin SDK does not define arm64-apple-ios."
         case .missingSDK(let path):
             return "The iPhoneOS SDK is missing at \(path)."
+        case .destinationOccupied(let path):
+            return "A Darwin SDK is already installed at \(path). Nothing was replaced."
         }
     }
 }
@@ -63,9 +68,16 @@ enum NativeSDKError: LocalizedError {
 /// directory inside a toolchain installation, and there is no installation here —
 /// the bundle is a folder the app downloaded and unpacked itself.
 enum NativeSDK {
+    /// The bundle inside a given `native-sdk` directory.
+    ///
+    /// Split out from `installedBundle` so a caller — and a test — can point the
+    /// installer at a directory other than the app's own.
+    static func installedBundle(in directory: URL) -> URL {
+        directory.appendingPathComponent("darwin.artifactbundle", isDirectory: true)
+    }
+
     static var installedBundle: URL {
-        XForgeEnvironment.nativeSDKDirectory
-            .appendingPathComponent("darwin.artifactbundle", isDirectory: true)
+        installedBundle(in: XForgeEnvironment.nativeSDKDirectory)
     }
 
     static var isInstalled: Bool {
@@ -129,10 +141,7 @@ enum NativeSDK {
         try fm.copyItem(at: source, to: staging)
         _ = try layout(at: staging)
 
-        if fm.fileExists(atPath: destination.path) {
-            try fm.removeItem(at: destination)
-        }
-        try fm.moveItem(at: staging, to: destination)
+        try commit(preparedBundle: staging, to: destination, replacing: false)
     }
 
     static func installLatestPrebuilt() async throws {
@@ -200,15 +209,50 @@ enum NativeSDK {
     /// app's container, so copying a gigabyte only to delete the original costs a
     /// gigabyte of writes and a second gigabyte of free space for nothing.
     static func install(preparedBundle: URL) throws {
+        try commit(preparedBundle: preparedBundle, to: installedBundle, replacing: true)
+    }
+
+    /// Move an already-unpacked bundle into `destination`.
+    ///
+    /// Two properties the bundled-SDK path depends on, and that
+    /// `install(preparedBundle:)` does not offer:
+    ///
+    ///  - **The destination is a parameter.** The install can be exercised against
+    ///    a temporary directory, and a caller cannot accidentally write into the
+    ///    app's container when it meant somewhere else.
+    ///  - **Nothing is deleted unless `replacing` is true** — and even then by
+    ///    swapping, not by removing first. A user's imported SDK that appears
+    ///    between a caller's check and this commit is not something an automatic
+    ///    install may destroy; it gets `destinationOccupied` instead.
+    ///
+    /// The bundle is validated (`swift-sdk.json`, SDK root) before the destination
+    /// is looked at, so a malformed bundle leaves whatever is there untouched.
+    static func commit(preparedBundle: URL, to destination: URL, replacing: Bool) throws {
         let fm = FileManager.default
-        let destination = installedBundle
-        try fm.createDirectory(at: XForgeEnvironment.nativeSDKDirectory,
-                               withIntermediateDirectories: true)
-        _ = try layout(at: preparedBundle)  // validate before replacing what is there
-        if fm.fileExists(atPath: destination.path) {
-            try fm.removeItem(at: destination)
+        let directory = destination.deletingLastPathComponent()
+        try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        _ = try layout(at: preparedBundle)
+
+        guard fm.fileExists(atPath: destination.path) else {
+            try fm.moveItem(at: preparedBundle, to: destination)
+            return
         }
-        try fm.moveItem(at: preparedBundle, to: destination)
+        guard replacing else {
+            throw NativeSDKError.destinationOccupied(destination.path)
+        }
+
+        // Swap: if the second move fails, put the original back. Only a successful
+        // swap leaves the old bundle eligible for deletion.
+        let backup = directory.appendingPathComponent(
+            "darwin.artifactbundle.replaced-\(UUID().uuidString)", isDirectory: true)
+        try fm.moveItem(at: destination, to: backup)
+        do {
+            try fm.moveItem(at: preparedBundle, to: destination)
+        } catch {
+            try? fm.moveItem(at: backup, to: destination)
+            throw error
+        }
+        try? fm.removeItem(at: backup)
     }
 
     /// Install from whatever the document picker handed over.
@@ -261,7 +305,7 @@ enum NativeSDK {
             let built = try DarwinSDKBuilder.build(fromXip: source,
                                                    into: XForgeEnvironment.nativeSDKDirectory,
                                                    progress: progress)
-            try install(preparedBundle: built.bundle)
+            try commit(preparedBundle: built.bundle, to: installedBundle, replacing: false)
             return ImportReport(files: built.files, bytes: built.bytes,
                                 warnings: built.hasSwiftStaticRuntime ? [] : [
                                     "the archive has no Swift static runtime "

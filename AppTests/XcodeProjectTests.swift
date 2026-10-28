@@ -196,6 +196,19 @@ final class XcodeProjectTests: XCTestCase {
 
     /// `Debug` carries the bundle identifier, the project's `Debug` carries the
     /// deployment target: a reader that only reads one level loses the other.
+    func testSourceRootReferenceDoesNotInheritGroupPrefix() throws {
+        let url = root.appendingPathComponent("SourceRoot.xcodeproj", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let pbx = Self.pbxproj.replacingOccurrences(
+            of: "path = AppDelegate.swift; sourceTree = \"<group>\";",
+            with: "path = Demo/AppDelegate.swift; sourceTree = SOURCE_ROOT;"
+        )
+        try pbx.write(to: url.appendingPathComponent("project.pbxproj"), atomically: true, encoding: .utf8)
+
+        let summary = try XcodeProjectReader.read(at: url)
+        XCTAssertEqual(summary.targets.first?.sourceFiles, ["Demo/AppDelegate.swift"])
+    }
+
     func testMergesProjectAndTargetSettings() throws {
         let summary = try XcodeProjectReader.read(at: root)
         let target = try XCTUnwrap(summary.targets.first)
@@ -225,6 +238,16 @@ final class XcodeProjectTests: XCTestCase {
         )
 
         XCTAssertThrowsError(try XcodeProjectReader.read(at: root.appendingPathComponent("Broken.xcodeproj")))
+    }
+
+    func testParserRejectsExcessiveNestingInsteadOfRecursingUnboundedly() {
+        let depth = 300
+        let hostile = String(repeating: "(", count: depth) + "value" + String(repeating: ")", count: depth)
+        XCTAssertThrowsError(try PbxValue.parse(hostile)) { error in
+            guard case PbxParseError.excessiveNesting = error else {
+                return XCTFail("expected a nesting limit error, got \(error)")
+            }
+        }
     }
 
     func testReportsAMissingProject() throws {
