@@ -394,11 +394,8 @@ final class XipArchiveTests: XCTestCase {
         XCTAssertNil(XipArchive.zlibDeflatePayload(in: Data([0x78, 0xDA])), "no payload")
         XCTAssertNil(XipArchive.zlibDeflatePayload(in: Data()), "empty")
 
-        // CMF 0x78, FLG 0x20 | 0x20? — build one by hand: CM=8, CINFO=7, FDICT set,
-        // and a header that passes the %31 check.
-        var dictionary: [UInt8] = [0x78, 0x00]
-        // (0x78 << 8 | 0x20) = 0x7820, 0x7820 % 31 = 4, so FLG needs 0x27 for 0x7827.
-        dictionary[1] = (0x78 << 8 % 0x100) == 0 ? 0x27 : 0x27
+        // 0x7820 has FDICT set and is divisible by 31.
+        let dictionary: [UInt8] = [0x78, 0x20]
         var stream = Data(dictionary)
         stream += Data(repeating: 0, count: 4)     // dictionary id
         stream += Data([0x03, 0x00])               // a stored, empty DEFLATE block
