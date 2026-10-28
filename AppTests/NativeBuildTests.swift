@@ -83,8 +83,10 @@ final class NativeBuildTests: XCTestCase {
     private func writePinnedZIPFoundation(for project: URL, revision: String = NativeBuildPlanFactory.zipFoundationSupportedRevision) throws {
         let pin = ResolvedPackagePin(identity: "zipfoundation", location: "https://github.com/weichsel/ZIPFoundation",
                                     revision: revision, version: "0.9.19", kind: .remoteSourceControl)
-        let lock = ResolvedPackageLockfile(schemaVersion: 3, pins: [pin], originHash: nil, layout: .root)
-        try JSONEncoder().encode(lock).write(to: project.appendingPathComponent("Package.resolved"))
+        let lock = """
+        {"version":3,"pins":[{"identity":"zipfoundation","kind":"remoteSourceControl","location":"https://github.com/weichsel/ZIPFoundation","state":{"revision":"\(revision)","version":"0.9.19"}}]}
+        """
+        try Data(lock.utf8).write(to: project.appendingPathComponent("Package.resolved"))
         let dependencyRoot = PinnedDependencySourceInstaller.dependencyDirectory(for: pin, root: project)
         let sourceRoot = dependencyRoot.appendingPathComponent("Sources/ZIPFoundation", isDirectory: true)
         let resources = sourceRoot.appendingPathComponent("Resources", isDirectory: true)
@@ -96,7 +98,9 @@ final class NativeBuildTests: XCTestCase {
         let repository = try GitHubRepository.parse(pin.location)
         let marker = PinnedDependencySourceInstaller.Marker(
             identity: pin.identity, repository: repository.slug, revision: pin.revision,
-            archiveSHA256: String(repeating: "c", count: 64), archiveBytes: 1000,
+            archiveSHA256: String(repeating: "c", count: 64),
+            sourceTreeSHA256: try PinnedDependencySourceInstaller.sourceTreeSHA256(at: dependencyRoot),
+            archiveBytes: 1000,
             extractedBytes: 2000, fetchedAt: Date(timeIntervalSince1970: 1)
         )
         try JSONEncoder().encode(marker).write(to: dependencyRoot.appendingPathComponent(".xforge-dependency.json"))

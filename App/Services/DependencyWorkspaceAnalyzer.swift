@@ -92,7 +92,9 @@ enum DependencyWorkspaceAnalyzer {
             let dir = dependencyDirectory(for: pin, root: root)
             if let marker = PinnedDependencySourceInstaller.readMarker(dir),
                marker.revision.caseInsensitiveCompare(pin.revision) == .orderedSame,
-               marker.repository.lowercased() == ((try? GitHubRepository.parse(pin.location))?.slug.lowercased() ?? "") {
+               marker.repository.lowercased() == ((try? GitHubRepository.parse(pin.location))?.slug.lowercased() ?? ""),
+               let recordedTreeHash = marker.sourceTreeSHA256,
+               (try? PinnedDependencySourceInstaller.sourceTreeSHA256(at: dir)) == recordedTreeHash {
                 installed.insert(pin.identity)
             }
         }

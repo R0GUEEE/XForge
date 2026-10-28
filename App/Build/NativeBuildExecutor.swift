@@ -179,11 +179,24 @@ final class NativeBuildExecutor: BuildExecutor {
                 do {
                     let manifest = project.rootURL.appendingPathComponent("Package.swift")
                     let dependencies = try NativeBuildPlanFactory.swiftPackageDependencies(manifestURL: manifest)
-                    let modules = try NativeBuildPlanFactory.swiftDependencyModules(
-                        root: project.rootURL,
-                        declaredNames: dependencies
-                    )
-                    continuation.yield(.plan("Checking pinned dependency sources…"))
+                    let modules: [NativeSwiftDependencyPlan]
+                    do {
+                        modules = try NativeBuildPlanFactory.swiftDependencyModules(
+                            root: project.rootURL, declaredNames: dependencies
+                        )
+                    } catch let planError as NativeBuildPlanError {
+                        guard case .dependencySourceMissing = planError else { throw planError }
+                        continuation.yield(.plan("Fetching verified pinned dependency sources…"))
+                        let lockURL = project.rootURL.appendingPathComponent("Package.resolved")
+                        let lock = try ResolvedPackageLockfile.read(contentsOf: lockURL)
+                        _ = try await PinnedDependencySourceInstaller.installPinnedSources(
+                            for: project, pins: lock.pins
+                        )
+                        modules = try NativeBuildPlanFactory.swiftDependencyModules(
+                            root: project.rootURL, declaredNames: dependencies
+                        )
+                    }
+                    continuation.yield(.plan("Preparing dependency modules…"))
                     if modules.isEmpty {
                         continuation.yield(.output("No package dependencies: nothing to resolve."))
                     } else {

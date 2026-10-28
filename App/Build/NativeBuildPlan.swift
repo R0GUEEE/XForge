@@ -94,7 +94,7 @@ enum NativeBuildPlanError: LocalizedError {
         case .dependencyLockfileMissing(let url):
             return "This package declares a dependency but has no Package.resolved at \(url.path). Commit a lockfile, then use Project → Dependencies to fetch a supported pinned source. XForge will not resolve floating versions."
         case .dependencySourceMissing(let identity):
-            return "The verified source snapshot for \(identity) is not installed. Open Project → Dependencies and fetch the pinned source before building."
+            return "The verified source snapshot for \(identity) is not installed. Building will fetch this supported pin automatically; you can also prefetch it from Project → Dependencies."
         case .missingPackageManifest(let root):
             return "No Package.swift was found at \(root.path)."
         }
@@ -233,7 +233,9 @@ enum NativeBuildPlanFactory {
               marker.identity == pin.identity,
               marker.repository.lowercased() == "weichsel/zipfoundation",
               marker.revision == pin.revision,
-              marker.archiveSHA256.count == 64 else {
+              marker.archiveSHA256.count == 64,
+              let recordedTreeHash = marker.sourceTreeSHA256,
+              (try? PinnedDependencySourceInstaller.sourceTreeSHA256(at: snapshot)) == recordedTreeHash else {
             throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(declaredNames)
         }
 
@@ -251,8 +253,8 @@ enum NativeBuildPlanFactory {
         let resourceEntries = (try? fileManager.contentsOfDirectory(
             at: resourceDirectory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]
         )) ?? []
-        guard resourceEntries.allSatisfy({ $0.lastPathComponent == "PrivacyInfo.xcprivacy" }),
-              resourceEntries.count <= 1 else {
+        guard resourceEntries.count == 1,
+              resourceEntries.first?.lastPathComponent == "PrivacyInfo.xcprivacy" else {
             throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(declaredNames)
         }
         return [NativeSwiftDependencyPlan(identity: pin.identity, moduleName: "ZIPFoundation",

@@ -71,8 +71,11 @@ in-process toolchain and the SDK in the container.
 - **Pinned dependency source management.** The Dependencies tool analyzes supported
   `Package.resolved` lockfiles and can fetch exact public GitHub source snapshots
   without running package manifests. Downloads are bounded and checksum-recorded.
-  This does **not** make dependencies buildable: the current toolchain still has no
-  multi-module dependency compiler/linker or resource-product integration.
+  XForge has one deliberately narrow build profile for the exact ZIPFoundation
+  0.9.19 commit: when its verified source cache, compiler and SDK are present, the
+  module is emitted and linked. This does **not** enable general SwiftPM dependency
+  resolution or arbitrary package builds; transitive graphs, plugins, binary
+  products and unsupported sources remain rejected.
 - **Building and testing XForge itself without any toolchain bundle.** A plain clone compiles the bridge to a "not available" stub; `make test` runs on the simulator.
 
 ## What does not work (yet)
