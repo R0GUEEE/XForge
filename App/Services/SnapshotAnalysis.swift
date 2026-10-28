@@ -59,6 +59,7 @@ struct SnapshotInventory: Codable, Equatable, Sendable {
                 if leaf == ".gitattributes", let text = boundedText(url, maximumBytes: 256 * 1024), text.localizedCaseInsensitiveContains("filter=lfs") {
                     deps.insert("Git LFS attributes found; pointer files may not be materialized")
                 }
+                if isLFSPointer(url) { lfs.append(rel) }
                 if leaf == "project.pbxproj", let text = boundedText(url, maximumBytes: 8 * 1024 * 1024) {
                     if text.contains("XCRemoteSwiftPackageReference") || text.contains("XCSwiftPackageProductDependency") {
                         deps.insert("Xcode project references Swift package products; lockfile pins can be reviewed but the graph is not built")

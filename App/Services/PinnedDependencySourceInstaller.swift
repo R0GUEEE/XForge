@@ -68,6 +68,7 @@ enum PinnedDependencySourceInstaller {
         pins: [ResolvedPackagePin],
         progress: @escaping @Sendable (Progress) -> Void = { _ in }
     ) async throws -> Result {
+        guard pins.count <= maximumPackagesPerRun else { throw InstallError.tooManyPackages(pins.count) }
         let projectRoot = project.isXcodeProject ? project.snapshotRootURL : project.rootURL
         let root = projectRoot.appendingPathComponent(".xforge-dependencies", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -79,7 +80,6 @@ enum PinnedDependencySourceInstaller {
         var existing: [String] = []
         var notes: [String] = []
         var aggregate: Int64 = 0
-        var attempted = 0
 
         for (index, pin) in pins.enumerated() {
             try Task.checkCancellation()
@@ -99,14 +99,7 @@ enum PinnedDependencySourceInstaller {
             if FileManager.default.fileExists(atPath: destination.path) {
                 throw InstallError.destinationCollision(slug)
             }
-            guard attempted < maximumPackagesPerRun else {
-                let remaining = pins.count - index
-                notes.append("Fetch batch limit reached; \(remaining) pin(s) remain. Run Fetch again to continue.")
-                break
-            }
-            attempted += 1
-
-            progress(.package(attempted, min(pins.count, maximumPackagesPerRun), pin.identity))
+            progress(.package(index + 1, pins.count, pin.identity))
             let archive = try await GitHubSnapshotImporter.download(repo)
             defer { try? FileManager.default.removeItem(at: archive) }
             let archiveBytes = fileSize(archive)

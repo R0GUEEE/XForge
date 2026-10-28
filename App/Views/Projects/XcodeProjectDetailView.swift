@@ -160,11 +160,11 @@ struct XcodeProjectDetailView: View {
                         Label("Lockfile: \(path)", systemImage: "lock")
                             .font(.caption)
                     }
-                    Button {
-                        showingDependencies = true
-                    } label: {
-                        Label("Manage pinned dependencies", systemImage: "shippingbox")
-                    }
+                }
+                Button {
+                    showingDependencies = true
+                } label: {
+                    Label("Manage dependencies", systemImage: "shippingbox")
                 }
                 if !inventory.dependencyIndicators.isEmpty {
                     ForEach(inventory.dependencyIndicators, id: \.self) { note in
