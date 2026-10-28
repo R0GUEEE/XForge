@@ -13,7 +13,6 @@ struct ProjectsTab: View {
     @State private var showingNewProject = false
     @State private var showingImport = false
     @State private var showingGitHubImport = false
-    @State private var showingGitHubImport = false
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -74,12 +73,6 @@ struct ProjectsTab: View {
                 GitHubImportView(existingNames: store.projects.map(\.name)) { project in
                     // Same path as every other import: the record is persisted by the
                     // store, then the new project opens by itself.
-                    store.add(project)
-                    path.append(project)
-                }
-            }
-            .sheet(isPresented: $showingGitHubImport) {
-                GitHubImportView { project in
                     store.add(project)
                     path.append(project)
                 }
