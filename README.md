@@ -164,6 +164,7 @@ App/Services/           signing, project files, export, device seams, the log
 App/Views/              screens: Projects, Build, Signing, Settings (Toolchain, …)
 AppTests/               unit tests (plan and argument construction, which run without a compiler)
 Vendor/NativeToolchain/ where an installed toolchain bundle goes (absent by default)
+BundledSDK/             the Darwin SDK carried inside the IPA (fetched, gitignored)
 NativeToolchain/        install-bundle.sh, prepare-xcode.sh
 Support/                entitlements, assets, the generated toolchain xcconfig
 Tools/                  gen-appicon.py (writes the app icon into the asset catalog)
@@ -258,3 +259,12 @@ plus two SwiftPM dependencies, xtool's `XKit` and
 [ZIPFoundation](https://github.com/weichsel/ZIPFoundation) (MIT). xtool's own terms
 apply to `XKit` — see its repository. The GPL note that used to be here concerned a
 bundled emulator that is no longer part of the app.
+
+A release IPA can also carry a Darwin SDK (`BundledSDK/`, see
+[Docs/BUNDLED-SDK.md](Docs/BUNDLED-SDK.md)). That archive is Apple SDK content —
+iPhoneOS headers, tbd stubs, and Swift runtime/toolchain libraries from Xcode — and
+is governed by Apple's licence terms, which restrict redistribution. Its provenance
+(tag, size, SHA-256) is recorded and verified, but **whether it may be redistributed
+inside this IPA has not been established**; publishing a release is therefore gated
+behind an explicit workflow input plus a repository variable, and a build without
+the bundle is one flag away.

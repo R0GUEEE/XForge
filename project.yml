@@ -51,6 +51,17 @@ targets:
     sources:
       - path: App
       - path: Support
+      # The Darwin SDK that ships inside the IPA (Docs/BUNDLED-SDK.md).
+      #
+      # A *folder reference*, so whatever `Tools/fetch-bundled-sdk.sh` or
+      # build-ipa.yml puts in `BundledSDK/` lands in the .app as
+      # `BundledSDK/` — one zip plus its manifest, no per-artifact project edit.
+      # `optional` keeps a plain clone buildable: the directory is gitignored and
+      # has no tracked placeholder, so its absence must not fail generation.
+      - path: BundledSDK
+        type: folder
+        buildPhase: resources
+        optional: true
     dependencies:
       - package: xtool
         product: XKit

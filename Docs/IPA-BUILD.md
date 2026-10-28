@@ -46,7 +46,7 @@ the compiler is a library call, so there is nothing to start before compiling.
 | Stage | Implementation | Notes |
 |---|---|---|
 | provision | `NativeBuildExecutor.bootstrap` + `NativeToolchainCapabilities` | Reports one line per component. Fails when clang or LLD is not linked; *warns* when the Swift frontend is not. |
-| sdk | `NativeSDK.install(fromRemote:)` | Skips itself when the bundle is already in the container. |
+| sdk | `BundledDarwinSDK.installBundled()` when the app carries an SDK, otherwise `NativeSDK.install(fromRemote:)` | Skips itself when the bundle is in the container. A build that carries its own SDK does **not** fall back to the network — a failure to install it fails the stage. See `Docs/BUNDLED-SDK.md`. |
 | configure | `BuildManager.configure` | Writes `<project>/.xforge-build/build.json` (bundle ID, version, build number, configuration) so a failed build is reproducible, and throws `missingProjectDirectory` if the directory is gone. |
 | resolve | `NativeBuildExecutor.resolve` + `NativeBuildPlanFactory.swiftPackageDependencies` | A textual scan of `Package.swift`; the answer it needs is only "are there any". |
 | compile | `NativeBuildExecutor.build` | The real work: plan, compile, link, assemble, package. Also the stage that refuses Swift sources (`swiftFrontendMissing`). |

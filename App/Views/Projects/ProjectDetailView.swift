@@ -14,6 +14,17 @@ struct ProjectDetailView: View {
     }
 
     var body: some View {
+        // An imported Xcode project has no build driver and no Package.swift, so
+        // it gets the read-only screen: target list and files, no Build button and
+        // no manifest editor.
+        if project.isXcodeProject {
+            XcodeProjectDetailView(project: project)
+        } else {
+            packageBody
+        }
+    }
+
+    private var packageBody: some View {
         VStack(spacing: 0) {
             Picker("Section", selection: $section) {
                 ForEach(Section.allCases) { Text($0.rawValue).tag($0) }

@@ -203,7 +203,12 @@ the bridge compiles to a "not available" stub and the app says so. This is why
 ## The Darwin SDK
 
 The compiler is in the binary; what it compiles *against* is a bundle in the app's
-container, `<Documents>/native-sdk/darwin.artifactbundle`. `NativeSDK` reads it the
+container, `<Documents>/native-sdk/darwin.artifactbundle`.
+
+A released IPA can also carry that bundle inside the app (`BundledSDK/`) and
+install it on first launch, with no download and no network fallback; see
+[Docs/BUNDLED-SDK.md](BUNDLED-SDK.md) for the artifact, its pins and the
+redistribution question. Everything below still describes the manual paths. `NativeSDK` reads it the
 way xtool's builder writes it (`swift-sdk.json`: SDK root, Swift resource directory,
 static runtime search paths), and the Toolchain screen installs one of three things:
 
