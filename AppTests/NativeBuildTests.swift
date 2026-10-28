@@ -87,7 +87,7 @@ final class NativeBuildTests: XCTestCase {
         {"version":3,"pins":[{"identity":"zipfoundation","kind":"remoteSourceControl","location":"https://github.com/weichsel/ZIPFoundation","state":{"revision":"\(revision)","version":"0.9.19"}}]}
         """
         try Data(lock.utf8).write(to: project.appendingPathComponent("Package.resolved"))
-        let dependencyRoot = PinnedDependencySourceInstaller.dependencyDirectory(for: pin, root: project)
+        let dependencyRoot = DependencyWorkspaceAnalyzer.dependencyDirectory(for: pin, root: project)
         let sourceRoot = dependencyRoot.appendingPathComponent("Sources/ZIPFoundation", isDirectory: true)
         let resources = sourceRoot.appendingPathComponent("Resources", isDirectory: true)
         try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)

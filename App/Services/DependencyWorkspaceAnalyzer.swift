@@ -20,11 +20,11 @@ struct DependencyWorkspaceReport: Sendable {
     let packagePins: [ResolvedPackagePin]
     let lockfilePaths: [String]
     let installedIdentities: Set<String>
-    let buildableIdentities: Set<String>
+    let profileEligibleIdentities: Set<String>
     let findings: [DependencyCompatibilityFinding]
     let truncatedLockfileScan: Bool
 
-    var buildSupported: Bool { !buildableIdentities.isEmpty }
+    var hasEligibleBuildProfile: Bool { !profileEligibleIdentities.isEmpty }
     var conflictingIdentities: Set<String> {
         Set(findings.compactMap { finding in
             guard finding.id.hasPrefix("pin-conflict-") else { return nil }
@@ -110,7 +110,7 @@ enum DependencyWorkspaceAnalyzer {
         }
         let native = NativeToolchainCapabilities.current
         let canCompileModule = native.hasSwiftFrontend && NativeSDK.isInstalled
-        let buildable = canCompileModule ? Set(verifiedModules.map(\.identity)) : []
+        let profileEligible = canCompileModule ? Set(verifiedModules.map(\.identity)) : []
 
         let manifestMentions = manifestFiles.filter { url in
             guard let text = boundedText(url, maximumBytes: maximumManifestBytes) else { return false }
@@ -135,11 +135,11 @@ enum DependencyWorkspaceAnalyzer {
                                   summary: "Pinned source snapshots can be downloaded",
                                   detail: "Only immutable public GitHub revisions are supported. This fetches source snapshots, not Git history."))
             let allPinsHaveSupportedBuildProfile = pins.count == 1
-                && pins.allSatisfy { buildable.contains($0.identity) }
+                && pins.allSatisfy { profileEligible.contains($0.identity) }
             if allPinsHaveSupportedBuildProfile {
-                findings.append(.init(id: "module-build", capability: .ready,
-                                      summary: "The pinned ZIPFoundation module profile is buildable",
-                                      detail: "For this exact allowlisted source revision and layout, XForge emits the Swift module, compiles its sources, makes the module available to the app, links its objects, and bundles the privacy resource. This is not general SwiftPM dependency support."))
+                findings.append(.init(id: "module-build", capability: .partial,
+                                      summary: "Experimental ZIPFoundation module profile is eligible",
+                                      detail: "The exact allowlisted revision and source layout match the in-process module build path. XForge will attempt to emit, compile and link it, but this native Swift dependency path has not yet been validated on a physical device. Other dependency shapes are unsupported."))
             } else {
                 let detail: String
                 if verifiedModules.isEmpty {
@@ -163,7 +163,7 @@ enum DependencyWorkspaceAnalyzer {
         }
         return DependencyWorkspaceReport(packagePins: pins, lockfilePaths: paths,
                                          installedIdentities: installed,
-                                         buildableIdentities: buildable,
+                                         profileEligibleIdentities: profileEligible,
                                          findings: findings,
                                          truncatedLockfileScan: lockfiles.truncated)
     }

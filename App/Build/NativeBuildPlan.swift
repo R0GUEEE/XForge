@@ -225,7 +225,7 @@ enum NativeBuildPlanFactory {
             throw NativeBuildPlanError.unsupportedSwiftPackageDependencies(declaredNames)
         }
 
-        let snapshot = PinnedDependencySourceInstaller.dependencyDirectory(for: pin, root: root)
+        let snapshot = DependencyWorkspaceAnalyzer.dependencyDirectory(for: pin, root: root)
         guard fileManager.fileExists(atPath: snapshot.path) else {
             throw NativeBuildPlanError.dependencySourceMissing("ZIPFoundation 0.9.19")
         }

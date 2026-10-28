@@ -24,7 +24,7 @@ final class DependencyWorkspaceTests: XCTestCase {
         let report = DependencyWorkspaceAnalyzer.analyze(project: project)
         XCTAssertEqual(report.packagePins.map(\.identity), ["zipfoundation"])
         XCTAssertEqual(report.fetchablePins.map(\.revision), [sha])
-        XCTAssertFalse(report.buildSupported)
+        XCTAssertFalse(report.hasEligibleBuildProfile)
         XCTAssertTrue(report.findings.contains { $0.id == "module-build" && $0.capability == .unsupported })
     }
 
