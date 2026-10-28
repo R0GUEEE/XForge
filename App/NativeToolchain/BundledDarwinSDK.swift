@@ -643,6 +643,7 @@ final class BundledSDKMonitor: ObservableObject {
         isInstalling = true
         fraction = 0
         status = "Installing the bundled Darwin SDK (\(manifest.releaseTag))…"
+        let assertion = InstallAssertion.begin(reason: "sdk-bundled")
         let owner = WeakBundledSDKMonitor(self)
         task = Task { [weak self, owner] in
             defer { assertion.end() }
@@ -682,6 +683,7 @@ final class BundledSDKMonitor: ObservableObject {
         fraction = 0
         status = "Installing the bundled Darwin SDK…"
         outcome = nil
+        let assertion = InstallAssertion.begin(reason: "sdk-bundled-manual")
         let owner = WeakBundledSDKMonitor(self)
         task = Task { [weak self, owner] in
             defer { assertion.end() }
