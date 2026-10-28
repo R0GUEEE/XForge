@@ -173,7 +173,10 @@ final class XipArchiveTests: XCTestCase {
         let packed: Data
         switch compression {
         case .zlib: packed = zlibWrapped(deflate, of: tocData)
-        case .rawDeflate: packed = deflate
+        case .rawDeflate:
+            // compression_encode_buffer(COMPRESSION_ZLIB) already emits the
+            // RFC 1950 wrapper on Apple platforms; strip it to create raw DEFLATE.
+            packed = Data(deflate.dropFirst(2).dropLast(4))
         case .stored: packed = tocData
         }
         var out = Data("xar!".utf8)
