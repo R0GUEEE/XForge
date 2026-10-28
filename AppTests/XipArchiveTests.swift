@@ -324,7 +324,8 @@ final class XipArchiveTests: XCTestCase {
         let url = try writeXip(archive)
 
         // Byte-for-byte, the shape libxar writes.
-        let tocCompressed = 28 + Int(Self.bigEndianRead(archive, at: 8, width: 8))
+        let tocLength = archive[8..<16].reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        let tocCompressed = 28 + Int(tocLength)
         let toc = archive.subdata(in: 28..<tocCompressed)
         XCTAssertEqual(Array(toc.prefix(2)), [0x78, 0xDA],
                        "a xar TOC is a zlib stream, not raw DEFLATE")
