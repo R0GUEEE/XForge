@@ -215,7 +215,7 @@ make icon        # rewrites Support/Assets.xcassets
 
 ## Continuous integration
 
-- **`build-ipa.yml`** — reuses checksum/tag-keyed caches for the native toolchain, optional pinned Darwin SDK archive, Swift package clones, and Xcode DerivedData; it lets `xcodebuild test` / `archive` perform normal package resolution instead of launching a separate resolver invocation. Simulator tests are still opt-in, release publishing remains separately gated, and the build verifies the final unsigned IPA.
+- **`build-ipa.yml`** — runs on the 4-CPU Intel `macos-15-intel` image (Xcode 16.4), avoiding the capacity-constrained M1 runner queue. It reuses tag/checksum-keyed caches for the native toolchain, optional pinned Darwin SDK archive, Swift package clones, and Xcode DerivedData; `xcodebuild test` / `archive` resolve packages directly rather than starting a separate resolver invocation. Newer builds supersede obsolete queued runs for the same ref. Simulator tests are opt-in, release publishing remains gated, and the final unsigned IPA is verified.
 - **`native-toolchain.yml`** — cross-builds LLVM's Clang and Mach-O LLD for
   iPhoneOS (and, with `with_swift=true`, Swift's frontend libraries) on a macOS
   runner, merges the static archives into one, compile-checks and link-checks
