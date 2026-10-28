@@ -95,7 +95,7 @@ struct XcodeProjectDetailView: View {
             )
         } else if let summary, !summary.targets.isEmpty {
             List {
-                Section {
+                SwiftUI.Section {
                     ForEach(summary.targets, id: \.id) { target in
                         targetRow(target)
                     }
@@ -213,7 +213,7 @@ struct ProjectSnapshotBrowser: View {
                     message: "The imported snapshot has no readable files."
                 )
             } else {
-                Section {
+                SwiftUI.Section {
                     ForEach(files) { file in
                         NavigationLink {
                             SnapshotFileView(file: file, root: project.rootURL)
