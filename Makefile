@@ -44,6 +44,7 @@ icon:
 
 ## Generate the Xcode project from project.yml
 gen:
+	mkdir -p BundledSDK
 	xcodegen generate --spec project.yml
 
 ## Resolve SPM deps and build for the simulator

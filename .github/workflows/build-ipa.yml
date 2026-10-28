@@ -274,7 +274,9 @@ jobs:
           echo "::notice::This build does not bundle the Darwin SDK. Release builds (push) always do."
 
       - name: Generate the Xcode project
-        run: xcodegen generate --spec project.yml
+        run: |
+          mkdir -p BundledSDK
+          xcodegen generate --spec project.yml
 
       - name: Cache Swift package clones
         uses: actions/cache@v4
