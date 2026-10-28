@@ -134,6 +134,16 @@ final class BuildManager: ObservableObject {
                 throw NativeBuildError.missingProjectDirectory(root)
             }
 
+            if project.isXcodeProject {
+                let plan = try XcodeProjectBuildPlanner.makePlan(
+                    project: project, configuration: configuration
+                )
+                appInfo = XcodeProjectBuildPlanner.appInfo(from: plan)
+            }
+            if project.isXcodeProject {
+                let plan = try XcodeProjectBuildPlanner.makePlan(project: project, configuration: configuration)
+                appInfo = XcodeProjectBuildPlanner.appInfo(from: plan)
+            }
             let metadata = BuildMetadata(
                 bundleIdentifier: appInfo.bundleIdentifier,
                 displayName: appInfo.displayName,

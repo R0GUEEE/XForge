@@ -402,7 +402,8 @@ final class ProjectImportInspectionTests: XCTestCase {
             xcconfigPaths: [],
             buildSettings: [:],
             configurationNames: [],
-            defaultConfiguration: nil
+            defaultConfiguration: nil,
+            unsupportedBuildFeatures: []
         )
         XCTAssertEqual(target.productTypeLabel, "com.example.custom-thing")
     }

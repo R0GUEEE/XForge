@@ -67,7 +67,7 @@ in-process toolchain and the SDK in the container.
   the file is visible in the Files app and shareable from there. Build output
   (`.xforge-build`, `.build`) is left out of the archive.
 - **GitHub repository analysis and Xcode handoff.** Public repositories are imported as complete ZIP snapshots of one revision (not a Git clone; no history). XForge inventories projects, workspaces, lockfiles and common dependency/script markers. For a narrow, single Swift app target with literal settings, it can generate a minimal `.xcodeproj`, shared scheme and `.xcconfig` under `.xforge-generated/` and export the snapshot. This is an Xcode handoff to review on a Mac, **not** an XForge build: unsupported settings, resources and dependencies are listed in `XFORGE-IMPORT-REPORT.md`. See [Docs/IMPORT-ANALYSIS.md](Docs/IMPORT-ANALYSIS.md).
-- **Reading an `.xcodeproj`.** `App/Models/XcodeProject.swift` parses the project model on device, with its own OpenStep parser. XForge does not yet build arbitrary Xcode projects.
+- **Reading and building a bounded `.xcodeproj` subset.** `XcodeProjectReader` reads project metadata. The native planner can build one app target with literal bundle ID/deployment target, Swift-only sources and imports limited to Foundation/UIKit/SwiftUI, with no resources, scripts, linked libraries, xcconfigs or custom settings. Other Xcode projects remain inspection/handoff only.
 - **Pinned dependency source management.** The Dependencies tool analyzes supported
   `Package.resolved` lockfiles and can fetch exact public GitHub source snapshots
   without running package manifests. Downloads are bounded and checksum-recorded.

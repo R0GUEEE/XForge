@@ -13,13 +13,13 @@ piece needs, and which parts cannot be done at all with the tools that exist.
 | Authoring a SwiftPM-shaped project (project editor, manifest, files) | works |
 | Compiling and linking **C / Objective-C** sources in-process | works (`NativeBuildExecutor`) |
 | Compiling **Swift** sources in-process | needs a `with_swift` bundle: the frontend ships in it and links into the app, but no Swift build has been run on a device |
-| Resolving SwiftPM dependencies | **refused by name** — no package manager can run here |
+| Resolving SwiftPM dependencies | manifests are never executed; one exact ZIPFoundation pin is handled from `Package.resolved` |
 | Packaging an `.ipa` from a built `.app` | works (`IPABuilder`, host-side) |
 | Signing with an existing `.p12` + profile | works (`AppBundleSigner`, XKit, in-process) |
 | Signing with an Apple ID (certificate issuance) | **not implemented** — `XKitSigningService.signIn` throws |
 | Installing to the device | **stub** — export to SideStore/AltStore is the working path |
-| Reading a `.xcodeproj` | works (`XcodeProjectReader`); nothing builds from it |
-| Building a `.xcodeproj` | not started |
+| Reading a `.xcodeproj` | works (`XcodeProjectReader`) |
+| Building an `.xcodeproj` | experimental: one simple Swift app target only; see constraints below |
 | Asset catalogs | **not compiled** — `.xcassets` are copied into the bundle with a warning |
 
 Three things that table already implies:
@@ -29,11 +29,12 @@ Three things that table already implies:
   slow" caveat, and it removes the escape hatch: there is no longer a guest that can
   do the things the in-process path cannot (install packages, run shell, compile
   Swift through a Linux toolchain).
-- **Swift is the gate.** Everything interesting — which is to say almost every iOS
-  app — is Swift, and Swift does not compile on device yet.
-- **The project model is read-only.** The reader parses an `.xcodeproj`; the import
-  flow still requires a `Package.swift` and rejects anything else, so there is no
-  path from a read `.xcodeproj` to a build.
+- **Swift can compile in the native driver** when the `with_swift` bundle is linked;
+  the module-based dependency and Xcode-target paths are experimental and still need
+  a physical-device smoke test.
+- **The project model is read-only, but a narrow build adapter exists.** It consumes
+  the selected `.xcodeproj` target without editing the project file. Unsupported
+  inputs fail closed before compilation.
 
 ## 2. What an Xcode project needs, and where each piece stands
 
@@ -47,27 +48,20 @@ Three things that table already implies:
    merges the project's own inheritance layers in Xcode's order and reports values
    as written; full evaluation is its own piece of work and is a prerequisite for
    the compiler command lines.
-3. **A build driver** — **still open, and now harder than it looked.** Dependency
-   order between targets, Swift module boundaries (`-emit-module` ordering,
-   `.swiftmodule` search paths), bridging headers,
-   `SWIFT_OBJC_INTERFACE_HEADER_NAME`, entitlements, `Info.plist` variable
-   substitution, resource phases. **Script phases are the part the platform takes
-   away**: they are arbitrary shell, and an iOS app cannot run shell, so a project
-   with a script phase cannot be built on device at all — not by XForge, and not by
-   any other on-device tool. Nothing here can be borrowed from SwiftPM either:
-   `swift-build` spawns compilers as processes, and iOS has no `fork`/`exec`. The
-   plan/executor split in `Docs/DESIGN.md` is the shape a driver would take, but
-   the driver itself (one target, one module) is what remains.
+3. **A bounded build adapter** — **experimental.** The current adapter translates one
+   application target with literal bundle/deployment settings and Swift-only sources
+   importing Foundation/UIKit/SwiftUI into the native plan. It rejects multiple app
+   targets, resources, assets, scripts/copy phases, linked non-SDK products,
+   xcconfigs, bridging headers, custom compiler/linker flags, and unresolved
+   settings. It reuses the existing in-process compiler/linker and is not a general
+   Xcode build driver. Script phases cannot run in the iOS app and remain unsupported.
 4. **Compilers and linkers.**
    - C/Objective-C: clang in-process — **done**, not a POC any more.
    - Link: `ld64.lld` in-process — **done**.
-   - **Swift: still the gate.** `swift-frontend` is not in `llvm-project`; it must
-     be built from `swiftlang/swift` against `swiftlang/llvm-project` **for iOS**,
-     as a library set, and it needs the same resource directory the SDK bundle
-     carries. The bridge already exposes the entry point behind
-     `XFORGE_HAS_SWIFT_FRONTEND`, and the CI workflow that produces the toolchain
-     artifact does not build it. Until it does, every Swift app is out of reach on
-     device — there is no guest to fall back to.
+   - **Swift: experimental, not yet physically device-validated.** The `with_swift`
+     toolchain bundle carries the in-process frontend and CI verifies the app archive.
+     The narrow Xcode/dependency paths rely on module emission and import behavior
+     which still need a real device smoke test.
    - `dsymutil`/`strip` equivalents: LLVM ships `llvm-strip`, and debug maps can be
      skipped for a sideload build.
 5. **Resources.** Copying files is trivial and the executor does it. **Compiling
@@ -81,13 +75,10 @@ Three things that table already implies:
    rather than an app that ships without its icon and cannot say why. A minimal
    `Assets.car` writer for the common cases (app icon + colours) is conceivable but
    is its own project.
-6. **Dependencies** — **still open, and unfetchable as things stand.** An Xcode
-   project's SPM dependencies (`XCRemoteSwiftPackageReference`) need a fetch (git
-   over the network), a checkout, and then the same build treatment as the
-   project's own targets. An iOS app cannot run `git`, so the fetch is not a matter
-   of writing a driver: it means reimplementing enough of git's wire protocol to
-   resolve and check out a package graph. For the same reason, XForge today refuses
-   a `Package.swift` that declares any dependency, by name.
+6. **Dependencies** — an experimental module path exists for exactly one pinned
+   ZIPFoundation revision in the SwiftPM flow. It does not provide general package
+   resolution or Xcode-project package integration. Local/registry/private pins,
+   transitive graphs, plugins, binaries and other package products remain unsupported.
 7. **Signing and installation.** Signing **works** in-process via XKit with an
    identity the user already has (`.p12` + profile); what is missing is *obtaining*
    one — an Apple ID session needs anisette + GrandSlam + 2FA, which is a separate,
@@ -98,22 +89,19 @@ Three things that table already implies:
 
 ## 3. Staged plan
 
-- **M1 — Read the project.** `XcodeProjectReader` (**done**). Next: surface it in
-  the import flow so an `.xcodeproj` can be opened and its targets listed, instead
-  of being rejected as "not a SwiftPM package".
-- **M2 — Build one app on-device.** A single app target, no asset catalog, one
-  module: compile with the native path, link with `ld64.lld`, package with
-  `IPABuilder`, sign with XKit. The toolchain now does the C/ObjC half of this;
-  the interesting version needs Swift and therefore M4. This is the milestone that
-  proves the concept end to end.
-- **M3 — Build settings and the rest of the bundle.** Full `$(…)` evaluation,
-  `Info.plist` processing, resource copy phases, and a decision about script phases
-  (which cannot be supported at all).
-- **M4 — Swift.** Port `swift-frontend` for iOS (the long pole), then the build
-  driver for modules and dependencies. **Everything Swift waits on this.**
-- **M5 — SPM dependencies, then asset catalogs** — with the caveats in §2.5 and
-  §2.6: the first needs a git implementation, and the second may never cover the
-  general case.
+- **M1 — Read the project.** `XcodeProjectReader` and target inventory (**done**).
+- **M2 — Build one Xcode app on-device.** An experimental planner now accepts a
+  strict single-target Swift subset and rejects unsupported build phases/settings.
+  CI compiles/archives XForge, but a dependent target still needs a physical-device
+  build/runtime smoke test.
+- **M3 — Broaden settings/resources.** Full `$(…)` evaluation, `Info.plist`
+  processing, asset/storyboard compilation and custom link/resource phases remain
+  unsupported; shell scripts cannot execute in the app.
+- **M4 — Swift module validation.** The Swift frontend is bundled, but module
+  emission/import/link paths need physical-device verification.
+- **M5 — Dependency graph.** One exact ZIPFoundation profile is experimental.
+  General package resolution, transitive graphs, plugins and arbitrary products
+  remain unsupported.
 
 ## 4. What this means for the goal
 

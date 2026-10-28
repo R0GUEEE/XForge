@@ -3,9 +3,9 @@ import Foundation
 /// What a project record points at.
 ///
 /// XForge started with one kind of project: a SwiftPM package it can compile
-/// in-process. An imported `.xcodeproj` is kept as a *second* kind so it can live
-/// in the Projects list, be browsed, and be exported, without any screen
-/// pretending it can be built. `ProjectKind` is stored in `Project`, so the
+/// in-process. An imported `.xcodeproj` is preserved for inspection and handoff;
+/// a narrow single-Swift-target subset can be translated into the native plan,
+/// but this is not a general Xcode build engine. `ProjectKind` is stored in `Project`, so the
 /// distinction survives relaunch; records written before this existed decode as
 /// `.swiftPackage` (see `Project.init(from:)`).
 enum ProjectKind: String, Codable, Hashable, Sendable {
@@ -21,7 +21,8 @@ enum ProjectKind: String, Codable, Hashable, Sendable {
         }
     }
 
-    /// The one place that answers "can XForge build this?".
+    /// The project kind alone cannot establish compatibility; Xcode projects are
+    /// checked per target by `XcodeProjectBuildPlanner`.
     var isBuildable: Bool { self == .swiftPackage }
 }
 

@@ -1,14 +1,12 @@
 import SwiftUI
 
-/// A project imported from an Xcode project: a target list and a file browser,
-/// both read-only.
-///
-/// There is no build button on this screen and no way to reach one. XForge has no
-/// Xcode-project build driver, and a screen that offers a build it cannot perform
-/// is worse than one that says so. This is the second `ProjectKind`; the Swift
-/// package detail keeps the build pipeline.
+/// A project imported from an Xcode project: target metadata and a read-only file
+/// browser. A strict single-Swift-app subset has a native build action; unsupported
+/// resources, scripts, custom settings, linked dependencies, and multiple app targets
+/// are refused before compilation.
 struct XcodeProjectDetailView: View {
     let project: Project
+    @StateObject private var buildManager: BuildManager
     @State private var section: Section = .targets
     @State private var summary: XcodeProjectSummary?
     @State private var loadError: String?
@@ -18,6 +16,11 @@ struct XcodeProjectDetailView: View {
     @State private var handoffArchive: URL?
     @State private var handoffError: String?
     @State private var showingDependencies = false
+
+    init(project: Project) {
+        self.project = project
+        _buildManager = StateObject(wrappedValue: BuildManager(project: project))
+    }
 
     enum Section: String, CaseIterable, Identifiable {
         case targets = "Targets"
@@ -41,7 +44,10 @@ struct XcodeProjectDetailView: View {
             }
         }
         .navigationTitle(project.name)
-        .task { await load() }
+        .task {
+            await buildManager.bootstrap()
+            await load()
+        }
         .sheet(isPresented: $showingDependencies) {
             NavigationStack { DependencyManagerView(project: project) }
         }
@@ -52,7 +58,7 @@ struct XcodeProjectDetailView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Label("Read-only snapshot", systemImage: "lock.doc")
+                Label("Xcode project snapshot", systemImage: "hammer.fill")
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 3)
@@ -77,10 +83,36 @@ struct XcodeProjectDetailView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text("XForge cannot build an Xcode project yet, so this screen shows what the "
-                 + "project contains. No build action is available.")
+            Text("Simple Swift application targets can build in XForge. Assets, scripts, linked libraries, custom settings, package references, and multi-target projects are still unsupported and are rejected before compilation.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            HStack {
+                Picker("Configuration", selection: $buildManager.configuration) {
+                    Text("Debug").tag(BuildConfiguration.debug)
+                    Text("Release").tag(BuildConfiguration.release)
+                }
+                .pickerStyle(.segmented)
+                Button {
+                    Task { await buildManager.run() }
+                } label: {
+                    Label(buildManager.snapshot.isRunning ? "Building…" : "Build supported target", systemImage: "hammer.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(buildManager.snapshot.isRunning || isLoading)
+            }
+            if !buildManager.snapshot.consoleText.isEmpty {
+                Text(buildManager.snapshot.consoleText)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color(.secondarySystemBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            if let artifact = buildManager.snapshot.lastIpa {
+                Label("IPA: \(artifact.lastPathComponent)", systemImage: "doc.zipper")
+                    .font(.caption)
+            }
         }
         .padding(.horizontal)
         .padding(.vertical, 8)

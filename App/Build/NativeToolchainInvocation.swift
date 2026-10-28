@@ -44,6 +44,7 @@ enum NativeToolchainInvocation {
             "-sdk", sdk.sdkRoot.path,
             "-resource-dir", swiftResources.path,
             "-module-name", plan.moduleName,
+            "-swift-version", "5",
             "-o", object.path,
         ]
         arguments.append(contentsOf: allSources.filter { $0.standardizedFileURL != source.standardizedFileURL }.map(\.path))

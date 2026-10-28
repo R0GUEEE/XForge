@@ -46,6 +46,8 @@ struct XcodeTargetSummary: Identifiable, Sendable {
     let buildSettings: [String: String]
     let configurationNames: [String]
     let defaultConfiguration: String?
+    /// Build inputs this reader detects but the in-process builder cannot honor.
+    let unsupportedBuildFeatures: [String]
 
     var isApplication: Bool { productType == "com.apple.product-type.application" }
     var containsSwift: Bool { sourceFiles.contains { $0.hasSuffix(".swift") } }
@@ -254,8 +256,57 @@ enum XcodeProjectReader {
             xcconfigPaths: xcconfigs,
             buildSettings: settings,
             configurationNames: configurations.compactMap { $0["name"]?.stringValue },
-            defaultConfiguration: chosen?["name"]?.stringValue
+            defaultConfiguration: chosen?["name"]?.stringValue,
+            unsupportedBuildFeatures: unsupportedFeatures(target: target, objects: objects, settings: settings)
         )
+    }
+
+    private static func unsupportedFeatures(
+        target: [String: PbxValue],
+        objects: [String: PbxValue],
+        settings: [String: String]
+    ) -> [String] {
+        var issues = Set<String>()
+        for phaseID in (target["buildPhases"]?.arrayValue ?? []).compactMap(\.stringValue) {
+            guard let phase = objects[phaseID]?.dictionaryValue else { continue }
+            let kind = phase["isa"]?.stringValue ?? ""
+            switch kind {
+            case "PBXSourcesBuildPhase": break
+            case "PBXFrameworksBuildPhase":
+                for buildID in (phase["files"]?.arrayValue ?? []).compactMap(\.stringValue) {
+                    let build = objects[buildID]?.dictionaryValue ?? [:]
+                    let ref = objects[build["fileRef"]?.stringValue ?? ""]?.dictionaryValue ?? [:]
+                    let path = ref["path"]?.stringValue ?? ref["name"]?.stringValue ?? ""
+                    let framework = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+                    let isKnownSDKFramework = (ref["sourceTree"]?.stringValue == "SDKROOT")
+                        && ["Foundation", "UIKit", "SwiftUI"].contains(framework)
+                    if !isKnownSDKFramework { issues.insert("linked frameworks or libraries") }
+                }
+            case "PBXResourcesBuildPhase":
+                if !(phase["files"]?.arrayValue ?? []).isEmpty { issues.insert("resources, assets, storyboards, or generated bundles") }
+            case "PBXShellScriptBuildPhase": issues.insert("shell-script build phase")
+            case "PBXCopyFilesBuildPhase":
+                if !(phase["files"]?.arrayValue ?? []).isEmpty { issues.insert("copy/embed build phase") }
+            case "PBXHeadersBuildPhase":
+                if !(phase["files"]?.arrayValue ?? []).isEmpty { issues.insert("public/private headers") }
+            default:
+                if !(phase["files"]?.arrayValue ?? []).isEmpty { issues.insert("unsupported build phase \(kind)") }
+            }
+        }
+        if settings.keys.contains(where: { $0.hasPrefix("INFOPLIST_KEY_") }) {
+            issues.insert("custom Info.plist keys")
+        }
+        for key in ["SWIFT_OBJC_BRIDGING_HEADER", "SWIFT_OBJC_INTERFACE_HEADER_NAME",
+                    "OTHER_SWIFT_FLAGS", "OTHER_LDFLAGS", "LIBRARY_SEARCH_PATHS",
+                    "FRAMEWORK_SEARCH_PATHS", "INFOPLIST_FILE", "CODE_SIGN_ENTITLEMENTS"] {
+            guard let value = settings[key], !value.isEmpty, value != "NO", value != "0",
+                  value != "$(inherited)" else { continue }
+            issues.insert("custom build setting \(key)")
+        }
+        if let version = settings["SWIFT_VERSION"], !version.hasPrefix("5") {
+            issues.insert("non-Swift-5 language mode")
+        }
+        return issues.sorted()
     }
 
     // MARK: - Build settings

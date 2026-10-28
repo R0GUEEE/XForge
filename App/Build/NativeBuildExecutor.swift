@@ -177,31 +177,37 @@ final class NativeBuildExecutor: BuildExecutor {
         AsyncThrowingStream { continuation in
             Task { @MainActor in
                 do {
-                    let manifest = project.rootURL.appendingPathComponent("Package.swift")
-                    let dependencies = try NativeBuildPlanFactory.swiftPackageDependencies(manifestURL: manifest)
-                    let modules: [NativeSwiftDependencyPlan]
-                    do {
-                        modules = try NativeBuildPlanFactory.swiftDependencyModules(
-                            root: project.rootURL, declaredNames: dependencies
+                    if project.isXcodeProject {
+                        let plan = try XcodeProjectBuildPlanner.makePlan(
+                            project: project, configuration: .debug
                         )
-                    } catch let planError as NativeBuildPlanError {
-                        guard case .dependencySourceMissing = planError else { throw planError }
-                        continuation.yield(.plan("Fetching verified pinned dependency sources…"))
-                        let lockURL = project.rootURL.appendingPathComponent("Package.resolved")
-                        let lock = try ResolvedPackageLockfile.read(contentsOf: lockURL)
-                        _ = try await PinnedDependencySourceInstaller.installPinnedSources(
-                            for: project, pins: lock.pins
-                        )
-                        modules = try NativeBuildPlanFactory.swiftDependencyModules(
-                            root: project.rootURL, declaredNames: dependencies
-                        )
-                    }
-                    continuation.yield(.plan("Preparing dependency modules…"))
-                    if modules.isEmpty {
-                        continuation.yield(.output("No package dependencies: nothing to resolve."))
+                        continuation.yield(.plan("Checking supported Xcode target…"))
+                        continuation.yield(.output("Target \(plan.appName), \(plan.swiftSources.count) Swift files; scripts/resources/dependencies are not reproduced."))
                     } else {
-                        for module in modules {
-                            continuation.yield(.output("verified \(module.identity) @ \(module.revision.prefix(12)); module will be built in-process"))
+                        let manifest = project.rootURL.appendingPathComponent("Package.swift")
+                        let dependencies = try NativeBuildPlanFactory.swiftPackageDependencies(manifestURL: manifest)
+                        let modules: [NativeSwiftDependencyPlan]
+                        do {
+                            modules = try NativeBuildPlanFactory.swiftDependencyModules(
+                                root: project.rootURL, declaredNames: dependencies
+                            )
+                        } catch let planError as NativeBuildPlanError {
+                            guard case .dependencySourceMissing = planError else { throw planError }
+                            continuation.yield(.plan("Fetching verified pinned dependency sources…"))
+                            let lockURL = project.rootURL.appendingPathComponent("Package.resolved")
+                            let lock = try ResolvedPackageLockfile.read(contentsOf: lockURL)
+                            _ = try await PinnedDependencySourceInstaller.installPinnedSources(for: project, pins: lock.pins)
+                            modules = try NativeBuildPlanFactory.swiftDependencyModules(
+                                root: project.rootURL, declaredNames: dependencies
+                            )
+                        }
+                        continuation.yield(.plan("Preparing dependency modules…"))
+                        if modules.isEmpty {
+                            continuation.yield(.output("No package dependencies: nothing to resolve."))
+                        } else {
+                            for module in modules {
+                                continuation.yield(.output("verified \(module.identity) @ \(module.revision.prefix(12)); module will be built in-process"))
+                            }
                         }
                     }
                     continuation.yield(.finished)
@@ -248,13 +254,17 @@ final class NativeBuildExecutor: BuildExecutor {
         }
 
         let sdk = try NativeSDK.layout()
-        let appInfo = project.appInfo ?? .default(for: project)
-        let plan = try NativeBuildPlanFactory.makePlan(
-            root: project.rootURL,
-            appInfo: appInfo,
-            configuration: configuration,
-            sdk: sdk
-        )
+        let appInfo: AppInfo
+        let plan: NativeBuildPlan
+        if project.isXcodeProject {
+            plan = try XcodeProjectBuildPlanner.makePlan(project: project, configuration: configuration)
+            appInfo = XcodeProjectBuildPlanner.appInfo(from: plan)
+        } else {
+            appInfo = project.appInfo ?? .default(for: project)
+            plan = try NativeBuildPlanFactory.makePlan(
+                root: project.rootURL, appInfo: appInfo, configuration: configuration, sdk: sdk
+            )
+        }
 
         emit(.plan("Compiling \(plan.moduleName) for arm64-apple-ios\(plan.minimumIOSVersion)…"))
         emit(.output("\(plan.swiftSources.count) Swift, \(plan.clangSources.count) C, \(plan.resources.count) resource files"))
