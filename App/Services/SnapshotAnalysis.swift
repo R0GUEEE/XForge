@@ -225,7 +225,7 @@ enum XcodeProjectHandoff {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    private static func quote(_ value: String) -> String { "\"\(escape(value))\"" }
+    private static func quoted(_ value: String) -> String { "\"\(escape(value))\"" }
 
     private static func sharedScheme(name: String, targetID: String) -> String {
         let ref = "<BuildableReference BuildableIdentifier=\"primary\" BlueprintIdentifier=\"\(targetID)\" BuildableName=\"\(name).app\" BlueprintName=\"\(name)\" ReferencedContainer=\"container:\(name).xcodeproj\"/>"
