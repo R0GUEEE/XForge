@@ -227,9 +227,16 @@ struct GitHubRepository: Hashable, Sendable {
         do {
             let (data, response) = try await session.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200,
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let sha = object["sha"] as? String,
-                  sha.count == 40 else { return nil }
+                  let json = try? JSONSerialization.jsonObject(with: data) else { return nil }
+            let sha: String?
+            if let object = json as? [String: Any] {
+                sha = object["sha"] as? String
+            } else if let commits = json as? [[String: Any]] {
+                sha = commits.first?["sha"] as? String
+            } else {
+                sha = nil
+            }
+            guard let sha, sha.count == 40 else { return nil }
             return sha
         } catch {
             return nil

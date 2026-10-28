@@ -153,7 +153,7 @@ enum XcodeProjectHandoff {
         try scheme.write(to: schemeDir.appendingPathComponent("\(name).xcscheme"), atomically: true, encoding: .utf8)
         let report = notes(project: project, target: target, inventory: inventory, sources: sourceFiles)
         try report.write(to: generatedRoot.appendingPathComponent("XFORGE-IMPORT-REPORT.md"), atomically: true, encoding: .utf8)
-        let archive = try ProjectExporter.export(project)
+        let archive = try ProjectExporter.exportSnapshotForHandoff(project)
         return Output(archiveURL: archive, projectFileCount: sourceFiles.count, notes: inventory.dependencyIndicators)
     }
 

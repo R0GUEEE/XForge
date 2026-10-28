@@ -151,6 +151,12 @@ struct XcodeProjectDetailView: View {
                             .font(.caption)
                     }
                 }
+                if !inventory.lockfiles.isEmpty {
+                    ForEach(inventory.lockfiles, id: \.self) { path in
+                        Label("Lockfile: \(path)", systemImage: "lock")
+                            .font(.caption)
+                    }
+                }
                 if !inventory.dependencyIndicators.isEmpty {
                     ForEach(inventory.dependencyIndicators, id: \.self) { note in
                         Label(note, systemImage: "exclamationmark.triangle")
