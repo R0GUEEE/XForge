@@ -11,7 +11,7 @@ final class XcodeProjectTests: XCTestCase {
     /// A minimal but real project file: both configuration lists, a sources phase,
     /// a nested group, and settings split between the project and the target — so a
     /// reader that ignores one of the two levels fails the assertions below.
-    private static let pbxproj = #"""
+    static let pbxproj = #"""
     // !$*UTF8*$!
     {
     	archiveVersion = 1;
