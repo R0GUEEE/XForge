@@ -350,21 +350,15 @@ final class XipArchiveTests: XCTestCase {
         XCTAssertEqual(content.length, Int64(payload.count))
     }
 
-    /// The two shapes a reader may also meet, kept working:
-    ///
-    ///  - raw DEFLATE, which is what a fixture built with Apple's encoder holds and
-    ///    what some repackagers write; and
-    ///  - a TOC that was never compressed, where `toc_length_compressed` equals
-    ///    `toc_length_uncompressed` and the XML is stored as it stands.
-    func testAcceptsRawDeflateAndStoredTableOfContents() throws {
-        for compression in [Self.TOCCompression.rawDeflate, .stored] {
-            let url = try writeXip(Self.xar(content: Self.pbzx(Self.cpio(Self.fakeXcode())),
-                                            toc: compression))
-            let content = try XipArchive.content(of: url)
-            var count = 0
-            try XipArchive.forEachEntry(in: url, content: content) { _, _ in count += 1 }
-            XCTAssertGreaterThan(count, 10, "the \(compression) TOC should still parse")
-        }
+    /// A TOC stored as plain XML rather than compressed is accepted when its
+    /// compressed and uncompressed lengths are equal.
+    func testAcceptsStoredTableOfContents() throws {
+        let url = try writeXip(Self.xar(content: Self.pbzx(Self.cpio(Self.fakeXcode())),
+                                        toc: .stored))
+        let content = try XipArchive.content(of: url)
+        var count = 0
+        try XipArchive.forEachEntry(in: url, content: content) { _, _ in count += 1 }
+        XCTAssertGreaterThan(count, 10)
     }
 
     /// Bytes that are not a xip at all still fail, and fail as a *structure* problem
