@@ -63,6 +63,9 @@ struct SnapshotInventory: Codable, Equatable, Sendable {
                 if leaf == "project.pbxproj", let text = try? String(contentsOf: url, encoding: .utf8), text.contains("PBXShellScriptBuildPhase") { scripts.append(rel) }
             }
         }
+        if projects.count > 1 {
+            deps.insert("Multiple .xcodeproj candidates found; confirm the selected project before using the handoff")
+        }
         if !workspaces.isEmpty {
             deps.insert("Xcode workspace files found; workspace-level project/package references are reported but not resolved")
         }

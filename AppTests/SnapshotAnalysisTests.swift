@@ -69,6 +69,22 @@ final class SnapshotAnalysisTests: XCTestCase {
         XCTAssertEqual(summary.applicationTargets.map(\.name), ["Demo"])
     }
 
+    func testDetectorKeepsMultipleXcodeCandidatesImportableAndChoosesStableFirst() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("xforge-multiple-projects-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for name in ["Beta", "Alpha"] {
+            let bundle = root.appendingPathComponent("\(name).xcodeproj", isDirectory: true)
+            try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+            let pbx = minimalPBX.replacingOccurrences(of: "name = Demo;", with: "name = \(name);")
+            try pbx.write(to: bundle.appendingPathComponent("project.pbxproj"), atomically: true, encoding: .utf8)
+        }
+        guard case .xcodeProject(let subpath, let summary) = try GitHubSnapshotDetector.detect(in: root) else {
+            return XCTFail("multiple projects should remain importable for analysis")
+        }
+        XCTAssertNil(subpath)
+        XCTAssertEqual(summary.name, "Alpha")
+    }
+
     func testDetectorFallsBackToStandaloneSwiftPackage() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("xforge-package-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

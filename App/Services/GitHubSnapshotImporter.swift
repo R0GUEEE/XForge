@@ -350,13 +350,11 @@ enum GitHubSnapshotDetector {
         guard let depth = found.map({ $0.depth }).min() else {
             throw GitHubImportError.noProjectFound
         }
-        let shallowest = found.filter { $0.depth == depth }
-        guard shallowest.count == 1, let candidate = shallowest.first else {
-            throw GitHubImportError.ambiguousXcodeProjects(
-                shallowest.map({ $0.url.lastPathComponent }).sorted()
-            )
-        }
-
+        let shallowest = found.filter { $0.depth == depth }.sorted { $0.url.path < $1.url.path }
+        // Keep the snapshot and expose every candidate in SnapshotInventory rather
+        // than rejecting the repository. The initial read-only view uses this stable
+        // first candidate; the analyzer warns if the user must choose another app.
+        guard let candidate = shallowest.first else { throw GitHubImportError.noProjectFound }
         let summary: XcodeProjectSummary
         do {
             summary = try XcodeProjectReader.read(at: candidate.url)
