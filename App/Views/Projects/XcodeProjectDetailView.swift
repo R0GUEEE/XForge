@@ -13,6 +13,10 @@ struct XcodeProjectDetailView: View {
     @State private var summary: XcodeProjectSummary?
     @State private var loadError: String?
     @State private var isLoading = true
+    @State private var inventory: SnapshotInventory?
+    @State private var isGenerating = false
+    @State private var handoffArchive: URL?
+    @State private var handoffError: String?
 
     enum Section: String, CaseIterable, Identifiable {
         case targets = "Targets"
@@ -36,8 +40,7 @@ struct XcodeProjectDetailView: View {
             }
         }
         .navigationTitle(project.name)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { load() }
+        .task { await load() }
     }
 
     // MARK: - Header
@@ -93,25 +96,120 @@ struct XcodeProjectDetailView: View {
                 systemImage: "exclamationmark.triangle",
                 message: loadError
             )
-        } else if let summary, !summary.targets.isEmpty {
+        } else if let summary {
             List {
-                SwiftUI.Section {
-                    ForEach(summary.targets, id: \.id) { target in
-                        targetRow(target)
+                analysisSection
+                if summary.targets.isEmpty {
+                    SwiftUI.Section {
+                        Text("This project file names no targets.").foregroundStyle(.secondary)
                     }
-                } header: {
-                    Text("Targets (\(summary.targets.count))")
-                } footer: {
-                    Text("Targets, product types and settings are read from project.pbxproj "
-                         + "as written; Xcode's variable expansion is not evaluated.")
+                } else {
+                    SwiftUI.Section {
+                        ForEach(summary.targets, id: \.id) { target in
+                            targetRow(target)
+                        }
+                    } header: {
+                        Text("Targets (\(summary.targets.count))")
+                    } footer: {
+                        Text("Targets, product types and settings are read from project.pbxproj "
+                             + "as written; Xcode's variable expansion is not evaluated.")
+                    }
                 }
             }
         } else {
             ContentUnavailableViewCompat(
-                title: "No Targets",
-                systemImage: "target",
-                message: "This project file names no targets."
+                title: "Project unavailable",
+                systemImage: "folder",
+                message: "The project summary is not available. Reload this project to analyze it."
             )
+        }
+    }
+
+    @ViewBuilder
+    private var analysisSection: some View {
+        SwiftUI.Section {
+            if let inventory {
+                LabeledContent("Repository files", value: "\(inventory.fileCount)")
+                LabeledContent("Extracted", value: ByteCountFormatter.string(fromByteCount: inventory.extractedBytes, countStyle: .file))
+                LabeledContent("Xcode projects", value: "\(inventory.xcodeProjects.count)")
+                LabeledContent("Workspaces", value: "\(inventory.workspaces.count)")
+                if !inventory.xcodeProjects.isEmpty {
+                    ForEach(inventory.xcodeProjects, id: \.self) { path in
+                        Label(path, systemImage: "hammer")
+                            .font(.caption)
+                    }
+                }
+                if !inventory.workspaces.isEmpty {
+                    ForEach(inventory.workspaces, id: \.self) { path in
+                        Label(path, systemImage: "square.stack.3d.up")
+                            .font(.caption)
+                    }
+                }
+                if !inventory.packageManifests.isEmpty {
+                    ForEach(inventory.packageManifests, id: \.self) { path in
+                        Label("Package: \(path)", systemImage: "shippingbox")
+                            .font(.caption)
+                    }
+                }
+                if !inventory.dependencyIndicators.isEmpty {
+                    ForEach(inventory.dependencyIndicators, id: \.self) { note in
+                        Label(note, systemImage: "exclamationmark.triangle")
+                            .font(.caption)
+                    }
+                }
+                if !inventory.lfsPointerFiles.isEmpty {
+                    Label("\(inventory.lfsPointerFiles.count) Git LFS pointer files are not materialized.", systemImage: "arrow.down.doc")
+                        .font(.caption)
+                }
+                if !inventory.caseCollisionPaths.isEmpty {
+                    Label("Case-only filename collisions may not survive on this device.", systemImage: "case.lowercase")
+                        .font(.caption)
+                }
+                if !inventory.scriptPhaseProjects.isEmpty {
+                    Label("Shell build phases detected; XForge cannot execute them.", systemImage: "terminal")
+                        .font(.caption)
+                }
+                if let handoffError {
+                    Label(handoffError, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundStyle(.red)
+                }
+                if let handoffArchive {
+                    ShareLink(item: handoffArchive) {
+                        Label("Share Xcode handoff + repository", systemImage: "square.and.arrow.up")
+                    }
+                } else {
+                    Button {
+                        generateHandoff()
+                    } label: {
+                        Label(isGenerating ? "Generating…" : "Generate Xcode handoff", systemImage: "hammer")
+                    }
+                    .disabled(isGenerating || summary == nil)
+                }
+            } else {
+                ProgressView("Analyzing repository…")
+            }
+        } header: {
+            Text("Repository analysis")
+        } footer: {
+            Text("The handoff creates a minimal .xcodeproj and .xcconfig for review in Xcode. It does not reproduce every original setting or dependency, and XForge does not build it.")
+        }
+    }
+
+    private func generateHandoff() {
+        guard let summary, let inventory, !isGenerating else { return }
+        isGenerating = true
+        handoffError = nil
+        let project = self.project
+        Task {
+            defer { isGenerating = false }
+            do {
+                let output = try await Task.detached(priority: .utility) {
+                    try XcodeProjectHandoff.export(project: project, summary: summary, inventory: inventory)
+                }.value
+                handoffArchive = output.archiveURL
+            } catch {
+                handoffError = error.localizedDescription
+            }
         }
     }
 
@@ -171,14 +269,22 @@ struct XcodeProjectDetailView: View {
         return target.containsSwift ? "\(files) · contains Swift" : files
     }
 
-    private func load() {
+    private func load() async {
         isLoading = true
-        defer { isLoading = false }
+        let project = self.project
         do {
-            summary = try XcodeProjectReader.read(at: project.rootURL)
+            let result = try await Task.detached(priority: .utility) {
+                let summary = try XcodeProjectReader.read(at: project.rootURL)
+                let inventory = SnapshotInventory.scan(root: project.snapshotRootURL)
+                return (summary, inventory)
+            }.value
+            summary = result.0
+            inventory = result.1
+            loadError = nil
         } catch {
             loadError = error.localizedDescription
         }
+        isLoading = false
     }
 }
 

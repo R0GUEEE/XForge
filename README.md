@@ -68,11 +68,9 @@ in-process toolchain and the SDK in the container.
 - **Exporting.** `ProjectExporter` zips a project into `<Documents>/exports`, and
   the file is visible in the Files app and shareable from there. Build output
   (`.xforge-build`, `.build`) is left out of the archive.
-- **Reading an `.xcodeproj`.** `App/Models/XcodeProject.swift` parses the project
-  model on device, with its own OpenStep parser. Nothing builds from it yet.
-- **Building and testing XForge itself without any toolchain bundle.** A plain
-  clone compiles the bridge to a "not available" stub; `make test` runs on the
-  simulator.
+- **GitHub repository analysis and Xcode handoff.** Public repositories are imported as complete ZIP snapshots of one revision (not a Git clone; no history). XForge inventories projects, workspaces, lockfiles and common dependency/script markers. For a narrow, single Swift app target with literal settings, it can generate a minimal `.xcodeproj`, shared scheme and `.xcconfig` under `.xforge-generated/` and export the snapshot. This is an Xcode handoff to review on a Mac, **not** an XForge build: unsupported settings, resources and dependencies are listed in `XFORGE-IMPORT-REPORT.md`. See [Docs/IMPORT-ANALYSIS.md](Docs/IMPORT-ANALYSIS.md).
+- **Reading an `.xcodeproj`.** `App/Models/XcodeProject.swift` parses the project model on device, with its own OpenStep parser. XForge does not yet build arbitrary Xcode projects.
+- **Building and testing XForge itself without any toolchain bundle.** A plain clone compiles the bridge to a "not available" stub; `make test` runs on the simulator.
 
 ## What does not work (yet)
 

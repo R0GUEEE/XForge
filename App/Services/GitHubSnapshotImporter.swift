@@ -76,9 +76,18 @@ enum GitHubSnapshotImporter {
     ) async throws -> Result {
         let repository = request.repository
         let fileManager = FileManager.default
+        // Resolve the moving ref first, then fetch the immutable SHA. Otherwise a
+        // branch can move between archive download and the API lookup, leaving the
+        // project record claiming a commit different from the imported bytes.
+        let resolvedCommit = request.resolveCommit
+            ? await GitHubRepository.resolveCommit(for: repository)
+            : nil
+        let archiveRepository = resolvedCommit.map {
+            GitHubRepository(owner: repository.owner, name: repository.name, ref: $0)
+        } ?? repository
 
         progress(.downloading)
-        let archiveURL = try await download(repository)
+        let archiveURL = try await download(archiveRepository)
         defer { try? fileManager.removeItem(at: archiveURL) }
 
         // Staging lives beside the projects directory so the final step is a move
@@ -133,9 +142,6 @@ enum GitHubSnapshotImporter {
             requested: request.organizationIdentifier,
             contents: contents
         )
-        let resolvedCommit = request.resolveCommit
-            ? await GitHubRepository.resolveCommit(for: repository)
-            : nil
 
         let project = Project(
             name: baseName,
@@ -146,7 +152,7 @@ enum GitHubSnapshotImporter {
                 repository: repository.slug,
                 requestedRef: repository.ref,
                 resolvedCommit: resolvedCommit,
-                archiveURL: repository.archiveURL.absoluteString
+                archiveURL: archiveRepository.archiveURL.absoluteString
             ),
             snapshotSubpath: snapshotSubpath
         )
@@ -325,17 +331,22 @@ enum GitHubSnapshotContents: Sendable {
 enum GitHubSnapshotDetector {
     /// Decide what a snapshot is, reading the project file for real.
     ///
-    /// Order matters and mirrors `ProjectImportInspector`: a `Package.swift` at the
-    /// root is a Swift package first, because that is the import XForge can build.
-    /// Otherwise the shallowest `.xcodeproj` is used; two at the same depth are
-    /// ambiguous and rejected by name rather than guessed at.
+    /// Prefer a concrete Xcode application project when the repository has both
+    /// an app `.xcodeproj` and a root Package.swift used for tooling or a module.
+    /// The full snapshot stays in XForge and the inventory shows all candidates;
+    /// callers can still select the package in a future chooser. If no Xcode project
+    /// exists, a root Package.swift remains the fallback import type.
     static func detect(in root: URL, maxDepth: Int = 4) throws -> GitHubSnapshotContents {
         let manifest = root.appendingPathComponent("Package.swift")
-        if FileManager.default.fileExists(atPath: manifest.path) {
-            return .swiftPackage
+        // Prefer an actual Xcode app project when a repository contains both a
+        // root Package.swift (often for tooling or a sibling module) and an app
+        // target. The complete tree is still retained; inventory reports both.
+        let found = findXcodeProjects(in: root, maxDepth: maxDepth)
+        guard !found.isEmpty else {
+            if FileManager.default.fileExists(atPath: manifest.path) { return .swiftPackage }
+            throw GitHubImportError.noProjectFound
         }
 
-        let found = findXcodeProjects(in: root, maxDepth: maxDepth)
         guard let depth = found.map({ $0.depth }).min() else {
             throw GitHubImportError.noProjectFound
         }

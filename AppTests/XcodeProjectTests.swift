@@ -227,6 +227,16 @@ final class XcodeProjectTests: XCTestCase {
         XCTAssertThrowsError(try XcodeProjectReader.read(at: root.appendingPathComponent("Broken.xcodeproj")))
     }
 
+    func testParserRejectsExcessiveNestingInsteadOfRecursingUnboundedly() {
+        let depth = 300
+        let hostile = String(repeating: "(", count: depth) + "value" + String(repeating: ")", count: depth)
+        XCTAssertThrowsError(try PbxValue.parse(hostile)) { error in
+            guard case PbxParseError.excessiveNesting = error else {
+                return XCTFail("expected a nesting limit error, got \(error)")
+            }
+        }
+    }
+
     func testReportsAMissingProject() throws {
         let empty = FileManager.default.temporaryDirectory
             .appendingPathComponent("xforge-empty-\(UUID().uuidString)", isDirectory: true)

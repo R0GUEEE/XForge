@@ -213,10 +213,13 @@ struct GitHubRepository: Hashable, Sendable {
     static func resolveCommit(for repository: GitHubRepository,
                               session: URLSession = .shared) async -> String? {
         let revision = repository.ref ?? "HEAD"
-        guard let encoded = revision.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
-              let url = URL(string: "https://api.github.com/repos/\(repository.owner)/\(repository.name)/commits/\(encoded)") else {
+        guard var components = URLComponents(string: "https://api.github.com/repos/\(repository.owner)/\(repository.name)/commits") else {
             return nil
         }
+        // `sha=` is a query parameter so refs containing slashes remain one ref
+        // instead of being interpreted as a nested path by the API router.
+        components.queryItems = [URLQueryItem(name: "sha", value: revision)]
+        guard let url = components.url else { return nil }
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")

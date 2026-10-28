@@ -135,9 +135,7 @@ struct GitHubImportView: View {
                         .font(.headline)
                     Text("A repository with an .xcodeproj is added with its target list and "
                          + "files so it can be inspected. XForge has no Xcode-project build "
-                         + "driver, so it cannot build that project or produce an IPA. A "
-                         + "repository whose root has a Package.swift is imported as a "
-                         + "Swift package instead.")
+                         + "driver, so it cannot build that project or produce an IPA. When a repository contains both, XForge analyzes the Xcode project first and lists the package manifest too; otherwise a root Package.swift is imported as a Swift package.")
                         .font(.footnote)
                 }
             } icon: {
