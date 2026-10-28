@@ -82,6 +82,10 @@ enum XcodeProjectReader {
         let projectURL = try locate(from: url)
 
         let pbxprojURL = projectURL.appendingPathComponent("project.pbxproj", isDirectory: false)
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: pbxprojURL.path),
+           let size = attributes[.size] as? NSNumber, size.intValue > 16 * 1024 * 1024 {
+            throw XcodeProjectError.malformed("project.pbxproj exceeds the 16 MiB analysis limit")
+        }
         guard let data = try? Data(contentsOf: pbxprojURL),
               let text = String(data: data, encoding: .utf8) else {
             throw XcodeProjectError.malformed("no readable project.pbxproj inside \(projectURL.lastPathComponent)")

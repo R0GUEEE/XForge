@@ -18,3 +18,7 @@ This is an exportable starting point, not a faithful conversion and not a build 
 - `actool`/`ibtool` are unavailable in the iOS app process, and script build phases cannot be executed there.
 
 The goal of this analysis is to make imports and handoffs more truthful and reproducible, not to claim support for every app repository.
+
+## Pinned dependency source cache
+
+The Dependency Manager uses `Package.resolved` only. It can fetch immutable public GitHub source snapshots for parsed pins into `.xforge-dependencies/` without executing the package manifest. This is source acquisition for inspection/reproducibility only: it does not claim package build support. XForge still refuses dependency builds because it cannot yet emit modules or link products.

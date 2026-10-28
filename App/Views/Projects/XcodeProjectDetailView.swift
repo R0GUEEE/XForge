@@ -17,6 +17,7 @@ struct XcodeProjectDetailView: View {
     @State private var isGenerating = false
     @State private var handoffArchive: URL?
     @State private var handoffError: String?
+    @State private var showingDependencies = false
 
     enum Section: String, CaseIterable, Identifiable {
         case targets = "Targets"
@@ -41,6 +42,9 @@ struct XcodeProjectDetailView: View {
         }
         .navigationTitle(project.name)
         .task { await load() }
+        .sheet(isPresented: $showingDependencies) {
+            NavigationStack { DependencyManagerView(project: project) }
+        }
     }
 
     // MARK: - Header
@@ -156,6 +160,11 @@ struct XcodeProjectDetailView: View {
                         Label("Lockfile: \(path)", systemImage: "lock")
                             .font(.caption)
                     }
+                }
+                Button {
+                    showingDependencies = true
+                } label: {
+                    Label("Manage dependencies", systemImage: "shippingbox")
                 }
                 if !inventory.dependencyIndicators.isEmpty {
                     ForEach(inventory.dependencyIndicators, id: \.self) { note in

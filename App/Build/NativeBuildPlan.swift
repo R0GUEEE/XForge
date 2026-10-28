@@ -78,10 +78,12 @@ enum NativeBuildPlanError: LocalizedError {
             let list = names.prefix(5).joined(separator: ", ")
             let more = names.count > 5 ? " and \(names.count - 5) more" : ""
             return """
-            This project declares SwiftPM dependencies (\(list)\(more)). Resolving \
-            them needs a package manager, which cannot run inside an app that may \
-            not spawn processes. Remove the dependencies, or build a project whose \
-            sources are self-contained.
+            This project declares SwiftPM dependencies (\(list)\(more)). XForge does not
+            execute Package.swift or run SwiftPM. Open Project → Dependencies to inspect
+            Package.resolved and, for supported public GitHub pins, fetch immutable
+            source snapshots. The current compiler still cannot build dependency modules
+            or link their products, so downloading sources alone will not produce an IPA.
+            For a build today, use a dependency-free project or build with Xcode on a Mac.
             """
         case .missingPackageManifest(let root):
             return "No Package.swift was found at \(root.path)."

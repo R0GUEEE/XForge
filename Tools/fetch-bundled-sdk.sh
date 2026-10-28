@@ -104,7 +104,9 @@ if [ -n "$FILE" ]; then
   # metadata checks. --reuse avoids a second 456 MB copy when FILE is the destination.
   test -f "$FILE" || { echo "error: $FILE does not exist" >&2; exit 66; }
   if [ "$REUSE" = 1 ]; then
-    [ "$FILE" = "$DEST/$ASSET" ] || {
+    file_path="$(cd "$(dirname "$FILE")" && pwd -P)/$(basename "$FILE")"
+    destination_path="$(cd "$DEST" && pwd -P)/$ASSET"
+    [ "$file_path" = "$destination_path" ] || {
       echo "error: --reuse requires --file to name the destination asset" >&2
       exit 64
     }
