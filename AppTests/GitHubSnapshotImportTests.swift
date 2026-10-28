@@ -169,20 +169,24 @@ final class GitHubSnapshotImportTests: XCTestCase {
     // MARK: - Archive entry validation
 
     func testAcceptsOrdinaryArchivePaths() throws {
-        let limits = GitHubSnapshotImporter.Limits.standard
-        XCTAssertEqual(try GitHubSnapshotImporter.validatedEntryPath(
+        XCTAssertEqual(try GitHubRepository.parse("https://github.com/apple/swift-argument-parser").slug,
+                       "apple/swift-argument-parser")
+        XCTAssertEqual(try GitHubRepository.parse("owner/repo@release/2.0").ref,
+                       "release/2.0")
+        let limits = SnapshotExtractionLimits.default
+        XCTAssertEqual(try SnapshotArchiveExtractor.validatedRelativePath(
             "owner-repo-abc1234/App/AppDelegate.swift", limits: limits
         ), "owner-repo-abc1234/App/AppDelegate.swift")
-        XCTAssertEqual(try GitHubSnapshotImporter.validatedEntryPath(
-            "owner-repo-abc1234/App/", limits: limits
+        XCTAssertEqual(try SnapshotArchiveExtractor.validatedRelativePath(
+            "owner-repo-abc1234/App/", isDirectory: true, limits: limits
         ), "owner-repo-abc1234/App")
-        XCTAssertEqual(try GitHubSnapshotImporter.validatedEntryPath(
+        XCTAssertEqual(try SnapshotArchiveExtractor.validatedRelativePath(
             "Package.swift", limits: limits
         ), "Package.swift")
     }
 
     func testRejectsTraversalAndAbsoluteArchivePaths() {
-        let limits = GitHubSnapshotImporter.Limits.standard
+        let limits = SnapshotExtractionLimits.default
         for bad in [
             "../evil.sh",
             "repo/../../evil.sh",
@@ -196,35 +200,25 @@ final class GitHubSnapshotImportTests: XCTestCase {
             ""
         ] {
             XCTAssertThrowsError(
-                try GitHubSnapshotImporter.validatedEntryPath(bad, limits: limits),
+                try SnapshotArchiveExtractor.validatedRelativePath(bad, limits: limits),
                 "path \(bad.debugDescription) should be rejected"
             )
         }
     }
 
     func testRejectsOverlongAndOverdeepArchivePaths() {
-        let tight = GitHubSnapshotImporter.Limits(
-            maximumPathLength: 20,
-            maximumDepth: 3
+        let tight = SnapshotExtractionLimits(
+            maxPathLength: 20,
+            maxPathComponents: 3
         )
-        XCTAssertThrowsError(try GitHubSnapshotImporter.validatedEntryPath(
+        XCTAssertThrowsError(try SnapshotArchiveExtractor.validatedRelativePath(
             String(repeating: "a", count: 21), limits: tight
         ))
-        XCTAssertThrowsError(try GitHubSnapshotImporter.validatedEntryPath(
+        XCTAssertThrowsError(try SnapshotArchiveExtractor.validatedRelativePath(
             "a/b/c/d", limits: tight
         ))
-        XCTAssertNoThrow(try GitHubSnapshotImporter.validatedEntryPath(
+        XCTAssertNoThrow(try SnapshotArchiveExtractor.validatedRelativePath(
             "a/b/c", limits: tight
         ))
-    }
-
-    func testCommitSHAExtractionFromSnapshotDirectory() {
-        XCTAssertEqual(
-            GitHubSnapshotImporter.commitSHA(inSnapshotDirectory: "repo-abcdef1234567890"),
-            "abcdef1234567890"
-        )
-        XCTAssertNil(GitHubSnapshotImporter.commitSHA(inSnapshotDirectory: "snapshot"))
-        XCTAssertNil(GitHubSnapshotImporter.commitSHA(inSnapshotDirectory: "repo-not-a-sha"))
-        XCTAssertNil(GitHubSnapshotImporter.commitSHA(inSnapshotDirectory: "repo-abc"))
     }
 }
